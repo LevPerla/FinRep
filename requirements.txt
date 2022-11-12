@@ -1,0 +1,7 @@
+jupyter
+pandas
+numpy
+plotly
+yfinance
+twelvedata
+beautifulsoup4
