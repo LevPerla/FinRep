@@ -41,15 +41,6 @@ def get_transactions():
                                                    'Комментарий': x[2]})
                                  )
 
-            # if file_name == '2022_10.csv':
-            #     print(month_df.to_string())
-            #     # print(month_df.explode('value').to_string())
-            #     return
-            # else:
-            #     continue
-
-            # .explode(list(month_df.columns))
-
             month_df['Валюта'] = month_df['value'].apply(lambda x: x['Валюта'])
             month_df['Значение'] = month_df['value'].apply(lambda x: x['Значение'])
             month_df['Комментарий'] = month_df['value'].apply(lambda x: x['Комментарий'])
