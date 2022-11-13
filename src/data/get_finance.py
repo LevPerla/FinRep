@@ -39,7 +39,7 @@ def get_actual_rates(tickers, days_before=7):
         curr_rates = curr_rates.tail(1).T.reset_index()
         curr_rates.columns = ['ticker_', 'Актуальная_цена_yf']
     elif config.STOCK_API == 'td':
-        td = TDClient(apikey=utils.read_secrets()['TD_API_KEY'])
+        td = TDClient(apikey=utils.get_secrets('TD_API_KEY'))
         curr_rates = td.time_series(
             symbol=tickers,
             # exchange="S&P 500",

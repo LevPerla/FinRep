@@ -8,7 +8,7 @@ from src.data.proccess import convert_transaction
 from src import config
 
 
-def create_main_report(transactions_df, currency):
+def create_main_report(transactions_df, currency, return_pdf=False):
     assert currency in config.UNIQUE_TICKERS.keys(), f'currency должно быть из {config.UNIQUE_TICKERS.keys()}'
 
     # Приводим валюты
@@ -102,6 +102,8 @@ def create_main_report(transactions_df, currency):
         legend_tracegroupgap=180,
         title_text=f"Основной отчет в валюте {currency}",
     )
-
-    fig.write_html(os.path.join(config.REPORTS_PATH, f"Основной отчет в валюте {currency}.html"))
-    fig.show()
+    if return_pdf:
+        fig.write_image(config.IMAGE_TO_BOT_PATH, scale=1, width=1200, height=1000)
+    else:
+        fig.write_html(os.path.join(config.REPORTS_PATH, f"Основной отчет в валюте {currency}.html"))
+        fig.show()

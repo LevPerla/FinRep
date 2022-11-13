@@ -10,7 +10,7 @@ from src.data.proccess import convert_transaction
 from src import config
 
 
-def create_year_report(transactions_df, year, currency):
+def create_year_report(transactions_df, year, currency, return_pdf=False):
     assert currency in config.UNIQUE_TICKERS.keys(), f'currency должно быть из {config.UNIQUE_TICKERS.keys()}'
 
     # Берем подвыборку транзакций по году
@@ -276,5 +276,8 @@ def create_year_report(transactions_df, year, currency):
     if currency not in os.listdir(year_folder_name):
         os.makedirs(cur_folder_dir)
 
-    fig.write_html(os.path.join(cur_folder_dir, f"Отчет за {year} год.html"))
-    fig.show()
+    if return_pdf:
+        fig.write_image(config.IMAGE_TO_BOT_PATH, scale=1, width=1200, height=2100)
+    else:
+        fig.write_html(os.path.join(cur_folder_dir, f"Отчет за {year} год.html"))
+        fig.show()

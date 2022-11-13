@@ -5,6 +5,23 @@ import numpy as np
 import yfinance as yf
 from datetime import timedelta
 
+from src import config
+from datetime import datetime
+from dateutil.relativedelta import relativedelta
+
+
+def get_reports_years() -> list:
+    start_year = '2016'
+    report_years_list = [start_year]
+    stop_year = datetime.strftime(datetime.now(), '%Y')
+
+    current_year = start_year
+    while current_year != stop_year:
+        new_date = datetime.strftime(datetime.strptime(current_year, '%Y') + relativedelta(years=1), '%Y')
+        report_years_list.append(new_date)
+        current_year = new_date
+    return report_years_list
+
 
 def get_cross_rates(from_curr, to_curr, min_date, max_date):
     # Получаем котировки тенге к доллару
@@ -32,13 +49,7 @@ def get_cross_rates(from_curr, to_curr, min_date, max_date):
     return curr_rates
 
 
-def read_secrets() -> dict:
-    filename = os.path.join('secrets.json')
-    try:
-        with open(filename, mode='r') as f:
-            return json.loads(f.read())
-    except FileNotFoundError:
-        return {}
-
-
-secrets = read_secrets()
+def get_secrets(key_: str):
+    with open(config.SECRETS_PATH, mode='r') as f:
+        SECRETS = json.loads(f.read())
+        return SECRETS[key_]

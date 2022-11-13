@@ -10,7 +10,7 @@ from src.model.create_tables import get_capital_by_month, get_act_receivables, g
 from src import config
 
 
-def create_month_report(transactions_df, assets_df, year, month, currency):
+def create_month_report(transactions_df, assets_df, year, month, currency, return_pdf=False):
     assert currency in config.UNIQUE_TICKERS.keys(), f'currency должно быть из {config.UNIQUE_TICKERS.keys()}'
 
     # Берем подвыборку транзакций по году
@@ -51,7 +51,9 @@ def create_month_report(transactions_df, assets_df, year, month, currency):
         column_widths=[0.25, 0.25, 0.25, 0.25]
     )
 
-    month_df = pd.read_csv(os.path.join(config.TRANSACTIONS_INFO_PATH, year, f'{year}_{month}.csv'), sep=';',
+    month_df = pd.read_csv(os.path.join(config.TRANSACTIONS_INFO_PATH, year,
+                                        f'{year}_{month if len(str(month)) == 2 else "0"+str(month) }.csv'),
+                           sep=';',
                            decimal=',',
                            parse_dates=True,
                            dayfirst=True,
@@ -192,7 +194,8 @@ def create_month_report(transactions_df, assets_df, year, month, currency):
     smpl_asset_df.columns = list(smpl_asset_df.columns)
     smpl_asset_df['Счет'] = smpl_asset_df['Счет'].apply(lambda x: x + ' ') + smpl_asset_df['Валюта']
     smpl_asset_df = smpl_asset_df.drop('Валюта', axis=1).set_index('Счет')
-    smpl_asset_df.loc[('Всего в валюте')] = smpl_asset_df.sum(axis=0, min_count=1)
+    if not smpl_asset_df.empty:
+        smpl_asset_df.loc[('Всего в валюте')] = smpl_asset_df.sum(axis=0, min_count=1)
     smpl_asset_df = smpl_asset_df.reset_index()
     smpl_asset_df_ = smpl_asset_df.copy()
 
@@ -205,7 +208,8 @@ def create_month_report(transactions_df, assets_df, year, month, currency):
         smpl_asset_df_.update(sml_df)
 
     smpl_asset_df_ = smpl_asset_df_.set_index('Счет')
-    smpl_asset_df_.loc['Всего'] = smpl_asset_df_[smpl_asset_df_.index != 'Всего в валюте'].sum(axis=0, min_count=1)
+    if not smpl_asset_df.empty:
+        smpl_asset_df_.loc['Всего'] = smpl_asset_df_[smpl_asset_df_.index != 'Всего в валюте'].sum(axis=0, min_count=1)
     smpl_asset_df_ = smpl_asset_df_.reset_index().round(2)
     for col_name in smpl_asset_df_:
         if col_name not in ['Счет']:
@@ -213,6 +217,12 @@ def create_month_report(transactions_df, assets_df, year, month, currency):
                                         .astype(float).map('{:,.2f}'.format).str.replace(',', ' ') +
                                         config.UNIQUE_TICKERS[col_name])
 
+    if smpl_asset_df_.empty:
+        smpl_asset_df_ = pd.concat([smpl_asset_df_,
+                                    pd.DataFrame({column_name: '-' for column_name in smpl_asset_df_.columns}, index=[0])],
+                                   axis=0,
+                                   ignore_index=True
+                                   )
     fig.add_trace(
         go.Table(
             header=dict(values=list(smpl_asset_df_.columns),
@@ -243,5 +253,8 @@ def create_month_report(transactions_df, assets_df, year, month, currency):
     if year not in os.listdir(cur_folder_dir):
         os.makedirs(year_folder_dir)
 
-    fig.write_html(os.path.join(year_folder_dir, f"Отчет за {month} {year} года.html"))
-    fig.show()
+    if return_pdf:
+        fig.write_image(config.IMAGE_TO_BOT_PATH, scale=1, width=1200, height=2500)
+    else:
+        fig.write_html(os.path.join(year_folder_dir, f"Отчет за {month} {year} года.html"))
+        fig.show()

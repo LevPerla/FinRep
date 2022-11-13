@@ -5,3 +5,5 @@ plotly
 yfinance
 twelvedata
 beautifulsoup4
+pytelegrambotapi
+kaleido
