@@ -108,7 +108,7 @@ def callback_worker(call):
                 button_key = types.InlineKeyboardButton(text=button_, callback_data=button_)
                 keyboard.add(button_key)
             bot.send_message(call.message.chat.id, text="Choose year of report", reply_markup=keyboard)
-        if report_type == 'actual':
+        elif report_type == 'actual':
             proccess_main_report(call)
             proccess_year_report(call)
             proccess_month_report(call)
