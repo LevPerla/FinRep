@@ -6,7 +6,6 @@ import warnings
 warnings.filterwarnings('ignore')
 
 from src import config, utils
-from src.data.proccess import convert_transaction
 
 
 def get_transactions():

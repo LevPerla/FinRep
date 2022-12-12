@@ -1,21 +1,21 @@
-from plotly.subplots import make_subplots
-import plotly.graph_objects as go
-import numpy as np
 import os
 
-from src.model.create_tables import get_capital_by_month
-from src.data.proccess import convert_transaction
-from src import config
+import pandas as pd
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+
+from src import config, utils
+from src.model.create_tables import get_balance_by_month
 
 
-def create_main_report(transactions_df, currency, return_pdf=False):
+def create_main_report(currency: str, return_image: bool = False) -> None:
+    """
+    function to create month report of all years
+
+    :param currency: str of currency ticker
+    :param return_image: switcher to save as image instead of html
+    """
     assert currency in config.UNIQUE_TICKERS.keys(), f'currency должно быть из {config.UNIQUE_TICKERS.keys()}'
-
-    # Приводим валюты
-    if not config.DEBUG:
-        smpl_tr_df = convert_transaction(df_to_convert=transactions_df, to_curr=currency)
-    else:
-        smpl_tr_df = transactions_df
 
     fig = make_subplots(
         rows=3, cols=2,
@@ -29,25 +29,10 @@ def create_main_report(transactions_df, currency, return_pdf=False):
         row_heights=[0.3, 0.4, 0.3],
         # column_widths=[0.23, 0.52, 0.25]
     )
+    balance_df = get_balance_by_month(currency)
 
-    # Добавляем таблицу суммарных показателей
-    all_stats_df = (smpl_tr_df[smpl_tr_df.Категория.isin(['Доход'])]
-                    .pivot_table(values='Значение', index=['Год'], columns=['Категория'], aggfunc=np.sum)
-                    )
-
-    all_stats_df['Расход'] = (
-        smpl_tr_df[~smpl_tr_df.Категория.isin(config.NOT_COST_COLS)].groupby('Год')['Значение'].sum())
-    all_stats_df['Сальдо'] = (all_stats_df['Доход'] - all_stats_df['Расход'])
-    all_stats_df.loc['Всего'] = all_stats_df.sum(axis=0)
-    all_stats_df['Процент дохода'] = (all_stats_df['Доход'] / all_stats_df['Расход'] * 100).round(2).astype(str) + '%'
-
-    for col_name in all_stats_df:
-        if col_name not in ['Процент дохода']:
-            all_stats_df.loc[:, col_name] = (all_stats_df[col_name].astype(float)
-                                             .map('{:,.2f}'.format).str.replace(',', ' ') +
-                                             config.UNIQUE_TICKERS[currency])
-    all_stats_df = all_stats_df.reset_index()
-
+    # Add table with sum income and cost stats by year
+    all_stats_df = _create_sum_stats(balance_df, currency)
     fig.add_trace(
         go.Table(
             header=dict(values=list(all_stats_df.columns),
@@ -59,8 +44,9 @@ def create_main_report(transactions_df, currency, return_pdf=False):
         ),
         row=1, col=1
     )
-    mean_stats_df = get_capital_by_month(currency)
-    income_df = mean_stats_df['Доход'].reset_index()
+
+    # Add plots of cost and income changing by years
+    income_df = balance_df['Доход'].reset_index()
     fig.add_trace(go.Scatter(x=income_df['Дата'],
                              y=income_df['Доход'],
                              mode='lines+markers',
@@ -69,7 +55,7 @@ def create_main_report(transactions_df, currency, return_pdf=False):
                              ),
                   row=2, col=1
                   )
-    cost_df = mean_stats_df['Расход'].reset_index()
+    cost_df = balance_df['Расход'].reset_index()
     fig.add_trace(go.Scatter(x=cost_df['Дата'],
                              y=cost_df['Расход'],
                              mode='lines+markers',
@@ -79,8 +65,8 @@ def create_main_report(transactions_df, currency, return_pdf=False):
                   row=2, col=1
                   )
 
-    # График изменения капитал
-    capital_df = mean_stats_df['Капитал'].reset_index()
+    # Add plot of capital changing
+    capital_df = balance_df['Капитал'].reset_index()
     fig.add_trace(go.Scatter(x=capital_df['Дата'],
                              y=capital_df['Капитал'],
                              mode='lines+markers',
@@ -102,8 +88,28 @@ def create_main_report(transactions_df, currency, return_pdf=False):
         legend_tracegroupgap=180,
         title_text=f"Основной отчет в валюте {currency}",
     )
-    if return_pdf:
+    if return_image:
         fig.write_image(config.IMAGE_TO_BOT_PATH, scale=1, width=1200, height=1000)
     else:
         fig.write_html(os.path.join(config.REPORTS_PATH, f"Основной отчет в валюте {currency}.html"))
         fig.show()
+
+
+def _create_sum_stats(balance_df: pd.DataFrame, currency: str) -> pd.DataFrame:
+    """
+    function that create table with sum income and costs stats by years
+    :param balance_df: df with transactions
+    :param currency: str of currency ticker
+    """
+    all_stats_df = balance_df[['Доход', 'Расход']].resample('Y').sum()
+    all_stats_df.index = all_stats_df.index.strftime("%Y")
+    all_stats_df['Сальдо'] = (all_stats_df['Доход'] - all_stats_df['Расход'])
+    all_stats_df.loc['Всего'] = all_stats_df.sum(axis=0)
+    all_stats_df['Процент дохода'] = (all_stats_df['Доход'] / all_stats_df['Расход'] * 100).round(2).astype(str) + '%'
+    all_stats_df = utils.process_num_cols(all_stats_df, not_num_cols=['Процент дохода'], currency=currency)
+    all_stats_df = all_stats_df.reset_index()
+    return all_stats_df
+
+
+if __name__ == '__main__':
+    create_main_report(currency='RUB')

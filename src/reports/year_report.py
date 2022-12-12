@@ -1,29 +1,21 @@
-from plotly.subplots import make_subplots
-import plotly.graph_objects as go
-import plotly.express as px
-import numpy as np
-import pandas as pd
 import os
 
-from src.model.create_tables import get_capital_by_month
+import numpy as np
+import pandas as pd
+import plotly.express as px
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+
+from src import config, utils
 from src.data.proccess import convert_transaction
-from src import config
+from src.model.create_tables import get_balance_by_month, get_cost_distribution
 
-
-def create_year_report(transactions_df, year, currency, return_pdf=False):
+def create_year_report(year, currency, return_image=False):
     assert currency in config.UNIQUE_TICKERS.keys(), f'currency должно быть из {config.UNIQUE_TICKERS.keys()}'
 
-    # Берем подвыборку транзакций по году
-    smpl_tr_df = transactions_df[transactions_df['Год'].isin(list(np.array(year).flat))].reset_index(drop=True)
+    # Find balance info
+    balance_df = get_balance_by_month(currency)
 
-    # Приводим валюты
-    if not config.DEBUG:
-        smpl_tr_df = convert_transaction(df_to_convert=smpl_tr_df, to_curr=currency)
-
-    # Находим категории отчета
-    cost_categories = [x for x in smpl_tr_df.Категория.unique() if x not in config.NOT_COST_COLS]
-
-    # Создаем маску отчета
     fig = make_subplots(
         rows=6, cols=3,
         shared_xaxes=True,
@@ -46,23 +38,8 @@ def create_year_report(transactions_df, year, currency, return_pdf=False):
 
     )
 
-    # Cоздаем таблицу с суммарными показателями по кварталам
-    quarter_mean_df = (smpl_tr_df[smpl_tr_df['Категория'] == 'Доход'].groupby('Квартал').sum()
-                       .reset_index()
-                       .rename({'Значение': 'Общий доход'}, axis=1)
-                       )
-    quarter_mean_df['Общий расход'] = (smpl_tr_df[smpl_tr_df.Категория.isin(cost_categories)].groupby('Квартал').sum().
-        reset_index()
-        .rename({'Значение': 'Общий расход'}, axis=1)['Общий расход']
-        )
-    quarter_mean_df['Сальдо'] = quarter_mean_df['Общий доход'] - quarter_mean_df['Общий расход']
-
-    for col_name in quarter_mean_df:
-        if col_name != 'Квартал':
-            quarter_mean_df.loc[:, col_name] = quarter_mean_df[col_name].astype(float).map(
-                '{:,.2f}'.format).str.replace(',', ' ') + \
-                                               config.UNIQUE_TICKERS[currency]
-
+    # Add avg stats by quarter
+    quarter_mean_df = _create_quarter_stats(balance_df, year, currency)
     fig.add_trace(
         go.Table(
             header=dict(values=list(quarter_mean_df.columns),
@@ -77,26 +54,8 @@ def create_year_report(transactions_df, year, currency, return_pdf=False):
         row=1, col=1
     )
 
-    # Таблица распределения затрат по категориям
-    cost_stats_df = (smpl_tr_df[smpl_tr_df.Категория.isin(cost_categories)]
-                     .groupby('Категория').agg({'Значение': ['sum']})
-                     .droplevel(0, axis=1)
-                     .rename({'sum': 'Суммарно в год'}, axis=1)
-                     )
-    cost_stats_df['Среднее в месяц'] = cost_stats_df['Суммарно в год'] / smpl_tr_df.Месяц.astype(int).max()
-    cost_stats_df['Процент'] = (cost_stats_df['Суммарно в год'] / cost_stats_df['Суммарно в год'].sum()).round(2) * 100
-    cost_stats_df = cost_stats_df.T[cost_categories]
-    for col_name in cost_stats_df:
-        if col_name != 'Показатель':
-            cost_stats_df.loc[['Суммарно в год', 'Среднее в месяц'],
-                              col_name] = (cost_stats_df.loc[['Суммарно в год', 'Среднее в месяц'],
-                                                             col_name]
-                                           .astype(float).map('{:,.2f}'.format).str.replace(',', ' ') +
-                                           config.UNIQUE_TICKERS[currency])
-            cost_stats_df.loc[['Процент'], col_name] = (cost_stats_df.loc[['Процент'], col_name].astype(str) + '%')
-
-    cost_stats_df = cost_stats_df.reset_index().rename({'index': 'Показатель'}, axis=1)
-
+    # Add costs stats by categories
+    cost_stats_df = get_cost_distribution(currency=currency, year=year)
     fig.add_trace(
         go.Table(
             header=dict(values=list(cost_stats_df.columns),
@@ -110,24 +69,12 @@ def create_year_report(transactions_df, year, currency, return_pdf=False):
         row=2, col=1
     )
 
-    # График распрдееления затрат по категориям
-    cost_plot_df = smpl_tr_df[smpl_tr_df.Категория.isin(cost_categories)]
-    fig.add_trace(go.Bar(name='test', x=cost_plot_df.Категория, y=cost_plot_df.Значение)
-                  , row=3, col=1
-                  )
+    # Add cost distribution bar plot
+    cost_plot_df = _create_cost_plot_table(cost_stats_df)
+    fig.add_trace(go.Bar(x=cost_plot_df.Показатель, y=cost_plot_df.Суммарно), row=3, col=1)
 
-    mean_month_income_df = (smpl_tr_df[smpl_tr_df['Категория'] == 'Доход']
-                            .set_index('Дата').resample('M').sum()
-                            .reset_index()
-                            .rename({'Значение': 'Доход'}, axis=1)
-                            .round(2)
-                            )
-    for col_name in mean_month_income_df:
-        if col_name != 'Дата':
-            mean_month_income_df.loc[:, col_name] = (mean_month_income_df[col_name]
-                                                     .astype(float).map('{:,.2f}'.format).str.replace(',', ' ') +
-                                                     config.UNIQUE_TICKERS[currency])
-
+    # Add income by month stats
+    mean_month_income_df = _create_income_table(balance_df, year, currency)
     colors = px.colors.sample_colorscale("geyser", [n / (mean_month_income_df.shape[0] - 1) for n in
                                                     range(mean_month_income_df.shape[0])])
     fig.add_trace(
@@ -148,19 +95,8 @@ def create_year_report(transactions_df, year, currency, return_pdf=False):
         row=4, col=1
     )
 
-    # Таблица с динамикой расходов
-    mean_month_cost_df = (smpl_tr_df[smpl_tr_df.Категория.isin(cost_categories)]
-                          .set_index('Дата').resample('M').sum()
-                          .reset_index()
-                          .rename({'Значение': 'Расход'}, axis=1)
-                          .round(2)
-                          )
-    for col_name in mean_month_cost_df:
-        if col_name != 'Дата':
-            mean_month_cost_df.loc[:, col_name] = (mean_month_cost_df[col_name]
-                                                   .astype(float).map('{:,.2f}'.format).str.replace(',', ' ') +
-                                                   config.UNIQUE_TICKERS[currency])
-
+    # Add costs by month stats
+    mean_month_cost_df = _create_costs_table(balance_df, year, currency)
     colors = px.colors.sample_colorscale("geyser", [n / (mean_month_cost_df.shape[0] - 1) for n in
                                                     range(mean_month_cost_df.shape[0])])
     fig.add_trace(
@@ -181,35 +117,20 @@ def create_year_report(transactions_df, year, currency, return_pdf=False):
         row=4, col=3
     )
 
+    # Add income plot
     fig.add_trace(go.Scatter(x=mean_month_income_df['Дата'],
                              y=mean_month_income_df['Доход'].str[:-1].str.replace(' ', '').astype(float)),
                   row=4, col=2
                   )
 
+    # Add costs plot
     fig.add_trace(go.Scatter(x=mean_month_cost_df['Дата'],
                              y=mean_month_cost_df['Расход'].str[:-1].str.replace(' ', '').astype(float)),
                   row=4, col=2
                   )
 
-    # Статистика доходов и расходов
-    inc_cost_stats_df = (
-        pd.concat([mean_month_income_df.set_index('Дата')['Доход'].str[:-1].str.replace(' ', '').astype(float),
-                   mean_month_cost_df.set_index('Дата')['Расход'].str[:-1].str.replace(' ', '').astype(float)
-                   ], axis=1)
-        .agg({'Доход': ['sum', 'mean', np.median, np.std, np.min, np.max],
-              'Расход': ['sum', 'mean', np.median, np.std, np.min, np.max]
-              }, axis=0)
-        .rename(index={'sum': 'Сумма', 'mean': 'Среднее',
-                       'median': 'Медиана', 'std': 'Ст. отклонение',
-                       'amin': 'Минимум', 'amax': 'Максимум'})
-        .reset_index()
-        .rename(columns={'index': 'Статистика'})
-        )
-    for col_name in inc_cost_stats_df:
-        if col_name != 'Статистика':
-            inc_cost_stats_df.loc[:, col_name] = (inc_cost_stats_df[col_name]
-                                                  .astype(float).map('{:,.2f}'.format).str.replace(',', ' ') +
-                                                  config.UNIQUE_TICKERS[currency])
+    # Add costs and income stats table
+    inc_cost_stats_df = _crete_inc_cost_stats(balance_df, year, currency)
     fig.add_trace(
         go.Table(
             header=dict(values=list(inc_cost_stats_df.columns),
@@ -225,15 +146,8 @@ def create_year_report(transactions_df, year, currency, return_pdf=False):
         row=5, col=2
     )
 
-    # График изменения капитала
-    capital_df = get_capital_by_month(currency)['Капитал'].loc[year].reset_index()
-
-    for col_name in capital_df:
-        if col_name != 'Дата':
-            capital_df.loc[:, col_name] = (capital_df[col_name]
-                                           .astype(float).map('{:,.2f}'.format).str.replace(',', ' ') +
-                                           config.UNIQUE_TICKERS[currency])
-
+    # Add capital by month table
+    capital_df = _create_capital_table(balance_df, year, currency)
     colors = px.colors.sample_colorscale("geyser", [n / (capital_df.shape[0] - 1) for n in
                                                     range(capital_df.shape[0])])
     fig.add_trace(
@@ -253,6 +167,7 @@ def create_year_report(transactions_df, year, currency, return_pdf=False):
         row=6, col=1
     )
 
+    # Add capital by month plot
     fig.add_trace(go.Scatter(x=capital_df['Дата'],
                              y=capital_df['Капитал'].str[:-1].str.replace(' ', '').astype(float),
                              mode='lines+markers',
@@ -276,8 +191,60 @@ def create_year_report(transactions_df, year, currency, return_pdf=False):
     if currency not in os.listdir(year_folder_name):
         os.makedirs(cur_folder_dir)
 
-    if return_pdf:
+    if return_image:
         fig.write_image(config.IMAGE_TO_BOT_PATH, scale=1, width=1200, height=2100)
     else:
         fig.write_html(os.path.join(cur_folder_dir, f"Отчет за {year} год.html"))
         fig.show()
+
+
+def _create_quarter_stats(balance_df, year, currency):
+    quarter_mean_df = (balance_df.loc[year, ['Доход', 'Расход']].resample('Q').sum()
+                       .reset_index()
+                       .rename({'Доход': 'Общий доход',
+                                'Расход': 'Общий расход',
+                                'Дата': 'Квартал'}, axis=1)
+                       )
+    quarter_mean_df['Квартал'] = quarter_mean_df['Квартал'].dt.quarter
+    quarter_mean_df['Сальдо'] = quarter_mean_df['Общий доход'] - quarter_mean_df['Общий расход']
+    quarter_mean_df = utils.process_num_cols(quarter_mean_df, not_num_cols=['Квартал'], currency=currency)
+    return quarter_mean_df
+
+def _create_income_table(balance_df, year, currency):
+    mean_month_income_df = balance_df.loc[year, 'Доход'].reset_index()
+    mean_month_income_df = utils.process_num_cols(mean_month_income_df, not_num_cols=['Дата'], currency=currency)
+    return mean_month_income_df
+
+def _create_costs_table(balance_df, year, currency):
+    mean_month_cost_df = balance_df.loc[year, 'Расход'].reset_index()
+    mean_month_cost_df = utils.process_num_cols(mean_month_cost_df, not_num_cols=['Дата'], currency=currency)
+    return mean_month_cost_df
+
+def _create_cost_plot_table(cost_stats_df):
+    cost_plot_df = cost_stats_df.T.reset_index()
+    cost_plot_df.columns = cost_plot_df.loc[0]
+    cost_plot_df = cost_plot_df.loc[1:]
+    cost_plot_df['Суммарно'] = cost_plot_df['Суммарно'].apply(lambda x: float(x[:-1].replace(' ', '')))
+    return cost_plot_df
+
+def _crete_inc_cost_stats(balance_df, year, currency):
+    inc_cost_stats_df = (balance_df.loc[year, ['Доход', 'Расход']]
+            .agg({'Доход': ['sum', 'mean', np.median, np.std, np.min, np.max],
+                  'Расход': ['sum', 'mean', np.median, np.std, np.min, np.max]
+                  }, axis=0)
+            .rename(index={'sum': 'Сумма', 'mean': 'Среднее',
+                           'median': 'Медиана', 'std': 'Ст. отклонение',
+                           'amin': 'Минимум', 'amax': 'Максимум'})
+            .reset_index()
+            .rename(columns={'index': 'Статистика'})
+    )
+    inc_cost_stats_df = utils.process_num_cols(inc_cost_stats_df, not_num_cols=['Статистика'], currency=currency)
+    return inc_cost_stats_df
+
+def _create_capital_table(balance_df, year, currency):
+    capital_df = balance_df.loc[year, 'Капитал'].reset_index()
+    capital_df = utils.process_num_cols(capital_df, not_num_cols=['Дата'], currency=currency)
+    return capital_df
+
+if __name__ == '__main__':
+    create_year_report(year='2022', currency='RUB')

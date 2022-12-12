@@ -1,3 +1,4 @@
+import pandas as pd
 import telebot
 from telebot import types
 from datetime import datetime
@@ -15,6 +16,13 @@ report_type = None
 currency = None
 year = None
 month = None
+data_type = None
+
+
+сurrent_assets_list = []
+assets_month = None
+asset_name = None
+unique_assets_list = get_assets()[['Счет', 'Валюта']].drop_duplicates().agg('_'.join, axis=1).tolist()
 
 @bot.message_handler(content_types=['text'])
 def start(message):
@@ -41,7 +49,11 @@ def start(message):
             keyboard.add(button_key)
         bot.send_message(message.from_user.id, text=f'Choose currency', reply_markup=keyboard)
     elif message.text == '/add_data':
-        pass
+        keyboard = types.InlineKeyboardMarkup()
+        for button_ in config.DATA_TYPES:
+            button_key = types.InlineKeyboardButton(text=button_, callback_data=button_)
+            keyboard.add(button_key)
+        bot.send_message(message.from_user.id, text=f'Choose type of data to add', reply_markup=keyboard)
     else:
         bot.send_message(message.from_user.id, 'Write /get_report, /add_data, /get_actual_reports')
 
@@ -52,8 +64,7 @@ def proccess_main_report(bot_response):
     except AttributeError:
         current_id = bot_response.from_user.id
     bot.send_message(current_id, text=f'Start making main report in {currency}')
-    transactions_df = get_transactions()
-    create_main_report(transactions_df, currency=currency, return_pdf=True)
+    create_main_report(currency=currency, return_image=True)
     bot.send_document(current_id, open(config.IMAGE_TO_BOT_PATH, 'rb'))
 
 def proccess_year_report(bot_response):
@@ -62,8 +73,7 @@ def proccess_year_report(bot_response):
     except AttributeError:
         current_id = bot_response.from_user.id
     bot.send_message(current_id, text=f'Start making {year} year report in {currency}')
-    transactions_df = get_transactions()
-    create_year_report(transactions_df, year, currency, return_pdf=True)
+    create_year_report(year=year, currency=currency, return_image=True)
     bot.send_document(current_id, open(config.IMAGE_TO_BOT_PATH, 'rb'))
 
 def proccess_month_report(bot_response):
@@ -72,11 +82,37 @@ def proccess_month_report(bot_response):
     except AttributeError:
         current_id = bot_response.from_user.id
     bot.send_message(current_id, text=f'Start making {year}-{month} month report in {currency}')
-    transactions_df = get_transactions()
-    assets_df = get_assets()
-    create_month_report(transactions_df, assets_df, year, month, currency, return_pdf=True)
+    create_month_report(year=year, currency=currency, month=month, return_image=True)
     bot.send_document(current_id, open(config.IMAGE_TO_BOT_PATH, 'rb'))
 
+def choose_asset_month(message):
+    global assets_month
+    global unique_assets_list
+    if message.text in ['Да', 'да', 'Yes', 'yes']:
+        assets_month = datetime.strftime(datetime.now(), '%Y-%m')
+        bot.send_message(message.from_user.id, text=f'Please add assets for {assets_month}')
+
+        keyboard = types.InlineKeyboardMarkup()
+        for button_ in unique_assets_list:
+            button_key = types.InlineKeyboardButton(text=button_, callback_data=button_)
+            keyboard.add(button_key)
+        bot.send_message(message.from_user.id, text="Choose asset", reply_markup=keyboard)
+    else:
+        bot.send_message(message.from_user.id, text=f'Please write month in format year-month')
+
+def add_asset(message):
+    global asset_name
+    global assets_month
+
+    assets_dict = {}
+    assets_dict['Счет'] = asset_name.split('_')[0].strip()
+    assets_dict['Валюта'] = asset_name.split('_')[1].strip()
+    assets_dict['Значение'] = float(message.text)
+    assets_dict['Год'] = assets_month[:4]
+    assets_dict['Месяц'] = assets_month[5:]
+    сurrent_assets_list.append(assets_dict)
+    print(сurrent_assets_list)
+    bot.send_message(message.from_user.id, text=pd.DataFrame(сurrent_assets_list).to_string())
 
 @bot.callback_query_handler(func=lambda call: True)
 def callback_worker(call):
@@ -84,6 +120,9 @@ def callback_worker(call):
     global currency
     global year
     global month
+    global data_type
+    global unique_assets_list
+    global asset_name
     month_list = list(map(lambda x: str(x), range(1, 13)))
 
     # Обработка типов репопортов
@@ -129,8 +168,20 @@ def callback_worker(call):
 
     # Обработка месяцев
     elif call.data in month_list:
-        month = call.data if len(call.data) == 2 else '0'+ call.data
+        month = call.data if len(call.data) == 2 else '0' + call.data
         if report_type == 'month':
             proccess_month_report(call)
+
+    # Обработка типов обновляемых данных
+    elif call.data in config.DATA_TYPES:
+        data_type = call.data
+        bot.send_message(call.message.chat.id, text="Do you want to add assets of current month?")
+        bot.register_next_step_handler(call.message, choose_asset_month)
+
+    # Обработка счетов
+    elif call.data in unique_assets_list:
+        asset_name = call.data
+        bot.send_message(call.message.chat.id, text="Write asset value")
+        bot.register_next_step_handler(call.message, add_asset)
     else:
         bot.send_message(call.message.chat.id, f'{call.data}')

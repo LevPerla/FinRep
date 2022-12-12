@@ -7,3 +7,5 @@ twelvedata
 beautifulsoup4
 pytelegrambotapi
 kaleido
+sqlalchemy
+psycopg2

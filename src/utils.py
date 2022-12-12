@@ -53,3 +53,25 @@ def get_secrets(key_: str):
     with open(config.SECRETS_PATH, mode='r') as f:
         SECRETS = json.loads(f.read())
         return SECRETS[key_]
+
+
+def fill_if_empty(df: pd.DataFrame):
+    """
+    Function to fill empty df with string of '-'
+    :type df: pd.DataFrame
+    """
+    if df.empty:
+        df = pd.concat([df, pd.DataFrame({column_name: '-' for column_name in df.columns}, index=[0])],
+                       axis=0,
+                       ignore_index=True
+                       )
+    return df
+
+def process_num_cols(df, not_num_cols, currency):
+    for col_name in df:
+        if col_name not in not_num_cols:
+            df.loc[:, col_name] = (df[col_name].astype(float)
+                                   .map('{:,.2f}'.format)
+                                   .str.replace(',', ' ') +
+                                   config.UNIQUE_TICKERS[currency])
+    return df

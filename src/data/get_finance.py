@@ -83,7 +83,7 @@ def get_act_moex(mode='stocks'):
     shares_df = shares_df.astype({'Дата': 'datetime64[ns]',
                                   'Тикер': str,
                                   f'Актуальная_цена_moex_{mode}': float
-                                  })
+                                  }, errors='ignore')
     shares_df.drop('Дата', axis=1, inplace=True)
     return shares_df
 

@@ -178,4 +178,5 @@ cython_debug/
 /data/
 /reports/
 /notebooks/
+/pgdata/
 /src/secrets.json
