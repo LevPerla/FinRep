@@ -169,7 +169,7 @@ def get_cost_distribution(currency, year, month=None):
         smpl_tr_df = transactions_df[transactions_df['Год'].isin(list(np.array(year).flat))].reset_index(drop=True)
     else:
         smpl_tr_df = transactions_df[(transactions_df['Год'].isin(list(np.array(year).flat))) &
-                                     (transactions_df['Месяц'].isin(list(np.array(month).flat)))
+                                     (transactions_df['Месяц'].isin(list(np.array(month).astype(int).astype(str).flat)))
                                      ].reset_index(drop=True)
 
     # Convert transactions to chosen currency
@@ -214,7 +214,7 @@ def get_assets_by_currencies(year, month) -> pd.DataFrame:
 
     # Get asset sample by chosen year and month
     assets_df = assets_df[(assets_df['Год'].isin(list(np.array(year).flat))) &
-                          (assets_df['Месяц'].isin(list(np.array(month).flat)))
+                          (assets_df['Месяц'].isin(list(np.array(month).astype(int).astype(str).flat)))
                           ].reset_index(drop=True)
     assets_df.drop(['Год', 'Месяц', 'Квартал'], axis=1, inplace=True)
 
@@ -254,7 +254,7 @@ def get_assets_by_currencies(year, month) -> pd.DataFrame:
 def get_month_transactions(currency, year, month):
     transactions_df = get_transactions()
     smpl_tr_df = transactions_df[(transactions_df['Год'].isin(list(np.array(year).flat))) &
-                                 (transactions_df['Месяц'].isin(list(np.array(month).flat)))
+                                 (transactions_df['Месяц'].isin(list(np.array(month).astype(int).astype(str).flat)))
                                  ].reset_index(drop=True)
 
     # Приводим валюты
@@ -272,8 +272,14 @@ def get_month_transactions(currency, year, month):
                                                 'Крупные покупки/ Поездки': 'Поездки'},
                                     errors='ignore')
     num_of_cols = len(month_tr_df.columns)
-    month_tr_df.insert(1, 'Доход', month_tr_df.pop('Доход'))
-    month_tr_df.insert(2, 'Сбережения', month_tr_df.pop('Сбережения'))
+    if 'Доход' in month_tr_df.columns:
+        month_tr_df.insert(1, 'Доход', month_tr_df.pop('Доход'))
+    else:
+        month_tr_df['Доход'] = 0
+    if 'Сбережения' in month_tr_df.columns:
+        month_tr_df.insert(2, 'Сбережения', month_tr_df.pop('Сбережения'))
+    else:
+        month_tr_df['Сбережения'] = 0
     for col in ['Дебиторская задолженность', 'Погашение деб. зад.', 'Кредиторская задолженность', 'Погашение кред. зад.']:
         if col in month_tr_df.columns:
             month_tr_df.insert(num_of_cols - 1, col, month_tr_df.pop(col))
