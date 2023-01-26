@@ -91,8 +91,8 @@ def get_balance_by_month(currency):
     # Приводим валюты
     if not config.DEBUG:
         transactions_df = convert_transaction(df_to_convert=transactions_df, to_curr=currency, target_col='Значение')
-        buy_df = convert_transaction(buy_df, to_curr='USD', target_col='Сумма')
-        sell_df = convert_transaction(sell_df, to_curr='USD', target_col='Прибыль/убыток')
+        buy_df = convert_transaction(buy_df, to_curr=currency, target_col='Сумма')
+        sell_df = convert_transaction(sell_df, to_curr=currency, target_col='Прибыль/убыток')
 
     all_stats_df = (transactions_df[transactions_df.Категория.isin(config.NOT_COST_COLS)]
                     .pivot_table(values='Значение', index=['Дата'], columns=['Категория'], aggfunc=np.sum)
@@ -102,12 +102,12 @@ def get_balance_by_month(currency):
     all_stats_df['Расход'] = (transactions_df[~transactions_df.Категория.isin(config.NOT_COST_COLS)]
                               .set_index('Дата').resample('M')['Значение'].sum())
 
-    all_stats_df['Инвстировано'] = buy_df.set_index('Дата').resample('M')['Сумма'].sum()
+    all_stats_df['Инвестировано'] = buy_df.set_index('Дата').resample('M')['Сумма'].sum()
     all_stats_df['Доход от инвестирования'] = sell_df.set_index('Дата').resample('M')['Прибыль/убыток'].sum()
     all_stats_df = all_stats_df.fillna(0)
 
     all_stats_df['Баланс'] = (all_stats_df['Доход'] + all_stats_df['Сбережения']
-                              - all_stats_df['Инвстировано'] + all_stats_df['Доход от инвестирования']
+                              - all_stats_df['Инвестировано'] + all_stats_df['Доход от инвестирования']
                               - all_stats_df['Дебиторская задолженность'] + all_stats_df['Погашение деб. зад.']
                               + all_stats_df['Кредиторская задолженность'] - all_stats_df['Погашение кред. зад.']
                               - all_stats_df['Расход']
@@ -233,7 +233,7 @@ def get_assets_by_currencies(year, month) -> pd.DataFrame:
         sml_df = gr_asset_df[(gr_asset_df[curr_from].notna()) & (gr_asset_df['Счет'] != 'Всего в валюте')]
         for curr_to in [curr_2 for curr_2 in sml_df.columns if curr_2 not in ['Счет', curr_from]]:
             ticker_ = curr_from + curr_to + '=X' if config.STOCK_API == 'yf' else curr_from + '/' + curr_to
-            rate = get_actual_rates(tickers=[ticker_], days_before=7)[f'Актуальная_цена_{config.STOCK_API}'].squeeze()
+            rate = get_actual_rates(tickers=[ticker_])[f'Актуальная_цена_{config.STOCK_API}'].squeeze()
             sml_df[curr_to] = sml_df[curr_from] * rate
         gr_asset_df_.update(sml_df)
 
