@@ -75,7 +75,7 @@ def create_year_report(year, currency, return_image=False):
 
     # Add income by month stats
     mean_month_income_df = _create_income_table(balance_df, year, currency)
-    colors = px.colors.sample_colorscale("geyser", [n / (mean_month_income_df.shape[0] - 1) for n in
+    colors = px.colors.sample_colorscale("geyser", [n / (mean_month_income_df.shape[0]) for n in
                                                     range(mean_month_income_df.shape[0])])
     fig.add_trace(
         go.Table(
@@ -97,7 +97,7 @@ def create_year_report(year, currency, return_image=False):
 
     # Add costs by month stats
     mean_month_cost_df = _create_costs_table(balance_df, year, currency)
-    colors = px.colors.sample_colorscale("geyser", [n / (mean_month_cost_df.shape[0] - 1) for n in
+    colors = px.colors.sample_colorscale("geyser", [n / (mean_month_cost_df.shape[0]) for n in
                                                     range(mean_month_cost_df.shape[0])])
     fig.add_trace(
         go.Table(
@@ -148,7 +148,7 @@ def create_year_report(year, currency, return_image=False):
 
     # Add capital by month table
     capital_df = _create_capital_table(balance_df, year, currency)
-    colors = px.colors.sample_colorscale("geyser", [n / (capital_df.shape[0] - 1) for n in
+    colors = px.colors.sample_colorscale("geyser", [n / (capital_df.shape[0]) for n in
                                                     range(capital_df.shape[0])])
     fig.add_trace(
         go.Table(
