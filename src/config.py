@@ -1,13 +1,15 @@
 import os
 
-UNIQUE_TICKERS = {'RUB': '₽', 'USD': '$', 'EUR': '€', 'KZT': '₸'}
+UNIQUE_TICKERS = {'RUB': '₽', 'USD': '$', 'EUR': '€', 'KZT': '₸', 'GBP': '£'}
 
 PROJECT_PATH = os.path.join('//', 'Users', 'levperla', 'PycharmProjects', 'FinRep')
-TRANSACTIONS_INFO_PATH = os.path.join(PROJECT_PATH, 'data', 'transactions_info')
-ASSETS_INFO_PATH = os.path.join(PROJECT_PATH, 'data', 'assets_info')
-INVESTMENTS_PATH = os.path.join(PROJECT_PATH, 'data', 'investments.csv')
+DATA_PATH = os.path.join(PROJECT_PATH, 'data')
 REPORTS_PATH = os.path.join(PROJECT_PATH, 'reports')
 SECRETS_PATH = os.path.join(PROJECT_PATH, 'src', 'secrets.json')
+
+TRANSACTIONS_INFO_PATH = os.path.join(DATA_PATH, 'transactions_info')
+ASSETS_INFO_PATH = os.path.join(DATA_PATH, 'assets_info')
+INVESTMENTS_PATH = os.path.join(DATA_PATH, 'investments.csv')
 IMAGE_TO_BOT_PATH = os.path.join(REPORTS_PATH, 'image_to_bot', "report_to_bot.png")
 
 STOCK_API = 'yf'  # yf, td
