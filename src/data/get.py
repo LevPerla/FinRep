@@ -95,4 +95,14 @@ def get_assets():
 def get_investments():
     data = pd.read_csv(config.INVESTMENTS_PATH, sep=';', decimal=',')
     data['Дата'] = data['Дата'].astype('datetime64[ns]')
+    data['Валюта'] = data['Цена'].apply(lambda x: x.split('|')[1])
+    data['Цена'] = data['Цена'].apply(lambda x: x.split('|')[0].replace(',', '.')).astype(float)
     return data
+
+if __name__ == '__main__':
+    # tmp_df = get_transactions()
+    tmp_df = get_assets()
+    # tmp_df = get_investments()
+
+
+    print(tmp_df.head(50))
