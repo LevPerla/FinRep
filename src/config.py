@@ -25,5 +25,5 @@ TRANSACTIONS_COLUMNS = ['Дата', 'Категория', 'Валюта', 'Зн�
 ASSETS_COLUMNS = ['Счет', 'Валюта', 'Значение', 'Год', 'Месяц']
 
 
-DB_NAME = 'FINREPDB'
-DB_USER = 'FINREP'
+DB_NAME = 'finrepbd'
+DB_USER = 'finrep'
