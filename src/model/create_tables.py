@@ -1,31 +1,34 @@
 import numpy as np
 import pandas as pd
 
-from src import config, utils
+from src import config
 from src.data.get import get_investments, get_transactions, get_assets
 from src.data.get_finance import get_actual_rates, get_act_moex
 from src.data.proccess import convert_transaction
 
 
-def create_invest_tbl(max_date=None):
-    # Выгружаем данные по инвестициям
+def create_invest_tbl() -> (pd.DataFrame, pd.DataFrame):
+    """
+    Create PNL of investments
+    :return:
+    """
+    # Get invest transactions
     investments_df = get_investments()
-    if max_date is not None:
-        investments_df = investments_df[investments_df['Дата'] <= max_date]
-    investments_df['Валюта'] = investments_df['Цена'].apply(lambda x: x.split('|')[1])
-    investments_df['Цена'] = investments_df['Цена'].apply(lambda x: x.split('|')[0].replace(',', '.')).astype(float)
 
+    # Divide by transaction type
     buy_df = investments_df[investments_df['Тип_транзакции'] == 'Покупка']
     sell_df = investments_df[investments_df['Тип_транзакции'] == 'Продажа']
     sell_df['Прибыль/убыток'] = np.nan
 
-    # Обрабатываем продажи
+    # Process sells
     for sell_index, sell_row in sell_df.iterrows():
+        # Find all buy transactions before sell tr-on
         buy_df_smpl = buy_df[(buy_df['Тикер'] == sell_row['Тикер']) &
                              (buy_df['Дата'] <= sell_row['Дата'])].sort_values('Дата')
         need_to_sell = sell_row['Количество']
         sell_row['Прибыль/убыток'] = sell_row['Количество'] * sell_row['Цена']
 
+        # Decrease balance by sell amount in FIFO
         for buy_index, buy_row in buy_df_smpl.iterrows():
             need_to_sell = need_to_sell - buy_row['Количество']
             if need_to_sell >= 0:
@@ -43,18 +46,17 @@ def create_invest_tbl(max_date=None):
         buy_df = buy_df[buy_df['Количество'].notna()]
 
     buy_df['Сумма'] = buy_df['Количество'] * buy_df['Цена']
-    # Считаем тикеры
+
+    # Solve tickers
     if config.STOCK_API == 'yf':
-        buy_df.loc[buy_df['Актив'] == 'Валюта',
-                   'ticker_'] = (buy_df['Тикер'] +
-                                 buy_df['Валюта'].apply(lambda x: x + '=X'))
+        buy_df.loc[buy_df['Актив'] == 'Валюта', 'ticker_'] = (buy_df['Тикер'] +
+                                                              buy_df['Валюта'].apply(lambda x: x + '=X'))
     elif config.STOCK_API == 'td':
-        buy_df.loc[buy_df['Актив'] == 'Валюта',
-                   'ticker_'] = (buy_df['Тикер'].apply(lambda x: x + '/') +
-                                 buy_df['Валюта'])
+        buy_df.loc[buy_df['Актив'] == 'Валюта', 'ticker_'] = (buy_df['Тикер'].apply(lambda x: x + '/') +
+                                                              buy_df['Валюта'])
     buy_df.loc[buy_df['Актив'].isin(['Акции', 'Фонды']), 'ticker_'] = buy_df['Тикер']
 
-    # Заполняем актуальными ценами на MOEX
+    # Fill by actual MOEX price
     moex_stocks_rates = get_act_moex(mode='stocks').rename(columns={'Тикер': 'ticker_'})
     etf_stocks_rates = get_act_moex(mode='ETF').rename(columns={'Тикер': 'ticker_'})
     buy_df = (buy_df.merge(moex_stocks_rates, on='ticker_', how='left')
@@ -63,32 +65,39 @@ def create_invest_tbl(max_date=None):
     buy_df['Актуальная цена'] = buy_df[['Актуальная_цена_moex_stocks',
                                         'Актуальная_цена_moex_ETF']].sum(axis=1, min_count=1)
 
-    # Для тикеров не из MOEX заполняем из других api
-    actual_rates = get_actual_rates(tickers=buy_df.loc[buy_df['Актуальная цена'].isna(), 'ticker_']
-                                    .unique()
-                                    .tolist())
-    buy_df = buy_df.merge(actual_rates, on='ticker_', how='left')
-    buy_df['Актуальная цена'] = buy_df[['Актуальная цена',
-                                        f'Актуальная_цена_{config.STOCK_API}']].sum(axis=1, min_count=1)
+    # If ticker not in MOEX fill by another api
+    not_moex_tickers = buy_df.loc[buy_df['Актуальная цена'].isna(), 'ticker_']
+    if len(not_moex_tickers) != 0:
+        actual_rates = get_actual_rates(tickers=buy_df.loc[buy_df['Актуальная цена'].isna(), 'ticker_']
+                                        .unique()
+                                        .tolist())
+        buy_df = buy_df.merge(actual_rates, on='ticker_', how='left')
+        buy_df['Актуальная цена'] = buy_df[['Актуальная цена',
+                                            f'Актуальная_цена_{config.STOCK_API}']].sum(axis=1, min_count=1)
     buy_df.drop(['ticker_',
                  'Актуальная_цена_moex_stocks',
                  'Актуальная_цена_moex_ETF',
                  f'Актуальная_цена_{config.STOCK_API}'
-                 ], axis=1, inplace=True)
+                 ], axis=1, errors='ignore', inplace=True)
 
-    # Считаем аналитики
-    buy_df['Прибыль'] = buy_df['Количество'] * buy_df['Актуальная цена'] - buy_df['Сумма']
-    buy_df['Доходность'] = (buy_df['Прибыль'] / buy_df['Сумма']).round(3) * 100
+    # Calculate metrics
+    buy_df['Потенциальная прибыль'] = buy_df['Количество'] * buy_df['Актуальная цена'] - buy_df['Сумма']
+    buy_df['Доходность'] = (buy_df['Потенциальная прибыль'] / buy_df['Сумма']).round(3) * 100
     buy_df = buy_df.round(2)
 
     return buy_df, sell_df
 
 
-def get_balance_by_month(currency):
+def get_balance_by_month(currency: str) -> pd.DataFrame:
+    """
+    Get PNL of all transactions
+    :param currency: ticker of currency
+    :return:
+    """
     transactions_df = get_transactions()
     buy_df, sell_df = create_invest_tbl()
 
-    # Приводим валюты
+    # Convert currencies
     if not config.DEBUG:
         transactions_df = convert_transaction(df_to_convert=transactions_df, to_curr=currency, target_col='Значение')
         buy_df = convert_transaction(buy_df, to_curr=currency, target_col='Сумма')
@@ -102,12 +111,13 @@ def get_balance_by_month(currency):
     all_stats_df['Расход'] = (transactions_df[~transactions_df.Категория.isin(config.NOT_COST_COLS)]
                               .set_index('Дата').resample('M')['Значение'].sum())
 
-    all_stats_df['Инвестировано'] = buy_df.set_index('Дата').resample('M')['Сумма'].sum()
+    all_stats_df['Потенциальная прибыль'] = buy_df.set_index('Дата').resample('M')['Потенциальная прибыль'].sum()
     all_stats_df['Доход от инвестирования'] = sell_df.set_index('Дата').resample('M')['Прибыль/убыток'].sum()
     all_stats_df = all_stats_df.fillna(0)
 
     all_stats_df['Баланс'] = (all_stats_df['Доход'] + all_stats_df['Сбережения']
-                              - all_stats_df['Инвестировано'] + all_stats_df['Доход от инвестирования']
+                              + all_stats_df['Потенциальная прибыль']
+                              + all_stats_df['Доход от инвестирования']
                               - all_stats_df['Дебиторская задолженность'] + all_stats_df['Погашение деб. зад.']
                               + all_stats_df['Кредиторская задолженность'] - all_stats_df['Погашение кред. зад.']
                               - all_stats_df['Расход']
@@ -218,25 +228,40 @@ def get_assets_by_currencies(year, month) -> pd.DataFrame:
                           ].reset_index(drop=True)
     assets_df.drop(['Год', 'Месяц', 'Квартал'], axis=1, inplace=True)
 
+    # Add actual investments value
+    buy_df, _ = create_invest_tbl()
+    investments = ((buy_df.set_index('Дата')['Актуальная цена'] * buy_df.set_index('Дата')['Количество']).sum())
+    inv_df = pd.DataFrame([{'Счет': 'Инвестиции', 'Валюта': 'RUB', 'Значение': investments}])
+    assets_df = assets_df.append(inv_df)
+
+
+    # Pivot data to currency in cols and accounts in rows
     gr_asset_df = assets_df.pivot_table(index=['Счет', 'Валюта'], columns='Валюта',
                                         values='Значение', aggfunc='sum').reset_index()
     gr_asset_df.columns = list(gr_asset_df.columns)
     gr_asset_df['Счет'] = gr_asset_df['Счет'].apply(lambda x: x + ' ') + gr_asset_df['Валюта']
     gr_asset_df = gr_asset_df.drop('Валюта', axis=1).set_index('Счет')
 
+    # Calculate sum of all money in currency
     if not gr_asset_df.empty:
         gr_asset_df.loc[('Всего в валюте')] = gr_asset_df.sum(axis=0, min_count=1)
     gr_asset_df = gr_asset_df.reset_index()
-    gr_asset_df_ = gr_asset_df.copy()
 
+    # Convert currencies in cols
+    gr_asset_df_ = gr_asset_df.copy()
+    # Go by cols to covert
     for curr_from in [curr_1 for curr_1 in gr_asset_df.columns if curr_1 not in ['Счет']]:
+        # Get not na cols to convert
         sml_df = gr_asset_df[(gr_asset_df[curr_from].notna()) & (gr_asset_df['Счет'] != 'Всего в валюте')]
+
+        # Go by another cols
         for curr_to in [curr_2 for curr_2 in sml_df.columns if curr_2 not in ['Счет', curr_from]]:
             ticker_ = curr_from + curr_to + '=X' if config.STOCK_API == 'yf' else curr_from + '/' + curr_to
             rate = get_actual_rates(tickers=[ticker_])[f'Актуальная_цена_{config.STOCK_API}'].squeeze()
             sml_df[curr_to] = sml_df[curr_from] * rate
         gr_asset_df_.update(sml_df)
 
+    # Calculate sum of all money by col
     gr_asset_df_ = gr_asset_df_.set_index('Счет')
     if not gr_asset_df.empty:
         gr_asset_df_.loc['Всего'] = gr_asset_df_[gr_asset_df_.index != 'Всего в валюте'].sum(axis=0, min_count=1)
@@ -288,6 +313,14 @@ def get_month_transactions(currency, year, month):
 if __name__ == '__main__':
     pd.options.display.max_columns = 40
     pd.options.display.max_rows = 40
-    # month_tr_df = get_balance_by_month(currency='EUR')
-    month_tr_df = get_month_transactions(currency='EUR', year='2022', month='11')
-    print(month_tr_df)
+
+    CURRENCY = 'RUB'
+    YEAR = '2023'
+    MONTH = '01'
+
+    test = get_assets_by_currencies(year=YEAR, month=MONTH)
+    print(test)
+
+    # buy_df, sell_df = create_invest_tbl()
+    # print(buy_df)
+    # print(sell_df)
