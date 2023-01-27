@@ -86,13 +86,13 @@ def get_rates(tickers: list, min_date, max_date) -> pd.DataFrame:
         rates_df_upd = rates_df_upd.rename(tickers[0]).to_frame()
 
     # Get crossrates
-    nan_cols = list(rates_df_upd.loc[:, rates_df_upd.isna().all(axis=0)].columns)
-    download_errors = list(shared._ERRORS.keys())
-    for ticker_name in download_errors + nan_cols:
+    nan_cols = set(rates_df_upd.loc[:, rates_df_upd.isna().all(axis=0)].columns)
+    download_errors = set(shared._ERRORS.keys())
+    for ticker_name in download_errors.intersection(nan_cols):
         if '=X' in ticker_name:
             cross_rate_df = get_cross_rates(from_curr=ticker_name[:3],
                                             to_curr=ticker_name[3:6],
-                                            min_date=min_date,
+                                            min_date=min_date - timedelta(days=5),
                                             max_date=max_date)
             rates_df_upd[ticker_name] = cross_rate_df[ticker_name]
 
@@ -128,7 +128,7 @@ def get_cross_rates(from_curr, to_curr, min_date, max_date):
     # Get rates of from_curr/USD
     curr_USD_rates = yf.download(f'{from_curr}USD=X',
                                  min_date,
-                                 max_date + timedelta(days=1)
+                                 max_date
                                  )['Adj Close']
     curr_USD_rates.index = pd.DatetimeIndex(pd.to_datetime(curr_USD_rates.index).date)
     full_ind = pd.date_range(min_date, max_date)
@@ -139,7 +139,7 @@ def get_cross_rates(from_curr, to_curr, min_date, max_date):
     # Get rates of USD/to_curr
     curr_rates = yf.download(f'USD{to_curr}=X',
                              min_date,
-                             max_date + timedelta(days=1)
+                             max_date
                              )['Adj Close']
     curr_rates.index = pd.DatetimeIndex(pd.to_datetime(curr_rates.index).date)
     full_ind = pd.date_range(min_date, max_date)
