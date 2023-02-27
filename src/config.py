@@ -1,8 +1,9 @@
 import os
+from pathlib import Path
 
 UNIQUE_TICKERS = {'RUB': '₽', 'USD': '$', 'EUR': '€', 'KZT': '₸', 'GBP': '£'}
 
-PROJECT_PATH = os.path.join('//', 'Users', 'levperla', 'PycharmProjects', 'FinRep')
+PROJECT_PATH = Path(__file__).parent.parent
 DATA_PATH = os.path.join(PROJECT_PATH, 'data')
 REPORTS_PATH = os.path.join(PROJECT_PATH, 'reports')
 SECRETS_PATH = os.path.join(PROJECT_PATH, 'src', 'secrets.json')

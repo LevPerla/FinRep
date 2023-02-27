@@ -2,13 +2,13 @@
 #
 # bot.polling(none_stop=True, interval=0)
 
+from src.reports.main_report import create_main_report
 from src.reports.month_report import create_month_report
 from src.reports.year_report import create_year_report
-from src.reports.main_report import create_main_report
 
 CURRENCY = 'RUB'
-YEAR = '2022'
-MONTH = '12'
+YEAR = '2023'
+MONTH = '02'
 
 create_main_report(currency=CURRENCY)
 create_year_report(year=YEAR, currency=CURRENCY)
