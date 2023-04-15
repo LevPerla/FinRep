@@ -163,31 +163,40 @@ def get_act_moex(mode='stocks'):
         raise ValueError('mode должен быть из [stocks, ETF, OFZ]')
 
     response = requests.api.get(moex_req)
-    soup = BeautifulSoup(response.text, "html.parser")
+    soup = BeautifulSoup(response.text, "lxml")
     shares_df = pd.DataFrame()
     rows = soup.findAll('row')
     for row in rows:
-        shares_df = pd.concat([shares_df,
-                               pd.DataFrame([{'Дата': row['prevdate'],
-                                              'Тикер': row['secid'],
-                                              f'Актуальная_цена_moex_{mode}': row['prevadmittedquote']}])
-                               ],
-                              axis=0)
-    shares_df = shares_df.replace('', np.nan)
-    shares_df = shares_df.astype({'Дата': 'datetime64[ns]',
-                                  'Тикер': str,
-                                  f'Актуальная_цена_moex_{mode}': float
-                                  }, errors='ignore')
-    shares_df.drop('Дата', axis=1, inplace=True)
-    return shares_df
+        try:
+            shares_df = pd.concat([shares_df,
+                                   pd.DataFrame([{'Дата': row['prevdate'],
+                                                  'Тикер': row['secid'],
+                                                  f'Актуальная_цена_moex_{mode}': row['prevadmittedquote']}])
+                                   ],
+                                  axis=0)
+        except KeyError:
+            continue
+
+    if shares_df.size == 0:
+        return pd.DataFrame([{'Тикер': 'nan', f'Актуальная_цена_moex_{mode}': 'nan'}])
+    else:
+        shares_df = shares_df.replace('', np.nan)
+        shares_df = shares_df.astype({'Дата': 'datetime64[ns]',
+                                      'Тикер': str,
+                                      f'Актуальная_цена_moex_{mode}': float
+                                      }, errors='ignore')
+        shares_df.drop('Дата', axis=1, inplace=True)
+        return shares_df
 
 
 if __name__ == '__main__':
-    print(get_rates(tickers=[
-                             'USDRUB=X',
-                             'RUBUSD=X',
-                             'RUBKZT=X',
-                             'KZTRUB=X'
-                             ],
-                    min_date='2023-01-26',
-                    max_date='2023-01-26'))
+    print(get_act_moex(mode='stocks'))
+
+    # print(get_rates(tickers=[
+    #                          'USDRUB=X',
+    #                          'RUBUSD=X',
+    #                          'RUBKZT=X',
+    #                          'KZTRUB=X'
+    #                          ],
+    #                 min_date='2023-01-26',
+    #                 max_date='2023-01-26'))
