@@ -8,7 +8,7 @@ from src.reports.year_report import create_year_report
 
 CURRENCY = 'RUB'
 YEAR = '2023'
-MONTH = '02'
+MONTH = '06'
 
 create_main_report(currency=CURRENCY)
 create_year_report(year=YEAR, currency=CURRENCY)

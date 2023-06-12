@@ -318,7 +318,7 @@ if __name__ == '__main__':
     YEAR = '2023'
     MONTH = '01'
 
-    test = get_assets_by_currencies(year=YEAR, month=MONTH)
+    test = get_month_transactions(currency=CURRENCY, year=YEAR, month=MONTH)
     print(test)
 
     # buy_df, sell_df = create_invest_tbl()

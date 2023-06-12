@@ -1,13 +1,12 @@
 import os
 
-import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
 from src import config, utils
-from src.model.create_tables import get_balance_by_month, get_act_receivables, get_month_transactions,\
-                                    get_act_liabilities, get_cost_distribution, get_assets_by_currencies
+from src.model.create_tables import get_balance_by_month, get_act_receivables, get_month_transactions, \
+    get_act_liabilities, get_cost_distribution, get_assets_by_currencies
 
 
 def create_month_report(year: str,
@@ -43,7 +42,7 @@ def create_month_report(year: str,
                         'Кредиторская задолженность', 'Распределение расходов',
                         None, 'Распределение по счетам'
                         ),
-        row_heights=[0.75, 0.1, 0.1, 0.15, 0.25, 0.5],
+        row_heights=[0.75, 0.1, 0.1, 0.15, 0.25, 0.6],
         column_widths=[0.25, 0.25, 0.25, 0.25]
     )
 
@@ -142,7 +141,7 @@ def create_month_report(year: str,
     )
 
     fig.update_layout(
-        height=2200,
+        height=2500,
         showlegend=False,
         title_text=f"Отчет за {month} месяц {year} года, в валюте {currency}",
     )

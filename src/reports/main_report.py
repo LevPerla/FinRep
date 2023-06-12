@@ -77,7 +77,7 @@ def create_main_report(currency: str, return_image: bool = False) -> None:
                   )
 
     fig.update_layout(
-        height=1000,
+        height=1300,
         showlegend=True,
         legend=dict(
             orientation="v",
