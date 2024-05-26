@@ -61,18 +61,21 @@ def get_rates(tickers: list, min_date, max_date) -> pd.DataFrame:
         os.makedirs(RATES_PATH)
 
     # if data exist return it
-    if 'currency_rates.csv' in os.listdir(RATES_PATH):
-        rates_df = pd.read_csv(os.path.join(RATES_PATH, 'currency_rates.csv'),
-                               sep=';', index_col='Дата', parse_dates=True)
-        try:
-            rates_df_sml = rates_df.loc[min_date:max_date, tickers]
-            if (rates_df_sml.size != 0) and \
-                    (rates_df_sml.index.min() == min_date) and \
-                    (rates_df_sml.index.max() == max_date) and \
-                    (rates_df_sml.isna().sum().sum() == 0):
-                return rates_df_sml
-        except KeyError:
-            pass
+    # if 'currency_rates.csv' in os.listdir(RATES_PATH):
+    #     rates_df = pd.read_csv(os.path.join(RATES_PATH, 'currency_rates.csv'),
+    #                            sep=';', index_col='Дата', parse_dates=True)
+    #     try:
+    #         rates_df_sml = rates_df.loc[min_date:max_date, tickers]
+    #         print(1 / rates_df_sml)
+    #         if (rates_df_sml.size != 0) and \
+    #                 (rates_df_sml.index.min() == min_date) and \
+    #                 (rates_df_sml.index.max() == max_date) and \
+    #                 (rates_df_sml.isna().sum().sum() == 0):
+                        
+    #             print(1 / rates_df_sml)
+    #             return rates_df_sml
+    #     except KeyError:
+    #         pass
 
     # Get rates to update
     rates_df_upd = yf.download(tickers, min_date - timedelta(days=5), max_date)['Adj Close']
@@ -80,7 +83,7 @@ def get_rates(tickers: list, min_date, max_date) -> pd.DataFrame:
     full_ind = pd.date_range(min_date - timedelta(days=5), max_date, freq='D')
 
     # Interpolate missing dates
-    rates_df_upd = (rates_df_upd.reindex(full_ind, fill_value=np.nan).interpolate(limit_direction='both'))
+    rates_df_upd = (rates_df_upd.reindex(full_ind, fill_value=np.nan).ffill().bfill())
 
     if isinstance(rates_df_upd, pd.Series):
         rates_df_upd = rates_df_upd.rename(tickers[0]).to_frame()

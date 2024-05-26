@@ -7,8 +7,9 @@ from plotly.subplots import make_subplots
 from src import config, utils
 from src.model.create_tables import get_balance_by_month
 
-
-def create_main_report(currency: str, return_image: bool = False) -> None:
+def create_main_report(currency: str,
+                       return_image: bool = False,
+                       return_fig: bool = False) -> None:
     """
     function to create month report of all years
 
@@ -88,6 +89,10 @@ def create_main_report(currency: str, return_image: bool = False) -> None:
         legend_tracegroupgap=180,
         title_text=f"Основной отчет в валюте {currency}",
     )
+
+    if return_fig:
+        return fig
+
     if return_image:
         fig.write_image(config.IMAGE_TO_BOT_PATH, scale=1, width=1200, height=1000)
     else:

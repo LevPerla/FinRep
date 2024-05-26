@@ -1,0 +1,1 @@
+flet run -w src/flatter_app/main.py

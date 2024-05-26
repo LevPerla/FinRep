@@ -1,3 +1,6 @@
+from sys import path
+path.append('/Users/levperla/PycharmProjects/FinRep')
+
 import numpy as np
 import pandas as pd
 
@@ -95,13 +98,22 @@ def get_balance_by_month(currency: str) -> pd.DataFrame:
     :return:
     """
     transactions_df = get_transactions()
-    buy_df, sell_df = create_invest_tbl()
+    # buy_df, sell_df = create_invest_tbl()
 
     # Convert currencies
     if not config.DEBUG:
-        transactions_df = convert_transaction(df_to_convert=transactions_df, to_curr=currency, target_col='Значение')
-        buy_df = convert_transaction(buy_df, to_curr=currency, target_col='Сумма')
-        sell_df = convert_transaction(sell_df, to_curr=currency, target_col='Прибыль/убыток')
+        INCOME_COLS = ['Доход', 'Сбережения']
+        income_df = convert_transaction(df_to_convert=transactions_df[transactions_df.Категория.isin(INCOME_COLS)],
+                                        to_curr=currency,
+                                        target_col='Значение',
+                                        use_current_rate=True)
+        not_income_df = convert_transaction(df_to_convert=transactions_df[~transactions_df.Категория.isin(INCOME_COLS)],
+                                        to_curr=currency,
+                                        target_col='Значение',
+                                        use_current_rate=False)
+        transactions_df = pd.concat([income_df, not_income_df])
+        # buy_df = convert_transaction(buy_df, to_curr=currency, target_col='Сумма')
+        # sell_df = convert_transaction(sell_df, to_curr=currency, target_col='Прибыль/убыток')
 
     all_stats_df = (transactions_df[transactions_df.Категория.isin(config.NOT_COST_COLS)]
                     .pivot_table(values='Значение', index=['Дата'], columns=['Категория'], aggfunc=np.sum)
@@ -111,13 +123,13 @@ def get_balance_by_month(currency: str) -> pd.DataFrame:
     all_stats_df['Расход'] = (transactions_df[~transactions_df.Категория.isin(config.NOT_COST_COLS)]
                               .set_index('Дата').resample('M')['Значение'].sum())
 
-    all_stats_df['Потенциальная прибыль'] = buy_df.set_index('Дата').resample('M')['Потенциальная прибыль'].sum()
-    all_stats_df['Доход от инвестирования'] = sell_df.set_index('Дата').resample('M')['Прибыль/убыток'].sum()
+    # all_stats_df['Потенциальная прибыль'] = buy_df.set_index('Дата').resample('M')['Потенциальная прибыль'].sum()
+    # all_stats_df['Доход от инвестирования'] = sell_df.set_index('Дата').resample('M')['Прибыль/убыток'].sum()
     all_stats_df = all_stats_df.fillna(0)
 
     all_stats_df['Баланс'] = (all_stats_df['Доход'] + all_stats_df['Сбережения']
-                              + all_stats_df['Потенциальная прибыль']
-                              + all_stats_df['Доход от инвестирования']
+                            #   + all_stats_df['Потенциальная прибыль']
+                            #   + all_stats_df['Доход от инвестирования']
                               - all_stats_df['Дебиторская задолженность'] + all_stats_df['Погашение деб. зад.']
                               + all_stats_df['Кредиторская задолженность'] - all_stats_df['Погашение кред. зад.']
                               - all_stats_df['Расход']
@@ -128,14 +140,17 @@ def get_balance_by_month(currency: str) -> pd.DataFrame:
 
 def get_act_receivables():
     transactions_df = get_transactions()
+    
     receivable_df = transactions_df[(transactions_df['Категория'] == 'Дебиторская задолженность') &
                                     (transactions_df['Значение'] != 0)][
         ['Дата', 'Значение', 'Комментарий']].sort_values('Дата')
+    
     paid_receivable_df = (transactions_df[(transactions_df['Категория'] == 'Погашение деб. зад.') &
                                           (transactions_df['Значение'] != 0)]
                           [['Дата', 'Значение', 'Комментарий']]
                           .sort_values('Дата')
                           )
+    
     receivable_df = pd.concat(
         [receivable_df.groupby('Комментарий')['Значение'].sum().rename('Дебиторская задолженность'),
          paid_receivable_df.groupby('Комментарий')['Значение'].sum().rename('Погашение деб. зад.')
@@ -229,10 +244,10 @@ def get_assets_by_currencies(year, month) -> pd.DataFrame:
     assets_df.drop(['Год', 'Месяц', 'Квартал'], axis=1, inplace=True)
 
     # Add actual investments value
-    buy_df, _ = create_invest_tbl()
-    investments = ((buy_df.set_index('Дата')['Актуальная цена'] * buy_df.set_index('Дата')['Количество']).sum())
-    inv_df = pd.DataFrame([{'Счет': 'Инвестиции', 'Валюта': 'RUB', 'Значение': investments}])
-    assets_df = assets_df.append(inv_df)
+    # buy_df, _ = create_invest_tbl()
+    # investments = ((buy_df.set_index('Дата')['Актуальная цена'] * buy_df.set_index('Дата')['Количество']).sum())
+    # inv_df = pd.DataFrame([{'Счет': 'Инвестиции', 'Валюта': 'RUB', 'Значение': investments}])
+    # assets_df = assets_df.append(inv_df)
 
 
     # Pivot data to currency in cols and accounts in rows
@@ -264,16 +279,20 @@ def get_assets_by_currencies(year, month) -> pd.DataFrame:
     # Calculate sum of all money by col
     gr_asset_df_ = gr_asset_df_.set_index('Счет')
     if not gr_asset_df.empty:
+        gr_asset_df_.loc['Всего в валюте,%'] = (gr_asset_df_.loc['Всего в валюте'] / gr_asset_df_[gr_asset_df_.index != 'Всего в валюте'].sum(axis=0, min_count=1)) * 100
         gr_asset_df_.loc['Всего'] = gr_asset_df_[gr_asset_df_.index != 'Всего в валюте'].sum(axis=0, min_count=1)
-    gr_asset_df_ = gr_asset_df_.reset_index().round(2)
+    gr_asset_df_ = gr_asset_df_
 
     # Format table
     for col_name in gr_asset_df_:
+        # print(gr_asset_df_.loc[gr_asset_df_.index != 'Всего в валюте,%'])
+        
         if col_name not in ['Счет']:
-            gr_asset_df_[col_name] = (gr_asset_df_[col_name]
-                                      .astype(float).map('{:,.2f}'.format).str.replace(',', ' ') +
-                                      config.UNIQUE_TICKERS[col_name])
-    return gr_asset_df_
+            gr_asset_df_.loc[gr_asset_df_.index != 'Всего в валюте,%', col_name] = (gr_asset_df_.loc[gr_asset_df_.index != 'Всего в валюте,%', col_name]
+                                                                                          .astype(float).map('{:,.2f}'.format).str.replace(',', ' ') + config.UNIQUE_TICKERS[col_name])
+            gr_asset_df_.loc[gr_asset_df_.index == 'Всего в валюте,%', col_name] = (gr_asset_df_.loc[gr_asset_df_.index == 'Всего в валюте,%', col_name]
+                                                                                          .astype(float).map('{:,.2f}'.format).str.replace(',', ' ') + "%")
+    return gr_asset_df_.reset_index().round(2)
 
 
 def get_month_transactions(currency, year, month):
@@ -284,7 +303,17 @@ def get_month_transactions(currency, year, month):
 
     # Приводим валюты
     if not config.DEBUG:
-        smpl_tr_df = convert_transaction(df_to_convert=smpl_tr_df, to_curr=currency, target_col='Значение')
+        INCOME_COLS = ['Доход', 'Сбережения']
+        income_df = convert_transaction(df_to_convert=smpl_tr_df[smpl_tr_df.Категория.isin(INCOME_COLS)],
+                                        to_curr=currency,
+                                        target_col='Значение',
+                                        use_current_rate=True)
+        not_income_df = convert_transaction(df_to_convert=smpl_tr_df[~smpl_tr_df.Категория.isin(INCOME_COLS)],
+                                        to_curr=currency,
+                                        target_col='Значение',
+                                        use_current_rate=False)
+        smpl_tr_df = pd.concat([income_df, not_income_df])
+    
 
     month_tr_df = (smpl_tr_df
                     .pivot_table(values='Значение', index=['Дата'], columns=['Категория'], aggfunc=np.sum)

@@ -7,7 +7,6 @@ warnings.filterwarnings('ignore')
 
 from src import config, utils
 
-
 def get_transactions():
     transactions_df = pd.DataFrame()
     for folder_name in os.listdir(config.TRANSACTIONS_INFO_PATH):
@@ -33,6 +32,7 @@ def get_transactions():
             month_df['value'] = (month_df['value'].astype(str)
                                  .str.replace(',', '.')
                                  .str.replace('\\xa0', '')
+                                 .str.replace('\xa0', '')
                                  .str.replace(' ₽', '')
                                  .apply(lambda x: x.split('|') if len(x.split('|')) == 3 else [x, 'RUB', np.nan])
                                  .apply(lambda x: {'Значение': float(x[0]),
@@ -71,6 +71,7 @@ def get_assets():
                 month_df[col_name] = (month_df[col_name].astype(str)
                                       .str.replace(',', '.')
                                       .str.replace('\\xa0', '')
+                                      .str.replace('\xa0', '')
                                       .apply(lambda x: x.split('|') if len(x.split('|')) == 2 else [x, 'RUB'])
                                       .apply(lambda x: {'Значение': float(x[0]),
                                                         'Валюта': x[1].upper()})
@@ -100,9 +101,8 @@ def get_investments():
     return data
 
 if __name__ == '__main__':
-    # tmp_df = get_transactions()
-    tmp_df = get_assets()
+    tmp_df = get_transactions()
+    # tmp_df = get_assets()
     # tmp_df = get_investments()
-
 
     print(tmp_df.head(50))

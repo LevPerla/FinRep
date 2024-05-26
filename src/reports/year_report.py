@@ -7,7 +7,6 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
 from src import config, utils
-from src.data.proccess import convert_transaction
 from src.model.create_tables import get_balance_by_month, get_cost_distribution
 
 def create_year_report(year, currency, return_image=False):
