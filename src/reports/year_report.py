@@ -5,6 +5,8 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
+import plotly.io as pio
+import io
 
 from src import config, utils
 from src.model.create_tables import get_balance_by_month, get_cost_distribution
@@ -182,17 +184,23 @@ def create_year_report(year, currency, return_image=False):
         title_text=f"Отчет за {year} год в валюте {currency}"
     )
 
-    year_folder_name = os.path.join(config.REPORTS_PATH, 'Годовые отчеты')
-    if 'Годовые отчеты' not in os.listdir(config.REPORTS_PATH):
-        os.makedirs(year_folder_name)
-
-    cur_folder_dir = os.path.join(year_folder_name, currency)
-    if currency not in os.listdir(year_folder_name):
-        os.makedirs(cur_folder_dir)
-
     if return_image:
-        fig.write_image(config.IMAGE_TO_BOT_PATH, scale=1, width=1200, height=2100)
+        # Create a BytesIO object to hold the bytes
+        img_byte_arr = io.BytesIO()
+        # Save the image to the BytesIO object
+        pio.write_image(fig, img_byte_arr, format='png', scale=2, width=1200, height=2000)
+        # Reset the file pointer to the beginning of the BytesIO object
+        img_byte_arr.seek(0)
+        return img_byte_arr
     else:
+        year_folder_name = os.path.join(config.REPORTS_PATH, 'Годовые отчеты')
+        if 'Годовые отчеты' not in os.listdir(config.REPORTS_PATH):
+            os.makedirs(year_folder_name)
+
+        cur_folder_dir = os.path.join(year_folder_name, currency)
+        if currency not in os.listdir(year_folder_name):
+            os.makedirs(cur_folder_dir)
+            
         fig.write_html(os.path.join(cur_folder_dir, f"Отчет за {year} год.html"))
         fig.show()
 

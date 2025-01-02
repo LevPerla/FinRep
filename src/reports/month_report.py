@@ -3,6 +3,8 @@ import os
 import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
+import plotly.io as pio
+import io
 
 from src import config, utils
 from src.model.create_tables import get_balance_by_month, get_act_receivables, get_month_transactions, \
@@ -28,22 +30,21 @@ def create_month_report(year: str,
     capital_df = get_balance_by_month(currency).loc[f'{year}-{month}']
 
     fig = make_subplots(
-        rows=7, cols=4,
+        rows=6, cols=4,
         shared_xaxes=True,
         vertical_spacing=0.03,
         specs=[[{"type": "table", "colspan": 4}, None, None, None],
-               [{"type": "scatter", "colspan": 4}, None, None, None],
                [{"type": "table", "colspan": 4}, None, None, None],
                [{"type": "table", "colspan": 2}, None, {"type": "table", "colspan": 2}, None],
                [{"type": "table", "colspan": 4}, None, None, None],
                [{"type": "Bar", "colspan": 4}, None, None, None],
                [{"type": "table", "colspan": 4}, None, None, None],
                ],
-        subplot_titles=('Транзакции', None, 'Суммарные показатели', 'Дебиторская задолженность',
+        subplot_titles=('Транзакции', 'Суммарные показатели', 'Дебиторская задолженность',
                         'Кредиторская задолженность', 'Распределение расходов',
                         None, 'Распределение по счетам'
                         ),
-        row_heights=[0.75, 0.3, 0.1, 0.1, 0.15, 0.25, 0.8],
+        row_heights=[0.75, 0.1, 0.1, 0.15, 0.25, 0.8],
         column_widths=[0.25, 0.25, 0.25, 0.25]
     )
 
@@ -61,31 +62,6 @@ def create_month_report(year: str,
         row=1, col=1
     )
 
-    # Add plots of cost and income changing by days
-    income_df = month_tr_df[['Дата', 'Доход']]
-    fig.add_trace(go.Scatter(x=income_df['Дата'],
-                             y=income_df['Доход'],
-                             mode='lines+markers',
-                             name='Доход',
-                             line=dict(color='royalblue', width=2),
-                             ),
-                  row=2, col=1
-                  )
-    cost_df = month_tr_df[month_tr_df.columns[~month_tr_df.columns.isin(config.NOT_COST_COLS)]]
-    for col_name in cost_df.columns:
-        if col_name == 'Дата':
-            continue
-        else:
-            fig.add_trace(go.Scatter(x=cost_df['Дата'],
-                                     y=cost_df[col_name],
-                                     mode='lines+markers',
-                                     name=col_name,
-                                     # line=dict(color='firebrick', width=2),
-                                     ),
-                          row=2, col=1
-                          )
-
-
     # Add table with month sum stats
     capital_df_ = utils.process_num_cols(capital_df, not_num_cols=[], currency=currency)
     fig.add_trace(
@@ -97,7 +73,7 @@ def create_month_report(year: str,
                        fill_color='lavender',
                        align='left'),
         ),
-        row=3, col=1
+        row=2, col=1
     )
 
     # Add actual receivables table
@@ -112,7 +88,7 @@ def create_month_report(year: str,
                        fill_color='lavender',
                        align='left'),
         ),
-        row=4, col=1
+        row=3, col=1
     )
 
     # Add actual liabilities table
@@ -127,7 +103,7 @@ def create_month_report(year: str,
                        fill_color='lavender',
                        align='left'),
         ),
-        row=4, col=3
+        row=3, col=3
     )
 
     # Add costs distribution table
@@ -142,13 +118,13 @@ def create_month_report(year: str,
                        font={'color': ['black', 'black'], 'size': [10, 12]},
                        align='left'),
         ),
-        row=5, col=1
+        row=4, col=1
     )
 
     # Add cost distribution bar plot
     cost_plot_df = _create_cost_plot_table(cost_stats_df)
     fig.add_trace(go.Bar(x=cost_plot_df.Показатель, y=cost_plot_df.Суммарно, showlegend=False),
-                  row=6, col=1
+                  row=5, col=1
                   )
 
     # Add table with distribution of assets in different currencies
@@ -163,11 +139,11 @@ def create_month_report(year: str,
                        fill_color='lavender',
                        align='left'),
         ),
-        row=7, col=1
+        row=6, col=1
     )
 
     fig.update_layout(
-        height=2500,
+        height=3500,
         showlegend=True,
         # legend=dict(
         #     # orientation="h",
@@ -179,22 +155,28 @@ def create_month_report(year: str,
         title_text=f"Отчет за {month} месяц {year} года, в валюте {currency}",
     )
 
-    # Create folder and save the report
-    month_folder_name = os.path.join(config.REPORTS_PATH, 'Месячные отчеты')
-    if 'Месячные отчеты' not in os.listdir(config.REPORTS_PATH):
-        os.makedirs(month_folder_name)
-
-    cur_folder_dir = os.path.join(month_folder_name, currency)
-    if currency not in os.listdir(month_folder_name):
-        os.makedirs(cur_folder_dir)
-
-    year_folder_dir = os.path.join(cur_folder_dir, year)
-    if year not in os.listdir(cur_folder_dir):
-        os.makedirs(year_folder_dir)
-
     if return_image:
-        fig.write_image(config.IMAGE_TO_BOT_PATH, scale=1, width=1500, height=2700)
+        # Create a BytesIO object to hold the bytes
+        img_byte_arr = io.BytesIO()
+        # Save the image to the BytesIO object
+        pio.write_image(fig, img_byte_arr, format='png', scale=2.5, width=1500, height=2300)
+        # Reset the file pointer to the beginning of the BytesIO object
+        img_byte_arr.seek(0)
+        return img_byte_arr
     else:
+        # Create folder and save the report
+        month_folder_name = os.path.join(config.REPORTS_PATH, 'Месячные отчеты')
+        if 'Месячные отчеты' not in os.listdir(config.REPORTS_PATH):
+            os.makedirs(month_folder_name)
+
+        cur_folder_dir = os.path.join(month_folder_name, currency)
+        if currency not in os.listdir(month_folder_name):
+            os.makedirs(cur_folder_dir)
+
+        year_folder_dir = os.path.join(cur_folder_dir, year)
+        if year not in os.listdir(cur_folder_dir):
+            os.makedirs(year_folder_dir)
+            
         fig.write_html(os.path.join(year_folder_dir, f"Отчет за {month} {year} года.html"))
         fig.show()
 
@@ -228,6 +210,6 @@ def _create_cost_plot_table(cost_stats_df):
 
 
 if __name__ == '__main__':
-    # create_month_report(year='2022', currency='RUB', month='11', return_image=False)
-    df = get_month_transactions(currency='RUB', year='2023', month='06')
-    print(df)
+    create_month_report(year='2022', currency='RUB', month='11', return_image=False)
+    # df = get_month_transactions(currency='RUB', year='2023', month='06')
+    # print(df)

@@ -3,6 +3,8 @@ import os
 import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
+import plotly.io as pio
+import io
 
 from src import config, utils
 from src.model.create_tables import get_balance_by_month
@@ -19,15 +21,16 @@ def create_main_report(currency: str,
     assert currency in config.UNIQUE_TICKERS.keys(), f'currency должно быть из {config.UNIQUE_TICKERS.keys()}'
 
     fig = make_subplots(
-        rows=3, cols=2,
+        rows=4, cols=2,
         shared_xaxes=True,
         vertical_spacing=0.1,
         specs=[[{"type": "table", "colspan": 2}, None],
                [{"type": "scatter", "colspan": 2}, None],
                [{"type": "scatter", "colspan": 2}, None],
+               [{"type": "bar", "colspan": 2}, None],
                ],
-        subplot_titles=('Статистика по годам', 'Динамика доходов и расходов', 'Динамика капитала'),
-        row_heights=[0.3, 0.4, 0.3],
+        subplot_titles=('Статистика по годам', 'Динамика доходов и расходов', 'Дельты', 'Динамика капитала'),
+        row_heights=[0.3, 0.4, 0.3, 0.3],
         # column_widths=[0.23, 0.52, 0.25]
     )
     balance_df = get_balance_by_month(currency)
@@ -65,6 +68,20 @@ def create_main_report(currency: str,
                              ),
                   row=2, col=1
                   )
+    
+        # Add plot of deltas changing
+    delta_df = balance_df['Дельта'].reset_index()
+    fig.add_trace(go.Bar(x=delta_df['Дата'],
+                             y=delta_df['Дельта'],
+                            #  mode='lines+markers',
+                             name='Дельта',
+                             texttemplate='%{text:.2s}',
+                             textposition='outside',
+                             text=delta_df['Дельта']
+                            #  line=dict(color='gray', width=2),
+                             ),
+                  row=3, col=1
+                  )
 
     # Add plot of capital changing
     capital_df = balance_df['Капитал'].reset_index()
@@ -74,11 +91,12 @@ def create_main_report(currency: str,
                              name='Капитал',
                              line=dict(color='green', width=2),
                              ),
-                  row=3, col=1
+                  row=4, col=1
                   )
 
+
     fig.update_layout(
-        height=1300,
+        height=1700,
         showlegend=True,
         legend=dict(
             orientation="v",
@@ -94,7 +112,13 @@ def create_main_report(currency: str,
         return fig
 
     if return_image:
-        fig.write_image(config.IMAGE_TO_BOT_PATH, scale=1, width=1200, height=1000)
+        # Create a BytesIO object to hold the bytes
+        img_byte_arr = io.BytesIO()
+        # Save the image to the BytesIO object
+        pio.write_image(fig, img_byte_arr, format='png', scale=1, width=1200, height=1200)
+        # Reset the file pointer to the beginning of the BytesIO object
+        img_byte_arr.seek(0)
+        return img_byte_arr
     else:
         fig.write_html(os.path.join(config.REPORTS_PATH, f"Основной отчет в валюте {currency}.html"))
         fig.show()

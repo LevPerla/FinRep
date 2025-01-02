@@ -98,7 +98,7 @@ def get_balance_by_month(currency: str) -> pd.DataFrame:
     :return:
     """
     transactions_df = get_transactions()
-    # buy_df, sell_df = create_invest_tbl()
+    # buy_df, sell_df = create_invest_tbl()и
 
     # Convert currencies
     if not config.DEBUG:
@@ -135,6 +135,7 @@ def get_balance_by_month(currency: str) -> pd.DataFrame:
                               - all_stats_df['Расход']
                               )
     all_stats_df['Капитал'] = all_stats_df['Баланс'].cumsum()
+    all_stats_df['Дельта'] = all_stats_df['Доход'] - all_stats_df['Расход']
     return all_stats_df
 
 

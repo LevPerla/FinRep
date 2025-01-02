@@ -19,7 +19,7 @@ month = None
 data_type = None
 
 
-сurrent_assets_list = []
+current_assets_list = []
 assets_month = None
 asset_name = None
 unique_assets_list = get_assets()[['Счет', 'Валюта']].drop_duplicates().agg('_'.join, axis=1).tolist()
@@ -110,9 +110,9 @@ def add_asset(message):
     assets_dict['Значение'] = float(message.text)
     assets_dict['Год'] = assets_month[:4]
     assets_dict['Месяц'] = assets_month[5:]
-    сurrent_assets_list.append(assets_dict)
-    print(сurrent_assets_list)
-    bot.send_message(message.from_user.id, text=pd.DataFrame(сurrent_assets_list).to_string())
+    current_assets_list.append(assets_dict)
+    print(current_assets_list)
+    bot.send_message(message.from_user.id, text=pd.DataFrame(current_assets_list).to_string())
 
 @bot.callback_query_handler(func=lambda call: True)
 def callback_worker(call):
