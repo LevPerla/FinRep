@@ -273,8 +273,41 @@ def get_assets_by_currencies(year, month) -> pd.DataFrame:
         # Go by another cols
         for curr_to in [curr_2 for curr_2 in sml_df.columns if curr_2 not in ['Счет', curr_from]]:
             ticker_ = curr_from + curr_to + '=X' if config.STOCK_API == 'yf' else curr_from + '/' + curr_to
-            rate = get_actual_rates(tickers=[ticker_])[f'Актуальная_цена_{config.STOCK_API}'].squeeze()
-            sml_df[curr_to] = sml_df[curr_from] * rate
+            try:
+                rates_df = get_actual_rates(tickers=[ticker_])
+                if not rates_df.empty and f'Актуальная_цена_{config.STOCK_API}' in rates_df.columns:
+                    rate = rates_df[f'Актуальная_цена_{config.STOCK_API}'].squeeze()
+                    if not pd.isna(rate):
+                        sml_df[curr_to] = sml_df[curr_from] * rate
+                    else:
+                        # Try fallback rate using cross-rate calculation
+                        from src.data.proccess import get_cross_rate
+                        fallback_rate = get_cross_rate(curr_from, curr_to)
+                        if fallback_rate and fallback_rate != 1.0:
+                            print(f"Warning: Using fallback cross-rate for {ticker_}: {fallback_rate}")
+                            sml_df[curr_to] = sml_df[curr_from] * fallback_rate
+                        else:
+                            print(f"Warning: No valid rate for {ticker_}, skipping conversion")
+                else:
+                    # Try fallback rate using cross-rate calculation
+                    from src.data.proccess import get_cross_rate
+                    fallback_rate = get_cross_rate(curr_from, curr_to)
+                    if fallback_rate and fallback_rate != 1.0:
+                        print(f"Warning: Using fallback cross-rate for {ticker_}: {fallback_rate}")
+                        sml_df[curr_to] = sml_df[curr_from] * fallback_rate
+                    else:
+                        print(f"Warning: No rates available for {ticker_}, skipping conversion")
+            except Exception as e:
+                print(f"Error getting rate for {ticker_}: {e}")
+                # Try fallback rate using cross-rate calculation
+                from src.data.proccess import get_cross_rate
+                fallback_rate = get_cross_rate(curr_from, curr_to)
+                if fallback_rate and fallback_rate != 1.0:
+                    print(f"Warning: Using fallback cross-rate for {ticker_}: {fallback_rate}")
+                    sml_df[curr_to] = sml_df[curr_from] * fallback_rate
+                else:
+                    print(f"Warning: No fallback rate available for {ticker_}, skipping conversion")
+                continue
         gr_asset_df_.update(sml_df)
 
     # Calculate sum of all money by col

@@ -9,6 +9,7 @@ import io
 from src import config, utils
 from src.model.create_tables import get_balance_by_month, get_act_receivables, get_month_transactions, \
     get_act_liabilities, get_cost_distribution, get_assets_by_currencies
+from src.data.exchange_rates_info import get_exchange_rates_info, get_currency_conversion_summary
 
 
 def create_month_report(year: str,
@@ -30,21 +31,22 @@ def create_month_report(year: str,
     capital_df = get_balance_by_month(currency).loc[f'{year}-{month}']
 
     fig = make_subplots(
-        rows=6, cols=4,
+        rows=7, cols=4,
         shared_xaxes=True,
-        vertical_spacing=0.03,
+        vertical_spacing=0.04,
         specs=[[{"type": "table", "colspan": 4}, None, None, None],
+               [{"type": "table", "colspan": 4}, None, None, None],
                [{"type": "table", "colspan": 4}, None, None, None],
                [{"type": "table", "colspan": 2}, None, {"type": "table", "colspan": 2}, None],
                [{"type": "table", "colspan": 4}, None, None, None],
                [{"type": "Bar", "colspan": 4}, None, None, None],
                [{"type": "table", "colspan": 4}, None, None, None],
                ],
-        subplot_titles=('Транзакции', 'Суммарные показатели', 'Дебиторская задолженность',
+        subplot_titles=('Транзакции', 'Курсы валют и конвертация', 'Суммарные показатели', 'Дебиторская задолженность',
                         'Кредиторская задолженность', 'Распределение расходов',
-                        None, 'Распределение по счетам'
+                        'Распределение по счетам'
                         ),
-        row_heights=[0.75, 0.1, 0.1, 0.15, 0.25, 0.8],
+        row_heights=[0.5, 0.12, 0.12, 0.12, 0.15, 0.25, 0.8],
         column_widths=[0.25, 0.25, 0.25, 0.25]
     )
 
@@ -61,6 +63,49 @@ def create_month_report(year: str,
         ),
         row=1, col=1
     )
+    
+    # Add exchange rates information
+    try:
+        exchange_rates_df = get_exchange_rates_info(currency)
+        if not exchange_rates_df.empty:
+            fig.add_trace(
+                go.Table(
+                    header=dict(values=list(exchange_rates_df.columns),
+                                fill_color='lightblue',
+                                align='left'),
+                    cells=dict(values=[exchange_rates_df[colname] for colname in exchange_rates_df.columns],
+                               fill_color='lightcyan',
+                               align='left'),
+                ),
+                row=2, col=1
+            )
+        else:
+            # Add placeholder if no exchange rates info
+            fig.add_trace(
+                go.Table(
+                    header=dict(values=['Информация о курсах валют'],
+                                fill_color='lightblue',
+                                align='left'),
+                    cells=dict(values=[['Нет данных о курсах валют']],
+                               fill_color='lightcyan',
+                               align='left'),
+                ),
+                row=2, col=1
+            )
+    except Exception as e:
+        print(f"Error adding exchange rates info: {e}")
+        # Add error placeholder
+        fig.add_trace(
+            go.Table(
+                header=dict(values=['Информация о курсах валют'],
+                            fill_color='lightblue',
+                            align='left'),
+                cells=dict(values=[['Ошибка загрузки курсов валют']],
+                           fill_color='lightcyan',
+                           align='left'),
+            ),
+            row=2, col=1
+        )
 
     # Add table with month sum stats
     capital_df_ = utils.process_num_cols(capital_df, not_num_cols=[], currency=currency)
@@ -73,7 +118,7 @@ def create_month_report(year: str,
                        fill_color='lavender',
                        align='left'),
         ),
-        row=2, col=1
+        row=3, col=1
     )
 
     # Add actual receivables table
@@ -88,7 +133,7 @@ def create_month_report(year: str,
                        fill_color='lavender',
                        align='left'),
         ),
-        row=3, col=1
+        row=4, col=1
     )
 
     # Add actual liabilities table
@@ -103,7 +148,7 @@ def create_month_report(year: str,
                        fill_color='lavender',
                        align='left'),
         ),
-        row=3, col=3
+        row=4, col=3
     )
 
     # Add costs distribution table
@@ -118,13 +163,13 @@ def create_month_report(year: str,
                        font={'color': ['black', 'black'], 'size': [10, 12]},
                        align='left'),
         ),
-        row=4, col=1
+        row=5, col=1
     )
 
     # Add cost distribution bar plot
     cost_plot_df = _create_cost_plot_table(cost_stats_df)
     fig.add_trace(go.Bar(x=cost_plot_df.Показатель, y=cost_plot_df.Суммарно, showlegend=False),
-                  row=5, col=1
+                  row=6, col=1
                   )
 
     # Add table with distribution of assets in different currencies
@@ -139,7 +184,7 @@ def create_month_report(year: str,
                        fill_color='lavender',
                        align='left'),
         ),
-        row=6, col=1
+        row=7, col=1
     )
 
     fig.update_layout(
@@ -152,6 +197,8 @@ def create_month_report(year: str,
         #     xanchor="right",
         #     x=1
         # ),
+        margin=dict(l=50, r=50, t=80, b=50),
+        font=dict(size=12),
         title_text=f"Отчет за {month} месяц {year} года, в валюте {currency}",
     )
 

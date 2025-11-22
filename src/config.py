@@ -15,6 +15,15 @@ IMAGE_TO_BOT_PATH = os.path.join(REPORTS_PATH, 'image_to_bot', "report_to_bot.pn
 
 STOCK_API = 'yf'  # yf, td
 
+# Fallback exchange rates when API fails
+# Base rates to USD (most common base currency)
+FALLBACK_RATES = {
+    'KZT': {'USD': 0.002},  # 1 KZT = 0.002 USD
+    'RUB': {'USD': 0.01},   # 1 RUB = 0.01 USD (100 RUB = 1 USD)
+    'EUR': {'USD': 1.1},    # 1 EUR = 1.1 USD
+    'GBP': {'USD': 1.25}    # 1 GBP = 1.25 USD
+}
+
 NOT_COST_COLS = ['Доход', 'Сбережения', 'Инвестиции',
                  'Дебиторская задолженность', 'Погашение деб. зад.',
                  'Кредиторская задолженность', 'Погашение кред. зад.']

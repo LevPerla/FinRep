@@ -10,6 +10,7 @@ import io
 
 from src import config, utils
 from src.model.create_tables import get_balance_by_month, get_cost_distribution
+from src.data.exchange_rates_info import get_exchange_rates_info, get_currency_conversion_summary
 
 def create_year_report(year, currency, return_image=False):
     assert currency in config.UNIQUE_TICKERS.keys(), f'currency должно быть из {config.UNIQUE_TICKERS.keys()}'
@@ -18,24 +19,26 @@ def create_year_report(year, currency, return_image=False):
     balance_df = get_balance_by_month(currency)
 
     fig = make_subplots(
-        rows=6, cols=3,
+        rows=7, cols=3,
         shared_xaxes=True,
-        vertical_spacing=0.04,
+        vertical_spacing=0.05,
         specs=[[{"type": "table", "colspan": 3}, None, None],
+               [{"type": "table", "colspan": 3}, None, None],
                [{"type": "table", "colspan": 3}, None, None],
                [{"type": "Bar", "colspan": 3}, None, None],
                [{"type": "table"}, {"type": "scatter"}, {"type": "table"}],
-               [None, {"type": "table"}, None],
+               [{"type": "table"}, None, None],
                [{"type": "table"}, {"type": "scatter", "colspan": 2}, None]
                ],
         subplot_titles=('Итоги по кварталам',
+                        'Курсы валют и конвертация',
                         'Распределение расходов',
                         None,
                         None, 'Динамика доходов/расходов', None,
                         'Описательные статистики',
                         None, 'Динамика капитала'),
-        row_heights=[0.10, 0.10, 0.25, 0.25, 0.12, 0.2],
-        column_widths=[0.23, 0.52, 0.25],
+        row_heights=[0.14, 0.14, 0.14, 0.18, 0.18, 0.14, 0.18],
+        column_widths=[0.25, 0.50, 0.25],
 
     )
 
@@ -54,6 +57,49 @@ def create_year_report(year, currency, return_image=False):
         ),
         row=1, col=1
     )
+    
+    # Add exchange rates information
+    try:
+        exchange_rates_df = get_exchange_rates_info(currency)
+        if not exchange_rates_df.empty:
+            fig.add_trace(
+                go.Table(
+                    header=dict(values=list(exchange_rates_df.columns),
+                                fill_color='lightblue',
+                                align='left'),
+                    cells=dict(values=[exchange_rates_df[colname] for colname in exchange_rates_df.columns],
+                               fill_color='lightcyan',
+                               align='left'),
+                ),
+                row=2, col=1
+            )
+        else:
+            # Add placeholder if no exchange rates info
+            fig.add_trace(
+                go.Table(
+                    header=dict(values=['Информация о курсах валют'],
+                                fill_color='lightblue',
+                                align='left'),
+                    cells=dict(values=[['Нет данных о курсах валют']],
+                               fill_color='lightcyan',
+                               align='left'),
+                ),
+                row=2, col=1
+            )
+    except Exception as e:
+        print(f"Error adding exchange rates info: {e}")
+        # Add error placeholder
+        fig.add_trace(
+            go.Table(
+                header=dict(values=['Информация о курсах валют'],
+                            fill_color='lightblue',
+                            align='left'),
+                cells=dict(values=[['Ошибка загрузки курсов валют']],
+                           fill_color='lightcyan',
+                           align='left'),
+            ),
+            row=2, col=1
+        )
 
     # Add costs stats by categories
     cost_stats_df = get_cost_distribution(currency=currency, year=year)
@@ -67,12 +113,12 @@ def create_year_report(year, currency, return_image=False):
                        font={'color': ['black', 'black'], 'size': [10, 12]},
                        align='left'),
         ),
-        row=2, col=1
+        row=3, col=1
     )
 
     # Add cost distribution bar plot
     cost_plot_df = _create_cost_plot_table(cost_stats_df)
-    fig.add_trace(go.Bar(x=cost_plot_df.Показатель, y=cost_plot_df.Суммарно), row=3, col=1)
+    fig.add_trace(go.Bar(x=cost_plot_df.Показатель, y=cost_plot_df.Суммарно), row=4, col=1)
 
     # Add income by month stats
     mean_month_income_df = _create_income_table(balance_df, year, currency)
@@ -93,7 +139,7 @@ def create_year_report(year, currency, return_image=False):
                        font={'color': ['black', 'black'], 'size': 11}
                        ),
         ),
-        row=4, col=1
+        row=5, col=1
     )
 
     # Add costs by month stats
@@ -115,19 +161,19 @@ def create_year_report(year, currency, return_image=False):
                        font={'color': ['black', 'black'], 'size': 11}
                        ),
         ),
-        row=4, col=3
+        row=5, col=3
     )
 
     # Add income plot
     fig.add_trace(go.Scatter(x=mean_month_income_df['Дата'],
                              y=mean_month_income_df['Доход'].str[:-1].str.replace(' ', '').astype(float)),
-                  row=4, col=2
+                  row=5, col=2
                   )
 
     # Add costs plot
     fig.add_trace(go.Scatter(x=mean_month_cost_df['Дата'],
                              y=mean_month_cost_df['Расход'].str[:-1].str.replace(' ', '').astype(float)),
-                  row=4, col=2
+                  row=5, col=2
                   )
 
     # Add costs and income stats table
@@ -144,7 +190,7 @@ def create_year_report(year, currency, return_image=False):
                        font={'color': ['black', 'black'], 'size': 11}
                        ),
         ),
-        row=5, col=2
+        row=6, col=1
     )
 
     # Add capital by month table
@@ -165,7 +211,7 @@ def create_year_report(year, currency, return_image=False):
                        font={'color': ['black', 'black'], 'size': 11}
                        ),
         ),
-        row=6, col=1
+        row=7, col=1
     )
 
     # Add capital by month plot
@@ -175,20 +221,22 @@ def create_year_report(year, currency, return_image=False):
                              name='Капитал',
                              line=dict(color='green', width=2),
                              ),
-                  row=6, col=2
+                  row=7, col=2
                   )
 
     fig.update_layout(
-        height=1900,
+        height=2800,
         showlegend=False,
-        title_text=f"Отчет за {year} год в валюте {currency}"
+        title_text=f"Отчет за {year} год в валюте {currency}",
+        margin=dict(l=50, r=50, t=80, b=50),
+        font=dict(size=12)
     )
 
     if return_image:
         # Create a BytesIO object to hold the bytes
         img_byte_arr = io.BytesIO()
         # Save the image to the BytesIO object
-        pio.write_image(fig, img_byte_arr, format='png', scale=2, width=1200, height=2000)
+        pio.write_image(fig, img_byte_arr, format='png', scale=2, width=1400, height=3000)
         # Reset the file pointer to the beginning of the BytesIO object
         img_byte_arr.seek(0)
         return img_byte_arr

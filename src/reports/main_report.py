@@ -8,6 +8,7 @@ import io
 
 from src import config, utils
 from src.model.create_tables import get_balance_by_month
+from src.data.exchange_rates_info import get_exchange_rates_info, get_currency_conversion_summary
 
 def create_main_report(currency: str,
                        return_image: bool = False,
@@ -21,16 +22,17 @@ def create_main_report(currency: str,
     assert currency in config.UNIQUE_TICKERS.keys(), f'currency должно быть из {config.UNIQUE_TICKERS.keys()}'
 
     fig = make_subplots(
-        rows=4, cols=2,
+        rows=5, cols=2,
         shared_xaxes=True,
-        vertical_spacing=0.1,
+        vertical_spacing=0.08,
         specs=[[{"type": "table", "colspan": 2}, None],
+               [{"type": "table", "colspan": 2}, None],
                [{"type": "scatter", "colspan": 2}, None],
                [{"type": "scatter", "colspan": 2}, None],
                [{"type": "bar", "colspan": 2}, None],
                ],
-        subplot_titles=('Статистика по годам', 'Динамика доходов и расходов', 'Дельты', 'Динамика капитала'),
-        row_heights=[0.3, 0.4, 0.3, 0.3],
+        subplot_titles=('Статистика по годам', 'Курсы валют и конвертация', 'Динамика доходов и расходов', 'Дельты', 'Динамика капитала'),
+        row_heights=[0.25, 0.25, 0.3, 0.3, 0.3],
         # column_widths=[0.23, 0.52, 0.25]
     )
     balance_df = get_balance_by_month(currency)
@@ -48,6 +50,49 @@ def create_main_report(currency: str,
         ),
         row=1, col=1
     )
+    
+    # Add exchange rates information
+    try:
+        exchange_rates_df = get_exchange_rates_info(currency)
+        if not exchange_rates_df.empty:
+            fig.add_trace(
+                go.Table(
+                    header=dict(values=list(exchange_rates_df.columns),
+                                fill_color='lightblue',
+                                align='left'),
+                    cells=dict(values=[exchange_rates_df[colname] for colname in exchange_rates_df.columns],
+                               fill_color='lightcyan',
+                               align='left'),
+                ),
+                row=2, col=1
+            )
+        else:
+            # Add placeholder if no exchange rates info
+            fig.add_trace(
+                go.Table(
+                    header=dict(values=['Информация о курсах валют'],
+                                fill_color='lightblue',
+                                align='left'),
+                    cells=dict(values=[['Нет данных о курсах валют']],
+                               fill_color='lightcyan',
+                               align='left'),
+                ),
+                row=2, col=1
+            )
+    except Exception as e:
+        print(f"Error adding exchange rates info: {e}")
+        # Add error placeholder
+        fig.add_trace(
+            go.Table(
+                header=dict(values=['Информация о курсах валют'],
+                            fill_color='lightblue',
+                            align='left'),
+                cells=dict(values=[['Ошибка загрузки курсов валют']],
+                           fill_color='lightcyan',
+                           align='left'),
+            ),
+            row=2, col=1
+        )
 
     # Add plots of cost and income changing by years
     income_df = balance_df['Доход'].reset_index()
@@ -57,7 +102,7 @@ def create_main_report(currency: str,
                              name='Доход',
                              line=dict(color='royalblue', width=2),
                              ),
-                  row=2, col=1
+                  row=3, col=1
                   )
     cost_df = balance_df['Расход'].reset_index()
     fig.add_trace(go.Scatter(x=cost_df['Дата'],
@@ -66,7 +111,7 @@ def create_main_report(currency: str,
                              name='Расход',
                              line=dict(color='firebrick', width=2),
                              ),
-                  row=2, col=1
+                  row=3, col=1
                   )
     
         # Add plot of deltas changing
@@ -80,7 +125,7 @@ def create_main_report(currency: str,
                              text=delta_df['Дельта']
                             #  line=dict(color='gray', width=2),
                              ),
-                  row=3, col=1
+                  row=4, col=1
                   )
 
     # Add plot of capital changing
@@ -91,7 +136,7 @@ def create_main_report(currency: str,
                              name='Капитал',
                              line=dict(color='green', width=2),
                              ),
-                  row=4, col=1
+                  row=5, col=1
                   )
 
 
