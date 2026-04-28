@@ -39,7 +39,7 @@ def get_exchange_rates_info(target_currency='RUB'):
                     rate_source = 'Недоступно'
                     is_fallback = True
                 elif fallback_rate and abs(rate - fallback_rate) < (fallback_rate * 0.05):
-                    rate_source = 'Fallback (Hardcoded)'
+                    rate_source = 'FX cache / fallback'
                     is_fallback = True
                 else:
                     rate_source = f'Rate provider ({config.STOCK_API})'

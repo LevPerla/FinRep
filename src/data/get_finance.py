@@ -1,27 +1,24 @@
-import os.path
-import time
 import logging
 from datetime import datetime, timedelta
 import xml.etree.ElementTree as ET
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import requests
 import yfinance as yf
-import yfinance.shared as shared
 from bs4 import BeautifulSoup
-from twelvedata import TDClient
-from alpha_vantage.timeseries import TimeSeries
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
-from src import config, utils
+from src import config
 
-# Set up logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-_CBR_RATES_CACHE = {}
+FX_CACHE_COLUMNS = ['date', 'currency', 'usd_rate', 'source', 'fetched_at']
+_FX_NETWORK_ENABLED = True
+_FX_CACHE_DF = None
 _CBR_SERIES_CACHE = {}
 _CBR_VALUTE_IDS = {
     'USD': 'R01235',
@@ -51,12 +48,8 @@ def _build_retry_session():
     return session
 
 
-_CBR_SESSION = _build_retry_session()
-_FX_NETWORK_ENABLED = True
-logger.info(
-    "FX network mode: %s",
-    "online" if _FX_NETWORK_ENABLED else "offline",
-)
+_HTTP_SESSION = _build_retry_session()
+logger.info("FX network mode: %s", "online" if _FX_NETWORK_ENABLED else "offline")
 
 
 def set_fx_network_enabled(enabled: bool):
@@ -70,661 +63,601 @@ def set_fx_network_enabled(enabled: bool):
     return prev_value
 
 
-def _is_fx_ticker(ticker: str) -> bool:
-    return isinstance(ticker, str) and ticker.endswith('=X') and len(ticker) >= 7
-
-
-def _to_date(value):
-    return pd.to_datetime(value).date()
-
-
-def get_fallback_rate(from_curr, to_curr):
+def get_usd_rates(currencies, min_date, max_date) -> pd.DataFrame:
     """
-    Calculate cross-rate from config.FALLBACK_RATES (which stores currency->USD).
+    Return daily rates where each value means: 1 currency = N USD.
+    The persistent cache is the primary source; providers fill only missing coverage.
+    """
+    currencies = sorted({str(currency).upper() for currency in np.array(currencies).flat})
+    start = _to_timestamp(min_date)
+    end = _to_timestamp(max_date)
+    if start > end:
+        start, end = end, start
+
+    _ensure_cache_file()
+    for currency in currencies:
+        _ensure_currency_cached(currency, start, end)
+
+    out = pd.DataFrame(index=pd.date_range(start, end, freq='D'))
+    for currency in currencies:
+        out[currency] = _series_from_cache(currency, start, end)
+    out.index.name = 'Дата'
+    return out.astype(float)
+
+
+def get_fx_rates(from_curr, to_curr, min_date, max_date) -> pd.DataFrame:
+    """
+    Return daily cross-rate for a pair. Example: KZT/RUB = KZT_USD / RUB_USD.
     """
     from_curr = str(from_curr).upper()
     to_curr = str(to_curr).upper()
+    ticker = _pair_ticker(from_curr, to_curr)
+    start = _to_timestamp(min_date)
+    end = _to_timestamp(max_date)
+
     if from_curr == to_curr:
-        return 1.0
-    if from_curr == 'USD':
-        to_usd = config.FALLBACK_RATES.get(to_curr, {}).get('USD')
-        return (1.0 / to_usd) if to_usd else None
-    if to_curr == 'USD':
-        return config.FALLBACK_RATES.get(from_curr, {}).get('USD')
+        rates = pd.DataFrame(index=pd.date_range(start, end, freq='D'))
+        rates[ticker] = 1.0
+        rates.index.name = 'Дата'
+        return rates
 
-    from_usd = config.FALLBACK_RATES.get(from_curr, {}).get('USD')
-    to_usd = config.FALLBACK_RATES.get(to_curr, {}).get('USD')
-    if from_usd is None or to_usd in (None, 0):
-        return None
-    return from_usd / to_usd
-
-
-def _fallback_rate_from_config(from_curr, to_curr):
-    return get_fallback_rate(from_curr, to_curr)
+    usd_rates = get_usd_rates([from_curr, to_curr], start, end)
+    with np.errstate(divide='ignore', invalid='ignore'):
+        rates = pd.DataFrame({ticker: usd_rates[from_curr] / usd_rates[to_curr]}, index=usd_rates.index)
+    rates.index.name = 'Дата'
+    return rates.replace([np.inf, -np.inf], np.nan).ffill().bfill()
 
 
 def get_actual_fx_rate(from_curr, to_curr):
     """
-    Get latest FX rate for a currency pair, falling back to config cross-rates.
+    Return the latest known FX rate for a pair.
+    """
+    today = pd.Timestamp(datetime.now().date())
+    rates = get_fx_rates(from_curr, to_curr, today, today)
+    if rates.empty:
+        return None
+    values = pd.to_numeric(rates.iloc[:, 0], errors='coerce').dropna()
+    return float(values.iloc[-1]) if not values.empty else None
+
+
+def update_fx_cache_interactive(currencies, min_date, max_date, tolerance_pct=1.0, providers=None):
+    """
+    Fetch USD rates from configured providers, compare them, and ask what to cache.
+
+    Stored values are always direct provider values: 1 currency = N USD.
+    """
+    currencies = sorted({str(currency).upper() for currency in np.array(currencies).flat})
+    currencies = [currency for currency in currencies if currency != config.FX_BASE_CURRENCY]
+    start = _to_timestamp(min_date)
+    end = _to_timestamp(max_date)
+    if start > end:
+        start, end = end, start
+
+    provider_names = list(providers or config.FX_PROVIDER_ORDER)
+    unknown_providers = [name for name in provider_names if name not in _PROVIDERS]
+    if unknown_providers:
+        raise ValueError(f"Unknown FX providers: {unknown_providers}")
+
+    _ensure_cache_file()
+    previous_network_mode = set_fx_network_enabled(True)
+    try:
+        results = []
+        for currency in currencies:
+            provider_series = _fetch_provider_series(currency, start, end, provider_names)
+            summary = _compare_provider_series(provider_series)
+            _print_provider_summary(currency, provider_series, summary, tolerance_pct)
+
+            available = [name for name in provider_names if name in provider_series and not provider_series[name].empty]
+            if not available:
+                print(f"{currency}: no provider data available, skipped.")
+                results.append({'currency': currency, 'source': None, 'rows': 0, 'status': 'no_data'})
+                continue
+
+            default_choice = available[0]
+            choice = _ask_provider_choice(currency, available, default_choice)
+            if choice == 'skip':
+                results.append({'currency': currency, 'source': None, 'rows': 0, 'status': 'skipped'})
+                continue
+
+            selected = provider_series[choice]
+            _append_cache_rows(currency, selected, choice)
+            results.append({'currency': currency, 'source': choice, 'rows': len(selected), 'status': 'updated'})
+            print(f"{currency}: cached {len(selected)} rows from {choice}.")
+
+        return pd.DataFrame(results)
+    finally:
+        set_fx_network_enabled(previous_network_mode)
+
+
+def get_fallback_rate(from_curr, to_curr):
+    """
+    Return a pair rate from the latest cache values.
     """
     from_curr = str(from_curr).upper()
     to_curr = str(to_curr).upper()
     if from_curr == to_curr:
         return 1.0
 
-    ticker = f'{from_curr}{to_curr}=X' if config.STOCK_API == 'yf' else f'{from_curr}/{to_curr}'
-    try:
-        rates_df = get_actual_rates(tickers=[ticker])
-        rate_col = f'Актуальная_цена_{config.STOCK_API}'
-        if not rates_df.empty and rate_col in rates_df.columns:
-            rate = pd.to_numeric(rates_df[rate_col], errors='coerce').dropna()
-            if not rate.empty:
-                return float(rate.iloc[0])
-    except Exception as e:
-        logger.warning(f"Could not fetch actual FX rate for {from_curr}/{to_curr}: {e}")
-
-    fallback_rate = get_fallback_rate(from_curr, to_curr)
-    if fallback_rate is not None:
-        logger.warning(f"Using config fallback rate for {from_curr}/{to_curr}: {fallback_rate}")
-    return fallback_rate
-
-
-def _fetch_cbr_currency_series(currency, min_date, max_date):
-    """
-    Fetch RUB-per-currency series from CBR in one request for the whole period.
-    """
-    curr = currency.upper()
-    if curr == 'RUB':
-        full_ind = pd.date_range(_to_date(min_date), _to_date(max_date), freq='D')
-        return pd.Series(1.0, index=full_ind, name='RUB')
-
-    val_id = _CBR_VALUTE_IDS.get(curr)
-    if not val_id:
-        return pd.Series(dtype=float, name=curr)
-
-    start = _to_date(min_date)
-    end = _to_date(max_date)
-    cache_key = (curr, start.isoformat(), end.isoformat())
-    if cache_key in _CBR_SERIES_CACHE:
-        return _CBR_SERIES_CACHE[cache_key]
-
-    params = {
-        'date_req1': start.strftime('%d/%m/%Y'),
-        'date_req2': end.strftime('%d/%m/%Y'),
-        'VAL_NM_RQ': val_id,
-    }
-    if not _FX_NETWORK_ENABLED:
-        return pd.Series(dtype=float, name=curr)
-    try:
-        response = _CBR_SESSION.get(
-            "https://www.cbr.ru/scripts/XML_dynamic.asp",
-            params=params,
-            timeout=(5, 20),
-        )
-        response.raise_for_status()
-        root = ET.fromstring(response.content)
-        values = {}
-        for record in root.findall('Record'):
-            date_text = record.get('Date')
-            nominal_text = record.findtext('Nominal')
-            value_text = record.findtext('Value')
-            if not date_text or not nominal_text or not value_text:
-                continue
-            nominal = float(nominal_text.replace(',', '.'))
-            value = float(value_text.replace(',', '.'))
-            if nominal != 0:
-                day = datetime.strptime(date_text, '%d.%m.%Y').date()
-                values[pd.Timestamp(day)] = value / nominal
-
-        series = pd.Series(values, dtype=float, name=curr).sort_index()
-        full_ind = pd.date_range(start, end, freq='D')
-        series = series.reindex(full_ind).ffill().bfill()
-        _CBR_SERIES_CACHE[cache_key] = series
-        return series
-    except Exception as e:
-        logger.warning(f"CBR dynamic request failed for {curr} [{start}..{end}]: {e}")
-        empty_series = pd.Series(dtype=float, name=curr)
-        _CBR_SERIES_CACHE[cache_key] = empty_series
-        return empty_series
-
-
-def _get_cbr_rates_df(tickers, min_date, max_date):
-    """
-    Get FX rates for Yahoo-style tickers via CBR.
-    """
-    fx_tickers = [ticker for ticker in tickers if _is_fx_ticker(ticker)]
-    if not fx_tickers:
-        return pd.DataFrame()
-
-    start = _to_date(min_date)
-    end = _to_date(max_date)
-    full_ind = pd.date_range(start, end, freq='D')
-    out = pd.DataFrame(index=full_ind)
-    currencies = set()
-    for ticker in fx_tickers:
-        currencies.add(ticker[:3].upper())
-        currencies.add(ticker[3:6].upper())
-
-    rub_per_currency = {}
-    for curr in currencies:
-        rub_per_currency[curr] = _fetch_cbr_currency_series(curr, start, end)
-
-    for ticker in fx_tickers:
-        from_curr = ticker[:3].upper()
-        to_curr = ticker[3:6].upper()
-        from_series = rub_per_currency.get(from_curr, pd.Series(dtype=float))
-        to_series = rub_per_currency.get(to_curr, pd.Series(dtype=float))
-        if from_series.empty or to_series.empty:
-            continue
-        merged = pd.concat([from_series.rename('from'), to_series.rename('to')], axis=1).reindex(full_ind)
-        with np.errstate(divide='ignore', invalid='ignore'):
-            out[ticker] = merged['from'] / merged['to']
-
-    if out.empty:
-        return pd.DataFrame()
-
-    out = out.apply(pd.to_numeric, errors='coerce').ffill().bfill()
-    return out
-
-
-def _to_close_series(data, name=None):
-    """
-    Convert yfinance download result to a float Series.
-    """
-    if data is None or (hasattr(data, "empty") and data.empty):
-        return pd.Series(dtype=float, name=name)
-
-    if isinstance(data, pd.DataFrame):
-        if 'Close' in data.columns:
-            series = data['Close']
-        else:
-            series = data.iloc[:, -1]
-    else:
-        series = data
-
-    if isinstance(series, pd.DataFrame):
-        series = series.iloc[:, 0]
-
-    series = pd.to_numeric(series, errors='coerce')
-    if name:
-        series.name = name
-    return series
-
-
-def _download_fx_pair_series(ticker, min_date=None, max_date=None):
-    """
-    Download FX pair with Yahoo-compatible aliases and return a canonical series for ticker.
-    Supports both direct pair symbols and USD-quoted single-currency symbols (e.g., RUB=X).
-    """
-    if '=X' not in ticker or len(ticker) < 7:
-        return pd.Series(dtype=float, name=ticker)
-
-    from_curr = ticker[:3]
-    to_curr = ticker[3:6]
-    canonical_name = f'{from_curr}{to_curr}=X'
-
-    if not _FX_NETWORK_ENABLED:
-        return pd.Series(dtype=float, name=canonical_name)
-
-    # Prefer CBR for FX pairs (more stable than Yahoo for RUB/KZT pairs).
-    try:
-        cbr_min = min_date if min_date is not None else datetime.now().date()
-        cbr_max = max_date if max_date is not None else datetime.now().date()
-        cbr_df = _get_cbr_rates_df([canonical_name], cbr_min, cbr_max)
-        if not cbr_df.empty and canonical_name in cbr_df.columns:
-            cbr_series = pd.to_numeric(cbr_df[canonical_name], errors='coerce')
-            if not cbr_series.empty and not cbr_series.isna().all():
-                cbr_series.name = canonical_name
-                return cbr_series
-    except Exception as e:
-        logger.warning(f"CBR rate fetch failed for {canonical_name}, falling back to Yahoo: {e}")
-
-    start = min_date
-    end = max_date
-    if start is None or end is None:
-        period = "5d"
-        direct = _to_close_series(yf.download(ticker, period=period, progress=False), name=canonical_name)
-    else:
-        direct = _to_close_series(yf.download(ticker, start, end, progress=False), name=canonical_name)
-
-    if not direct.empty and not direct.isna().all():
-        return direct
-
-    # Handle pairs involving USD via single-currency Yahoo symbols.
-    if from_curr == 'USD':
-        # USDXXX can often be fetched as XXX=X (e.g., RUB=X, KZT=X).
-        alias = f'{to_curr}=X'
-        if start is None or end is None:
-            alias_series = _to_close_series(yf.download(alias, period="5d", progress=False), name=canonical_name)
-        else:
-            alias_series = _to_close_series(yf.download(alias, start, end, progress=False), name=canonical_name)
-        return alias_series
-
-    if to_curr == 'USD':
-        # XXXUSD can often be derived as 1 / (USDXXX) from XXX=X.
-        alias = f'{from_curr}=X'
-        if start is None or end is None:
-            alias_series = _to_close_series(yf.download(alias, period="5d", progress=False), name=canonical_name)
-        else:
-            alias_series = _to_close_series(yf.download(alias, start, end, progress=False), name=canonical_name)
-        if alias_series.empty:
-            return alias_series
-        with np.errstate(divide='ignore', invalid='ignore'):
-            inverted = 1.0 / alias_series
-        inverted.name = canonical_name
-        return inverted
-
-    # Generic cross-rate via USD single-currency symbols.
-    from_alias = f'{from_curr}=X'
-    to_alias = f'{to_curr}=X'
-    if start is None or end is None:
-        from_series = _to_close_series(yf.download(from_alias, period="5d", progress=False), name=from_alias)
-        to_series = _to_close_series(yf.download(to_alias, period="5d", progress=False), name=to_alias)
-    else:
-        from_series = _to_close_series(yf.download(from_alias, start, end, progress=False), name=from_alias)
-        to_series = _to_close_series(yf.download(to_alias, start, end, progress=False), name=to_alias)
-
-    if from_series.empty or to_series.empty:
-        return pd.Series(dtype=float, name=canonical_name)
-
-    merged = pd.concat([from_series, to_series], axis=1)
-    with np.errstate(divide='ignore', invalid='ignore'):
-        # from/to = (USD/to) / (USD/from)
-        cross = merged[to_alias] / merged[from_alias]
-    cross.name = canonical_name
-    return cross
-
-
-def get_actual_rates(tickers, max_retries=3):
-    """
-    Get rates of current day with fallback mechanisms
-    :param tickers: list of tickers to fetch
-    :param max_retries: maximum number of retry attempts
-    :return: DataFrame with rates
-    """
-    if not isinstance(tickers, list):
-        tickers = [tickers]
-    
-    logger.info(f"Fetching rates for tickers: {tickers}")
-    
-    # Try primary API first
-    try:
-        if config.STOCK_API == 'yf':
-            cur_date = datetime.now().date()
-            curr_rates = get_rates_with_fallback(tickers, min_date=cur_date, max_date=cur_date, max_retries=max_retries)
-            if curr_rates is not None and not curr_rates.empty:
-                curr_rates = curr_rates.reset_index(drop=True).T.reset_index()
-                curr_rates.columns = ['ticker_', 'Актуальная_цена_yf']
-                return curr_rates
-        elif config.STOCK_API == 'td':
-            td = TDClient(apikey=utils.get_secrets('TD_API_KEY'))
-            curr_rates = td.time_series(
-                symbol=tickers,
-                interval="5min",
-                outputsize=1,
-            ).as_pandas()['close']
-
-            if isinstance(tickers, str) or len(tickers) == 1:
-                ticker_name = tickers if isinstance(tickers, str) else tickers[0]
-                curr_rates = curr_rates.rename(ticker_name).to_frame().T.reset_index()
-            else:
-                curr_rates = curr_rates.reset_index().drop('level_1', axis=1, errors='ignore')
-            curr_rates.columns = ['ticker_', 'Актуальная_цена_td']
-            return curr_rates
-    except Exception as e:
-        logger.warning(f"Primary API failed: {e}")
-    
-    # Fallback to alternative APIs
-    return get_rates_fallback(tickers)
-
-
-def get_rates_fallback(tickers):
-    """
-    Fallback method to get rates using alternative sources
-    """
-    logger.info("Using fallback methods for rate fetching")
-
-    # Offline-first: direct config cross-rates for FX, no network and no Yahoo retries.
-    if not _FX_NETWORK_ENABLED:
-        cfg_rates = []
-        for ticker in tickers:
-            if _is_fx_ticker(ticker):
-                rate = _fallback_rate_from_config(ticker[:3], ticker[3:6])
-                if rate is not None:
-                    cfg_rates.append({'ticker_': ticker, f'Актуальная_цена_{config.STOCK_API}': float(rate)})
-        if cfg_rates:
-            return pd.DataFrame(cfg_rates)
-
-    # Try CBR as a stable fallback for FX first
-    try:
-        today = datetime.now().date()
-        cbr_df = _get_cbr_rates_df(tickers, today, today)
-        if not cbr_df.empty:
-            rates_data = []
-            for ticker in tickers:
-                if ticker in cbr_df.columns:
-                    rate = pd.to_numeric(cbr_df[ticker], errors='coerce').dropna()
-                    if not rate.empty:
-                        rates_data.append({
-                            'ticker_': ticker,
-                            f'Актуальная_цена_{config.STOCK_API}': float(rate.iloc[-1])
-                        })
-            if rates_data:
-                return pd.DataFrame(rates_data)
-    except Exception as e:
-        logger.warning(f"CBR fallback failed: {e}")
-    
-    # Try Alpha Vantage as fallback (only if network explicitly enabled)
-    if _FX_NETWORK_ENABLED:
-        try:
-            av_key = utils.get_secrets('ALPHA_VANTAGE_KEY')
-            if av_key:
-                ts = TimeSeries(key=av_key, output_format='pandas')
-                rates_data = []
-                
-                for ticker in tickers:
-                    try:
-                        # Convert Yahoo Finance format to Alpha Vantage format
-                        if '=X' in ticker:
-                            pair = ticker.replace('=X', '')
-                            data, _ = ts.get_currency_exchange_rate(from_currency=pair[:3], to_currency=pair[3:])
-                            if not data.empty:
-                                rate = data.iloc[0]['5. Exchange Rate']
-                                rates_data.append({'ticker_': ticker, 'Актуальная_цена_av': rate})
-                    except Exception as e:
-                        logger.warning(f"Alpha Vantage failed for {ticker}: {e}")
-                        continue
-                
-                if rates_data:
-                    return pd.DataFrame(rates_data)
-        except Exception as e:
-            logger.warning(f"Alpha Vantage fallback failed: {e}")
-    
-    # Try manual cross-rate calculation for problematic pairs
-    manual_rates = get_cross_rates_manual(tickers)
-    if not manual_rates.empty:
-        # Rename the column to match the expected format
-        manual_rates = manual_rates.rename(columns={'Актуальная_цена_manual': f'Актуальная_цена_{config.STOCK_API}'})
-        return manual_rates
-    else:
-        return pd.DataFrame()
-
-
-def get_cross_rates_manual(tickers):
-    """
-    Manual cross-rate calculation for problematic currency pairs
-    """
-    logger.info("Using manual cross-rate calculation")
-    rates_data = []
-    
-    for ticker in tickers:
-        try:
-            if ticker.startswith('KZTRUB'):
-                # KZT to RUB: Use USD as intermediate
-                kzt_usd = get_single_rate('KZTUSD=X')
-                usd_rub = get_single_rate('USDRUB=X')
-                if kzt_usd is not None and usd_rub is not None:
-                    rate = kzt_usd * usd_rub
-                    rates_data.append({'ticker_': ticker, 'Актуальная_цена_manual': rate})
-                else:
-                    # Fallback: derive cross-rate from config base rates
-                    fallback_rate = _fallback_rate_from_config('KZT', 'RUB')
-                    logger.warning(f"Using fallback rate for {ticker}: {fallback_rate}")
-                    rates_data.append({'ticker_': ticker, 'Актуальная_цена_manual': fallback_rate})
-            elif ticker.startswith('RUBKZT'):
-                # RUB to KZT: Use USD as intermediate
-                rub_usd = get_single_rate('RUBUSD=X')
-                usd_kzt = get_single_rate('USDKZT=X')
-                if rub_usd is not None and usd_kzt is not None:
-                    rate = rub_usd * usd_kzt
-                    rates_data.append({'ticker_': ticker, 'Актуальная_цена_manual': rate})
-                else:
-                    # Fallback: derive cross-rate from config base rates
-                    fallback_rate = _fallback_rate_from_config('RUB', 'KZT')
-                    logger.warning(f"Using fallback rate for {ticker}: {fallback_rate}")
-                    rates_data.append({'ticker_': ticker, 'Актуальная_цена_manual': fallback_rate})
-        except Exception as e:
-            logger.warning(f"Manual calculation failed for {ticker}: {e}")
-    
-    return pd.DataFrame(rates_data) if rates_data else pd.DataFrame()
-
-
-def get_single_rate(ticker, max_retries=3):
-    """
-    Get a single rate with retry logic
-    """
-    for attempt in range(max_retries):
-        try:
-            series = _download_fx_pair_series(ticker)
-            if not series.empty:
-                rate = pd.to_numeric(series, errors='coerce').dropna()
-                if not rate.empty:
-                    return float(rate.iloc[-1])
-        except Exception as e:
-            logger.warning(f"Attempt {attempt + 1} failed for {ticker}: {e}")
-            if attempt < max_retries - 1:
-                time.sleep(2 ** attempt)  # Exponential backoff
-    return None
-
-
-def get_rates_with_fallback(tickers: list, min_date, max_date, max_retries=3) -> pd.DataFrame:
-    """
-    Get rates with improved error handling and fallback mechanisms
-    """
-    logger.info(f"Fetching rates for {tickers} from {min_date} to {max_date}")
-    
-    for attempt in range(max_retries):
-        try:
-            start = min_date - timedelta(days=5)
-            full_ind = pd.date_range(start, max_date, freq='D')
-            rates_df_upd = pd.DataFrame(index=full_ind)
-
-            for ticker in tickers:
-                try:
-                    if is_problematic_ticker(ticker):
-                        logger.warning(f"Ticker {ticker} is known to be problematic, trying alias/cross-rate flow")
-
-                    if _is_fx_ticker(ticker):
-                        cbr_series = _get_cbr_rates_df([ticker], start, max_date)
-                        if not cbr_series.empty and ticker in cbr_series.columns:
-                            s = pd.to_numeric(cbr_series[ticker], errors='coerce')
-                            if not s.empty and not s.isna().all():
-                                rates_df_upd[ticker] = s.reindex(full_ind, fill_value=np.nan).ffill().bfill()
-                                continue
-
-                    series = _download_fx_pair_series(ticker, start, max_date)
-                    if not series.empty and not series.isna().all():
-                        series.index = pd.DatetimeIndex(pd.to_datetime(series.index).date)
-                        series = pd.to_numeric(series, errors='coerce')
-                        rates_df_upd[ticker] = series.reindex(full_ind, fill_value=np.nan).ffill().bfill()
-                        continue
-
-                    cross_rate = get_cross_rate_for_ticker(ticker, min_date, max_date)
-                    if cross_rate is not None and not cross_rate.empty and ticker in cross_rate.columns:
-                        cr_series = pd.to_numeric(cross_rate[ticker].squeeze(), errors='coerce')
-                        rates_df_upd[ticker] = cr_series.reindex(full_ind, fill_value=np.nan).ffill().bfill()
-                        continue
-
-                    # Fast offline path for FX to avoid noisy fallback chain.
-                    if _is_fx_ticker(ticker) and not _FX_NETWORK_ENABLED:
-                        cfg_rate = _fallback_rate_from_config(ticker[:3], ticker[3:6])
-                        if cfg_rate is not None:
-                            rates_df_upd[ticker] = float(cfg_rate)
-                            logger.info(f"Using config fallback rate for {ticker}: {cfg_rate}")
-                            continue
-
-                    fallback_rates = get_rates_fallback([ticker])
-                    if not fallback_rates.empty and f'Актуальная_цена_{config.STOCK_API}' in fallback_rates.columns:
-                        fallback_rate = pd.to_numeric(
-                            fallback_rates[f'Актуальная_цена_{config.STOCK_API}'],
-                            errors='coerce'
-                        ).iloc[0]
-                        if not pd.isna(fallback_rate):
-                            rates_df_upd[ticker] = float(fallback_rate)
-                            logger.info(f"Using fallback rate for {ticker}: {fallback_rate}")
-                            continue
-
-                    # Final offline fallback from config cross-rates
-                    if _is_fx_ticker(ticker):
-                        cfg_rate = _fallback_rate_from_config(ticker[:3], ticker[3:6])
-                        if cfg_rate is not None:
-                            rates_df_upd[ticker] = float(cfg_rate)
-                            logger.info(f"Using config fallback rate for {ticker}: {cfg_rate}")
-                except Exception as e:
-                    logger.warning(f"Failed to fetch ticker {ticker}: {e}")
-            
-            return rates_df_upd.loc[min_date:max_date].sort_index()
-            
-        except Exception as e:
-            logger.warning(f"Attempt {attempt + 1} failed: {e}")
-            if attempt < max_retries - 1:
-                time.sleep(2 ** attempt)  # Exponential backoff
-    
-    logger.error(f"All attempts failed for tickers: {tickers}")
-    return None
-
-
-def is_problematic_ticker(ticker):
-    """
-    Check if a ticker is known to cause issues
-    """
-    problematic_patterns = [
-        'KZTRUB=X', 'RUBKZT=X',  # KZT-RUB pairs often fail
-        'KZTUSD=X', 'USDKZT=X',  # KZT-USD pairs sometimes fail
-        'USDRUB=X', 'RUBUSD=X',  # USD-RUB direct pairs now often fail on Yahoo
-    ]
-    return ticker in problematic_patterns
-
-
-def get_cross_rate_for_ticker(ticker, min_date, max_date):
-    """
-    Calculate cross-rate for problematic tickers
-    """
-    try:
-        if 'KZT' in ticker and 'RUB' in ticker:
-            # KZT to RUB via USD
-            kzt_usd_data = _download_fx_pair_series('KZTUSD=X', min_date, max_date)
-            usd_rub_data = _download_fx_pair_series('USDRUB=X', min_date, max_date)
-            
-            kzt_usd = _to_close_series(kzt_usd_data, 'KZTUSD=X')
-            usd_rub = _to_close_series(usd_rub_data, 'USDRUB=X')
-                
-            if not kzt_usd.empty and not usd_rub.empty:
-                cross_rate = kzt_usd * usd_rub
-                return pd.DataFrame({ticker: cross_rate}, index=cross_rate.index)
-        elif 'RUB' in ticker and 'KZT' in ticker:
-            # RUB to KZT via USD
-            rub_usd_data = _download_fx_pair_series('RUBUSD=X', min_date, max_date)
-            usd_kzt_data = _download_fx_pair_series('USDKZT=X', min_date, max_date)
-            
-            rub_usd = _to_close_series(rub_usd_data, 'RUBUSD=X')
-            usd_kzt = _to_close_series(usd_kzt_data, 'USDKZT=X')
-                
-            if not rub_usd.empty and not usd_kzt.empty:
-                cross_rate = rub_usd * usd_kzt
-                return pd.DataFrame({ticker: cross_rate}, index=cross_rate.index)
-    except Exception as e:
-        logger.warning(f"Cross-rate calculation failed for {ticker}: {e}")
-    
-    return None
+    from_usd = _latest_cached_usd_rate(from_curr)
+    to_usd = _latest_cached_usd_rate(to_curr)
+    if from_usd is None or to_usd in (None, 0):
+        return None
+    return float(from_usd) / float(to_usd)
 
 
 def get_rates(tickers: list, min_date, max_date) -> pd.DataFrame:
     """
-    Get rates from selected range of dates with improved error handling
-    :param tickers: list of tickers
-    :param min_date: minimal date to get
-    :param max_date: maximal date to get
-    :return: DataFrame with rates
+    Backward-compatible API: return columns named like Yahoo FX tickers.
     """
-    RATES_PATH = os.path.join(config.DATA_PATH, 'rates')
-    min_date = pd.to_datetime(min_date)
-    max_date = pd.to_datetime(max_date)
+    if not isinstance(tickers, list):
+        tickers = [tickers]
 
-    # Create rates file if not exist
-    if 'rates' not in os.listdir(config.DATA_PATH):
-        os.makedirs(RATES_PATH)
+    start = _to_timestamp(min_date)
+    end = _to_timestamp(max_date)
+    out = pd.DataFrame(index=pd.date_range(start, end, freq='D'))
+    for ticker in tickers:
+        if _is_fx_ticker(ticker):
+            from_curr, to_curr = _parse_fx_ticker(ticker)
+            pair_rates = get_fx_rates(from_curr, to_curr, start, end)
+            out[ticker] = pair_rates[_pair_ticker(from_curr, to_curr)]
+    out.index.name = 'Дата'
+    return out.sort_index()
 
-    # Try to get rates with fallback mechanisms
-    rates_df_upd = get_rates_with_fallback(tickers, min_date, max_date)
-    
-    if rates_df_upd is None or rates_df_upd.empty:
-        logger.warning("Failed to get any rates, returning empty DataFrame")
-        return pd.DataFrame()
 
-    # Handle any remaining missing data
-    nan_cols = set(rates_df_upd.loc[:, rates_df_upd.isna().all(axis=0)].columns)
-    download_errors = set(shared._ERRORS.keys())
-    
-    for ticker_name in download_errors.intersection(nan_cols):
-        if '=X' in ticker_name:
-            try:
-                cross_rate_df = get_cross_rates(from_curr=ticker_name[:3],
-                                                to_curr=ticker_name[3:6],
-                                                min_date=min_date - timedelta(days=5),
-                                                max_date=max_date)
-                if not cross_rate_df.empty:
-                    rates_df_upd[ticker_name] = cross_rate_df[ticker_name]
-            except Exception as e:
-                logger.warning(f"Cross-rate calculation failed for {ticker_name}: {e}")
-    
-    # Try fallback for any remaining missing rates
-    for ticker_name in nan_cols:
-        if '=X' in ticker_name:
-            try:
-                fallback_rates = get_rates_fallback([ticker_name])
-                if not fallback_rates.empty and f'Актуальная_цена_{config.STOCK_API}' in fallback_rates.columns:
-                    # Use the fallback rate for all dates
-                    fallback_rate = fallback_rates[f'Актуальная_цена_{config.STOCK_API}'].iloc[0]
-                    if not pd.isna(fallback_rate):
-                        rates_df_upd[ticker_name] = fallback_rate
-                        logger.info(f"Using fallback rate for {ticker_name}: {fallback_rate}")
-            except Exception as e:
-                logger.warning(f"Fallback failed for {ticker_name}: {e}")
+def get_actual_rates(tickers, max_retries=3):
+    """
+    Backward-compatible API used by investment and asset reports.
+    FX tickers are resolved through the USD cache; non-FX tickers still use yfinance.
+    """
+    if not isinstance(tickers, list):
+        tickers = [tickers]
 
-    rates_df_upd.index.name = 'Дата'
+    rows = []
+    for ticker in tickers:
+        try:
+            if _is_fx_ticker(ticker):
+                from_curr, to_curr = _parse_fx_ticker(ticker)
+                rate = get_actual_fx_rate(from_curr, to_curr)
+            else:
+                rate = _download_latest_market_price(ticker)
+            if rate is not None and not pd.isna(rate):
+                rows.append({'ticker_': ticker, f'Актуальная_цена_{config.STOCK_API}': float(rate)})
+        except Exception as e:
+            logger.warning(f"Could not get actual rate for {ticker}: {e}")
+    return pd.DataFrame(rows)
 
-    # Save updated rates
-    try:
-        rates_df_upd.reset_index().sort_values('Дата').to_csv(
-            os.path.join(RATES_PATH, 'currency_rates.csv'), 
-            index=False, 
-            sep=';'
-        )
-    except Exception as e:
-        logger.warning(f"Failed to save rates: {e}")
 
-    return rates_df_upd.loc[min_date:max_date].sort_index()
+def get_rates_with_fallback(tickers: list, min_date, max_date, max_retries=3) -> pd.DataFrame:
+    return get_rates(tickers, min_date, max_date)
+
+
+def get_rates_fallback(tickers):
+    rows = []
+    for ticker in tickers:
+        if not _is_fx_ticker(ticker):
+            continue
+        from_curr, to_curr = _parse_fx_ticker(ticker)
+        rate = get_fallback_rate(from_curr, to_curr)
+        if rate is not None:
+            rows.append({'ticker_': ticker, f'Актуальная_цена_{config.STOCK_API}': float(rate)})
+    return pd.DataFrame(rows)
+
+
+def get_single_rate(ticker, max_retries=3):
+    actual = get_actual_rates([ticker], max_retries=max_retries)
+    rate_col = f'Актуальная_цена_{config.STOCK_API}'
+    if actual.empty or rate_col not in actual.columns:
+        return None
+    values = pd.to_numeric(actual[rate_col], errors='coerce').dropna()
+    return float(values.iloc[0]) if not values.empty else None
 
 
 def get_cross_rates(from_curr, to_curr, min_date, max_date):
-    """
-    Calculate cross rates with improved error handling
-    """
-    try:
-        curr_USD_rates = _download_fx_pair_series(f'{from_curr}USD=X', min_date, max_date)
-        curr_USD_rates = _to_close_series(curr_USD_rates, f'{from_curr}USD=X')
-        curr_USD_rates.index = pd.DatetimeIndex(pd.to_datetime(curr_USD_rates.index).date)
-        full_ind = pd.date_range(min_date, max_date)
-        curr_USD_rates = (curr_USD_rates.reindex(full_ind, fill_value=np.nan)
-                          .interpolate(limit_direction='both'))
+    return get_fx_rates(from_curr, to_curr, min_date, max_date)
 
-        curr_rates = _download_fx_pair_series(f'USD{to_curr}=X', min_date, max_date)
-        curr_rates = _to_close_series(curr_rates, f'USD{to_curr}=X')
-        curr_rates.index = pd.DatetimeIndex(pd.to_datetime(curr_rates.index).date)
-        full_ind = pd.date_range(min_date, max_date)
-        curr_rates = (curr_rates.reindex(full_ind, fill_value=np.nan)
-                      .interpolate(limit_direction='both'))
-        
-        # Combine the rates
-        combined_rates = pd.concat([curr_rates, curr_USD_rates], axis=1)
-        combined_rates[f'{from_curr}{to_curr}=X'] = combined_rates[f'{from_curr}USD=X'] * combined_rates[f'USD{to_curr}=X']
-        combined_rates.drop([f'{from_curr}USD=X', f'USD{to_curr}=X'], axis=1, inplace=True)
-        return combined_rates
-        
-    except Exception as e:
-        logger.warning(f"Cross-rate calculation failed for {from_curr}/{to_curr}: {e}")
-        return pd.DataFrame()
+
+def get_cross_rate_for_ticker(ticker, min_date, max_date):
+    if not _is_fx_ticker(ticker):
+        return None
+    from_curr, to_curr = _parse_fx_ticker(ticker)
+    return get_fx_rates(from_curr, to_curr, min_date, max_date)
+
+
+def get_cross_rates_manual(tickers):
+    return get_rates_fallback(tickers).rename(columns={
+        f'Актуальная_цена_{config.STOCK_API}': 'Актуальная_цена_manual'
+    })
+
+
+def is_problematic_ticker(ticker):
+    return _is_fx_ticker(ticker)
+
+
+def _ensure_currency_cached(currency: str, min_date: pd.Timestamp, max_date: pd.Timestamp):
+    currency = currency.upper()
+    if currency == config.FX_BASE_CURRENCY:
+        return
+
+    missing_dates = _missing_dates(currency, min_date, max_date)
+    if not missing_dates:
+        return
+
+    if _FX_NETWORK_ENABLED:
+        fetched = _fetch_missing_usd_rates(currency, min(missing_dates), max(missing_dates))
+        if not fetched.empty:
+            fetched = fetched.loc[(fetched.index >= min_date) & (fetched.index <= max_date)]
+            if not fetched.empty:
+                _append_cache_rows(currency, fetched, fetched.name or 'provider')
+                missing_dates = _missing_dates(currency, min_date, max_date)
+                if not missing_dates:
+                    return
+
+    if missing_dates:
+        logger.warning(
+            "No FX cache/provider data for %s/USD from %s to %s",
+            currency,
+            min_date.date().isoformat(),
+            max_date.date().isoformat(),
+        )
+
+
+def _fetch_missing_usd_rates(currency: str, min_date: pd.Timestamp, max_date: pd.Timestamp) -> pd.Series:
+    for provider_name in config.FX_PROVIDER_ORDER:
+        provider = _PROVIDERS.get(provider_name)
+        if provider is None:
+            logger.warning("Unknown FX provider configured: %s", provider_name)
+            continue
+        try:
+            series = provider(currency, min_date, max_date)
+            series = _clean_rate_series(series)
+            if not series.empty:
+                series.name = provider_name
+                return series
+        except Exception as e:
+            logger.warning("FX provider %s failed for %s/USD: %s", provider_name, currency, e)
+    return pd.Series(dtype=float)
+
+
+def _fetch_provider_series(currency: str, min_date: pd.Timestamp, max_date: pd.Timestamp, provider_names):
+    provider_series = {}
+    for provider_name in provider_names:
+        provider = _PROVIDERS[provider_name]
+        try:
+            series = _clean_rate_series(provider(currency, min_date, max_date))
+        except Exception as e:
+            logger.warning("FX provider %s failed for %s/USD: %s", provider_name, currency, e)
+            series = pd.Series(dtype=float)
+        provider_series[provider_name] = series
+    return provider_series
+
+
+def _compare_provider_series(provider_series: dict[str, pd.Series]) -> dict:
+    non_empty = {name: series for name, series in provider_series.items() if not series.empty}
+    if len(non_empty) < 2:
+        return {'common_days': 0, 'max_diff_pct': None, 'mean_diff_pct': None}
+
+    aligned = pd.concat(non_empty, axis=1).dropna()
+    if aligned.empty:
+        return {'common_days': 0, 'max_diff_pct': None, 'mean_diff_pct': None}
+
+    first_provider = aligned.columns[0]
+    diffs = []
+    for provider_name in aligned.columns[1:]:
+        baseline = aligned[first_provider].replace(0, np.nan)
+        diff_pct = ((aligned[provider_name] - aligned[first_provider]).abs() / baseline) * 100
+        diffs.append(diff_pct.dropna())
+
+    if not diffs:
+        return {'common_days': len(aligned), 'max_diff_pct': None, 'mean_diff_pct': None}
+
+    all_diffs = pd.concat(diffs)
+    return {
+        'common_days': len(aligned),
+        'max_diff_pct': float(all_diffs.max()) if not all_diffs.empty else None,
+        'mean_diff_pct': float(all_diffs.mean()) if not all_diffs.empty else None,
+    }
+
+
+def _print_provider_summary(currency: str, provider_series: dict[str, pd.Series], summary: dict, tolerance_pct: float):
+    print(f"\n{currency}/USD provider check")
+    for provider_name, series in provider_series.items():
+        if series.empty:
+            print(f"  {provider_name}: no data")
+            continue
+        print(
+            f"  {provider_name}: {len(series)} rows, "
+            f"{series.index.min().date().isoformat()}..{series.index.max().date().isoformat()}, "
+            f"last={series.iloc[-1]:.8f}"
+        )
+
+    max_diff_pct = summary.get('max_diff_pct')
+    if max_diff_pct is None:
+        print("  comparison: not enough overlapping provider data")
+        return
+
+    status = "ok" if max_diff_pct <= tolerance_pct else "review"
+    print(
+        f"  comparison: {summary['common_days']} common days, "
+        f"max diff={max_diff_pct:.4f}%, "
+        f"mean diff={summary['mean_diff_pct']:.4f}%, "
+        f"status={status}"
+    )
+
+
+def _ask_provider_choice(currency: str, available: list[str], default_choice: str) -> str:
+    choices = "/".join(available + ["skip"])
+    prompt = f"{currency}: cache which source? [{choices}] default={default_choice}: "
+    while True:
+        raw_choice = input(prompt).strip().lower()
+        if not raw_choice:
+            return default_choice
+        if raw_choice in {"s", "skip"}:
+            return "skip"
+        for provider_name in available:
+            if raw_choice == provider_name.lower():
+                return provider_name
+        print(f"Unknown choice: {raw_choice}")
+
+
+def _fetch_yfinance_usd_rate(currency: str, min_date: pd.Timestamp, max_date: pd.Timestamp) -> pd.Series:
+    currency = currency.upper()
+    if currency == config.FX_BASE_CURRENCY:
+        return pd.Series(1.0, index=pd.date_range(min_date, max_date, freq='D'))
+
+    direct = _yf_close(f'{currency}{config.FX_BASE_CURRENCY}=X', min_date, max_date)
+    if not direct.empty:
+        return direct
+
+    inverse = _yf_close(f'{currency}=X', min_date, max_date)
+    if inverse.empty:
+        inverse = _yf_close(f'{config.FX_BASE_CURRENCY}{currency}=X', min_date, max_date)
+    if inverse.empty:
+        return pd.Series(dtype=float)
+
+    with np.errstate(divide='ignore', invalid='ignore'):
+        return 1.0 / inverse
+
+
+def _fetch_cbr_usd_rate(currency: str, min_date: pd.Timestamp, max_date: pd.Timestamp) -> pd.Series:
+    currency = currency.upper()
+    if currency == config.FX_BASE_CURRENCY:
+        return pd.Series(1.0, index=pd.date_range(min_date, max_date, freq='D'))
+
+    usd_rub = _fetch_cbr_currency_series(config.FX_BASE_CURRENCY, min_date, max_date)
+    if usd_rub.empty:
+        return pd.Series(dtype=float)
+
+    if currency == 'RUB':
+        with np.errstate(divide='ignore', invalid='ignore'):
+            return 1.0 / usd_rub
+
+    currency_rub = _fetch_cbr_currency_series(currency, min_date, max_date)
+    if currency_rub.empty:
+        return pd.Series(dtype=float)
+    return currency_rub / usd_rub
+
+
+_PROVIDERS = {
+    'yfinance': _fetch_yfinance_usd_rate,
+    'cbr': _fetch_cbr_usd_rate,
+}
+
+
+def _fetch_cbr_currency_series(currency, min_date, max_date):
+    """
+    Fetch RUB-per-currency series from CBR.
+    """
+    if not _FX_NETWORK_ENABLED:
+        return pd.Series(dtype=float)
+
+    currency = currency.upper()
+    val_id = _CBR_VALUTE_IDS.get(currency)
+    if not val_id:
+        return pd.Series(dtype=float)
+
+    start = _to_timestamp(min_date)
+    end = _to_timestamp(max_date)
+    cache_key = (currency, start.date().isoformat(), end.date().isoformat())
+    if cache_key in _CBR_SERIES_CACHE:
+        return _CBR_SERIES_CACHE[cache_key]
+
+    response = _HTTP_SESSION.get(
+        "https://www.cbr.ru/scripts/XML_dynamic.asp",
+        params={
+            'date_req1': start.strftime('%d/%m/%Y'),
+            'date_req2': end.strftime('%d/%m/%Y'),
+            'VAL_NM_RQ': val_id,
+        },
+        timeout=(5, 20),
+    )
+    response.raise_for_status()
+    root = ET.fromstring(response.content)
+    values = {}
+    for record in root.findall('Record'):
+        date_text = record.get('Date')
+        nominal_text = record.findtext('Nominal')
+        value_text = record.findtext('Value')
+        if not date_text or not nominal_text or not value_text:
+            continue
+        nominal = float(nominal_text.replace(',', '.'))
+        value = float(value_text.replace(',', '.'))
+        if nominal:
+            values[pd.Timestamp(datetime.strptime(date_text, '%d.%m.%Y').date())] = value / nominal
+
+    series = pd.Series(values, dtype=float).sort_index()
+    _CBR_SERIES_CACHE[cache_key] = series
+    return series
+
+
+def _series_from_cache(currency: str, min_date: pd.Timestamp, max_date: pd.Timestamp) -> pd.Series:
+    full_index = pd.date_range(min_date, max_date, freq='D')
+    if currency == config.FX_BASE_CURRENCY:
+        return pd.Series(1.0, index=full_index, dtype=float)
+
+    cache = _read_cache()
+    if cache.empty:
+        return pd.Series(np.nan, index=full_index, dtype=float)
+
+    currency_cache = cache[cache['currency'] == currency].sort_values('date')
+    if currency_cache.empty:
+        return pd.Series(np.nan, index=full_index, dtype=float)
+
+    values = currency_cache.set_index('date')['usd_rate'].sort_index()
+    seed = values[values.index <= min_date]
+    in_range = values[(values.index >= min_date) & (values.index <= max_date)]
+    if not seed.empty:
+        in_range = pd.concat([seed.tail(1), in_range])
+    if in_range.empty:
+        return pd.Series(np.nan, index=full_index, dtype=float)
+    return in_range[~in_range.index.duplicated(keep='last')].reindex(full_index).ffill().bfill()
+
+
+def _missing_dates(currency: str, min_date: pd.Timestamp, max_date: pd.Timestamp) -> list[pd.Timestamp]:
+    series = _series_from_cache(currency, min_date, max_date)
+    return list(series[series.isna()].index)
+
+
+def _latest_cached_usd_rate(currency: str):
+    cache = _read_cache()
+    if cache.empty:
+        return None
+    currency_cache = cache[cache['currency'] == currency].sort_values('date')
+    if currency_cache.empty:
+        return None
+    values = pd.to_numeric(currency_cache['usd_rate'], errors='coerce').dropna()
+    return float(values.iloc[-1]) if not values.empty else None
+
+
+def _read_cache() -> pd.DataFrame:
+    global _FX_CACHE_DF
+    if _FX_CACHE_DF is not None:
+        return _FX_CACHE_DF.copy()
+
+    cache_path = Path(config.FX_CACHE_PATH)
+    if not cache_path.exists():
+        _FX_CACHE_DF = pd.DataFrame(columns=FX_CACHE_COLUMNS)
+        return _FX_CACHE_DF.copy()
+
+    cache = pd.read_csv(cache_path, sep=';', dtype={'currency': str, 'source': str, 'fetched_at': str})
+    for column in FX_CACHE_COLUMNS:
+        if column not in cache.columns:
+            cache[column] = np.nan
+    cache = cache[FX_CACHE_COLUMNS]
+    cache['date'] = pd.to_datetime(cache['date'], errors='coerce')
+    cache['currency'] = cache['currency'].astype(str).str.upper()
+    cache['usd_rate'] = pd.to_numeric(cache['usd_rate'], errors='coerce')
+    cache = cache.dropna(subset=['date', 'currency', 'usd_rate'])
+    cache = cache.sort_values(['currency', 'date', 'fetched_at']).drop_duplicates(['date', 'currency'], keep='last')
+    _FX_CACHE_DF = cache.reset_index(drop=True)
+    return _FX_CACHE_DF.copy()
+
+
+def _write_cache(cache: pd.DataFrame):
+    global _FX_CACHE_DF
+    cache_path = Path(config.FX_CACHE_PATH)
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    cache = cache.copy()
+    cache['date'] = pd.to_datetime(cache['date']).dt.strftime('%Y-%m-%d')
+    cache = cache.sort_values(['currency', 'date'])
+    cache.to_csv(cache_path, sep=';', index=False)
+    _FX_CACHE_DF = None
+
+
+def _append_cache_rows(currency: str, rates: pd.Series, source: str):
+    rates = _clean_rate_series(rates)
+    if rates.empty:
+        return
+
+    now = datetime.now().isoformat(timespec='seconds')
+    new_rows = pd.DataFrame({
+        'date': rates.index,
+        'currency': currency.upper(),
+        'usd_rate': rates.astype(float).values,
+        'source': source,
+        'fetched_at': now,
+    })
+    cache = pd.concat([_read_cache(), new_rows], ignore_index=True)
+    cache['date'] = pd.to_datetime(cache['date'], errors='coerce')
+    cache['currency'] = cache['currency'].astype(str).str.upper()
+    cache['usd_rate'] = pd.to_numeric(cache['usd_rate'], errors='coerce')
+    cache = cache.dropna(subset=['date', 'currency', 'usd_rate'])
+    cache = cache.sort_values(['currency', 'date', 'fetched_at']).drop_duplicates(['date', 'currency'], keep='last')
+    _write_cache(cache[FX_CACHE_COLUMNS])
+
+
+def _ensure_cache_file():
+    cache_path = Path(config.FX_CACHE_PATH)
+    if not cache_path.exists():
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        pd.DataFrame(columns=FX_CACHE_COLUMNS).to_csv(cache_path, sep=';', index=False)
+
+
+def _clean_rate_series(series: pd.Series) -> pd.Series:
+    if series is None or series.empty:
+        return pd.Series(dtype=float)
+    series = pd.Series(series).copy()
+    series.index = pd.to_datetime(series.index, errors='coerce').normalize()
+    series = pd.to_numeric(series, errors='coerce')
+    series = series.dropna()
+    series = series[series > 0]
+    return series[~series.index.isna()].sort_index()
+
+
+def _yf_close(ticker: str, min_date: pd.Timestamp, max_date: pd.Timestamp) -> pd.Series:
+    if not _FX_NETWORK_ENABLED:
+        return pd.Series(dtype=float)
+    data = yf.download(
+        ticker,
+        start=min_date,
+        end=max_date + timedelta(days=1),
+        progress=False,
+        auto_adjust=False,
+    )
+    if data is None or data.empty:
+        return pd.Series(dtype=float)
+    if isinstance(data.columns, pd.MultiIndex):
+        if ('Close', ticker) in data.columns:
+            close = data[('Close', ticker)]
+        else:
+            close = data.xs('Close', axis=1, level=0).iloc[:, 0]
+    elif 'Close' in data.columns:
+        close = data['Close']
+    else:
+        close = data.iloc[:, -1]
+    return _clean_rate_series(close)
+
+
+def _download_latest_market_price(ticker: str):
+    if not _FX_NETWORK_ENABLED:
+        return None
+    data = yf.download(ticker, period='5d', progress=False, auto_adjust=False)
+    if data is None or data.empty:
+        return None
+    if isinstance(data.columns, pd.MultiIndex):
+        close = data.xs('Close', axis=1, level=0).iloc[:, 0]
+    elif 'Close' in data.columns:
+        close = data['Close']
+    else:
+        close = data.iloc[:, -1]
+    values = pd.to_numeric(close, errors='coerce').dropna()
+    return float(values.iloc[-1]) if not values.empty else None
+
+
+def _to_timestamp(value) -> pd.Timestamp:
+    return pd.Timestamp(pd.to_datetime(value)).normalize()
+
+
+def _is_fx_ticker(ticker: str) -> bool:
+    return isinstance(ticker, str) and ticker.endswith('=X') and len(ticker.replace('=X', '')) == 6
+
+
+def _parse_fx_ticker(ticker: str) -> tuple[str, str]:
+    pair = ticker.replace('=X', '').upper()
+    return pair[:3], pair[3:6]
+
+
+def _pair_ticker(from_curr: str, to_curr: str) -> str:
+    return f'{from_curr.upper()}{to_curr.upper()}=X'
 
 
 def get_act_moex(mode='stocks'):
@@ -766,12 +699,3 @@ def get_act_moex(mode='stocks'):
 
 if __name__ == '__main__':
     print(get_act_moex(mode='stocks'))
-
-    # print(get_rates(tickers=[
-    #                          'USDRUB=X',
-    #                          'RUBUSD=X',
-    #                          'RUBKZT=X',
-    #                          'KZTRUB=X'
-    #                          ],
-    #                 min_date='2023-01-26',
-    #                 max_date='2023-01-26'))

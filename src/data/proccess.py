@@ -22,10 +22,6 @@ def convert_transaction(df_to_convert: pd.DataFrame, to_curr: str, target_col: s
         curr_smpl = df_to_convert[df_to_convert['Валюта'] == curr_name]
         smpl_index = curr_smpl.index
         ticker = f'{curr_name}{to_curr}=X'
-        fallback_rate = get_fallback_rate(curr_name, to_curr)
-        if fallback_rate is None:
-            logger.warning(f"No fallback rate available for {curr_name} to {to_curr}, skipping conversion")
-            continue
 
         curr_rates = None
         try:
@@ -35,10 +31,14 @@ def convert_transaction(df_to_convert: pd.DataFrame, to_curr: str, target_col: s
         except Exception as e:
             logger.warning(f"Failed to get FX rates for {curr_name} to {to_curr}: {e}")
 
+        fallback_rate = get_fallback_rate(curr_name, to_curr)
         if use_current_rate:
             latest_rate = _latest_rate(curr_rates, ticker)
             rate_to_apply = latest_rate if latest_rate is not None else fallback_rate
-            if latest_rate is None:
+            if rate_to_apply is None:
+                logger.warning(f"No FX rate available for {curr_name} to {to_curr}, skipping conversion")
+                continue
+            if latest_rate is None and fallback_rate is not None:
                 logger.warning(f"Using fallback rate for {curr_name} to {to_curr}: {fallback_rate}")
             curr_smpl[target_col] = curr_smpl[target_col] * rate_to_apply
         else:
@@ -47,12 +47,19 @@ def convert_transaction(df_to_convert: pd.DataFrame, to_curr: str, target_col: s
                                                                                     "Date": "Дата"},
                                                                             errors='ignore'),
                                             on='Дата', how='left'))
-                curr_smpl[ticker] = curr_smpl[ticker].fillna(fallback_rate)
+                if fallback_rate is not None:
+                    curr_smpl[ticker] = curr_smpl[ticker].fillna(fallback_rate)
+                if curr_smpl[ticker].isna().any():
+                    logger.warning(f"No FX rate available for {curr_name} to {to_curr}, skipping conversion")
+                    continue
                 curr_smpl[target_col] = curr_smpl[target_col] * curr_smpl[ticker]
                 curr_smpl.drop(ticker, axis=1, inplace=True)
-            else:
+            elif fallback_rate is not None:
                 logger.warning(f"Using fallback rate for {curr_name} to {to_curr}: {fallback_rate}")
                 curr_smpl[target_col] = curr_smpl[target_col] * fallback_rate
+            else:
+                logger.warning(f"No FX rate available for {curr_name} to {to_curr}, skipping conversion")
+                continue
         
         curr_smpl['Валюта'] = to_curr
         curr_smpl.index = smpl_index
