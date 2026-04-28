@@ -10,12 +10,14 @@ from src import config, utils
 from src.model.create_tables import get_balance_by_month, get_act_receivables, get_month_transactions, \
     get_act_liabilities, get_cost_distribution, get_assets_by_currencies
 from src.data.exchange_rates_info import get_exchange_rates_info, get_currency_conversion_summary
+from src.data.get_finance import set_fx_network_enabled
 
 
 def create_month_report(year: str,
                         currency: str,
                         month: str,
-                        return_image: bool = False) -> None:
+                        return_image: bool = False,
+                        fx_network_enabled: bool = True) -> None:
     """
     function to create month report
     :param transactions_df: df with transactions
@@ -26,6 +28,7 @@ def create_month_report(year: str,
     :param return_image: switcher to save as image instead of html
     """
     assert currency in config.UNIQUE_TICKERS.keys(), f'currency need to be from {config.UNIQUE_TICKERS.keys()}'
+    set_fx_network_enabled(fx_network_enabled)
 
     # Get capital by chosen year and month
     capital_df = get_balance_by_month(currency).loc[f'{year}-{month}']

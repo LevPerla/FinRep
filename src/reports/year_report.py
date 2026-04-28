@@ -11,9 +11,11 @@ import io
 from src import config, utils
 from src.model.create_tables import get_balance_by_month, get_cost_distribution
 from src.data.exchange_rates_info import get_exchange_rates_info, get_currency_conversion_summary
+from src.data.get_finance import set_fx_network_enabled
 
-def create_year_report(year, currency, return_image=False):
+def create_year_report(year, currency, return_image=False, fx_network_enabled: bool = True):
     assert currency in config.UNIQUE_TICKERS.keys(), f'currency должно быть из {config.UNIQUE_TICKERS.keys()}'
+    set_fx_network_enabled(fx_network_enabled)
 
     # Find balance info
     balance_df = get_balance_by_month(currency)

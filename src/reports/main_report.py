@@ -9,10 +9,12 @@ import io
 from src import config, utils
 from src.model.create_tables import get_balance_by_month
 from src.data.exchange_rates_info import get_exchange_rates_info, get_currency_conversion_summary
+from src.data.get_finance import set_fx_network_enabled
 
 def create_main_report(currency: str,
                        return_image: bool = False,
-                       return_fig: bool = False) -> None:
+                       return_fig: bool = False,
+                       fx_network_enabled: bool = True) -> None:
     """
     function to create month report of all years
 
@@ -20,6 +22,7 @@ def create_main_report(currency: str,
     :param return_image: switcher to save as image instead of html
     """
     assert currency in config.UNIQUE_TICKERS.keys(), f'currency должно быть из {config.UNIQUE_TICKERS.keys()}'
+    set_fx_network_enabled(fx_network_enabled)
 
     fig = make_subplots(
         rows=5, cols=2,

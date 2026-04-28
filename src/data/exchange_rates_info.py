@@ -40,10 +40,16 @@ def get_exchange_rates_info(target_currency='RUB'):
                 current_rates = get_actual_rates([ticker])
                 
                 if not current_rates.empty and f'Актуальная_цена_{config.STOCK_API}' in current_rates.columns:
-                    rate = current_rates[f'Актуальная_цена_{config.STOCK_API}'].iloc[0]
+                    rate = pd.to_numeric(
+                        current_rates[f'Актуальная_цена_{config.STOCK_API}'],
+                        errors='coerce'
+                    ).iloc[0]
                     if not pd.isna(rate):
                         # Check if this is actually a fallback rate by comparing with config values
-                        fallback_rate = config.FALLBACK_RATES.get(currency, {}).get(target_currency)
+                        fallback_rate = pd.to_numeric(
+                            pd.Series([config.FALLBACK_RATES.get(currency, {}).get(target_currency)]),
+                            errors='coerce'
+                        ).iloc[0]
                         if fallback_rate and abs(rate - fallback_rate) < (fallback_rate * 0.05):  # 5% tolerance
                             # This is very close to our hardcoded fallback rate
                             rate_source = 'Fallback (Hardcoded)'
@@ -63,7 +69,10 @@ def get_exchange_rates_info(target_currency='RUB'):
                 
                 # Use fallback rates if no valid rate was obtained
                 if rate is None or pd.isna(rate):
-                    fallback_rate = config.FALLBACK_RATES.get(currency, {}).get(target_currency)
+                    fallback_rate = pd.to_numeric(
+                        pd.Series([config.FALLBACK_RATES.get(currency, {}).get(target_currency)]),
+                        errors='coerce'
+                    ).iloc[0]
                     if fallback_rate:
                         rate = fallback_rate
                         rate_source = 'Fallback (Hardcoded)'
@@ -84,11 +93,17 @@ def get_exchange_rates_info(target_currency='RUB'):
                     if not historical_rates.empty:
                         if hasattr(historical_rates, 'columns') and ticker in historical_rates.columns:
                             # DataFrame case
-                            last_historical_rate = historical_rates[ticker].dropna().iloc[-1]
+                            last_historical_rate = pd.to_numeric(
+                                historical_rates[ticker],
+                                errors='coerce'
+                            ).dropna().iloc[-1]
                             last_update = historical_rates.index[-1].strftime('%Y-%m-%d')
                         else:
                             # Series case
-                            last_historical_rate = historical_rates.dropna().iloc[-1]
+                            last_historical_rate = pd.to_numeric(
+                                historical_rates,
+                                errors='coerce'
+                            ).dropna().iloc[-1]
                             last_update = historical_rates.index[-1].strftime('%Y-%m-%d')
                         
                         rate_change = ((rate - last_historical_rate) / last_historical_rate * 100) if rate and last_historical_rate else 0
@@ -101,7 +116,7 @@ def get_exchange_rates_info(target_currency='RUB'):
                     last_update = 'N/A'
                 
                 # Calculate inverse rate (1/rate) for reference
-                inverse_rate = 1/rate if rate and rate != 0 else None
+                inverse_rate = 1 / rate if isinstance(rate, (int, float)) and rate != 0 else None
                 
                 rates_info.append({
                     'Валюта': currency,
@@ -152,7 +167,12 @@ def get_currency_conversion_summary(target_currency='RUB'):
             try:
                 current_rates = get_actual_rates([ticker])
                 if not current_rates.empty and f'Актуальная_цена_{config.STOCK_API}' in current_rates.columns:
-                    rate = current_rates[f'Актуальная_цена_{config.STOCK_API}'].iloc[0]
+                    rate = pd.to_numeric(
+                        current_rates[f'Актуальная_цена_{config.STOCK_API}'],
+                        errors='coerce'
+                    ).iloc[0]
+                    if pd.isna(rate):
+                        rate = config.FALLBACK_RATES.get(currency, {}).get(target_currency, 1.0)
                     converted_amount = total_amount * rate
                 else:
                     # Use fallback rates from config
