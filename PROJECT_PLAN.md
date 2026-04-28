@@ -12,12 +12,14 @@ FinRep is a personal finance monitoring project. Source data is stored in CSV fi
 - [x] Simplify and centralize currency-rate/conversion logic.
 - [x] Cache data loading and repeated calculations within one `main.py` run.
 - [x] Extract repeated report blocks into shared helpers.
-- [ ] Make report directory creation robust with `Path.mkdir(parents=True, exist_ok=True)`.
-- [ ] Clean or fix permissions for stale `__pycache__` directories.
-- [ ] Decide whether to commit or ignore `FinRep.code-workspace`.
+- [x] Make report directory creation robust with `Path.mkdir(parents=True, exist_ok=True)`.
+- [x] Clean or fix permissions for stale `__pycache__` directories.
+- [x] Decide whether to commit or ignore `FinRep.code-workspace`.
 
 ## Notes
 
 - Keep `main.py` as the preferred entry point. No CLI rewrite is needed.
 - Keep the project function-oriented unless a small helper clearly reduces duplication or risk.
 - Prioritize reliability around CSV parsing and currency conversion, because those are the main places where weekly manual updates can break reports.
+- `FinRep.code-workspace` is tracked and contains only a portable `"."` folder path, so keep it committed.
+- Next plan: see `DASH_MVP_PLAN.md` for the parallel Dash dashboard MVP. Existing Plotly reports must remain available while that MVP is built.

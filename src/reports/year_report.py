@@ -1,4 +1,4 @@
-import os
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -11,7 +11,7 @@ import io
 from src import config, utils
 from src.model.create_tables import get_balance_by_month, get_cost_distribution
 from src.data.get_finance import set_fx_network_enabled
-from src.reports.helpers import add_exchange_rates_table, add_table
+from src.reports.helpers import add_exchange_rates_table, add_table, write_report_html
 
 def create_year_report(year, currency, return_image=False, fx_network_enabled: bool = True):
     assert currency in config.UNIQUE_TICKERS.keys(), f'currency должно быть из {config.UNIQUE_TICKERS.keys()}'
@@ -192,15 +192,8 @@ def create_year_report(year, currency, return_image=False, fx_network_enabled: b
         img_byte_arr.seek(0)
         return img_byte_arr
     else:
-        year_folder_name = os.path.join(config.REPORTS_PATH, 'Годовые отчеты')
-        if 'Годовые отчеты' not in os.listdir(config.REPORTS_PATH):
-            os.makedirs(year_folder_name)
-
-        cur_folder_dir = os.path.join(year_folder_name, currency)
-        if currency not in os.listdir(year_folder_name):
-            os.makedirs(cur_folder_dir)
-            
-        fig.write_html(os.path.join(cur_folder_dir, f"Отчет за {year} год.html"))
+        report_path = Path(config.REPORTS_PATH) / 'Годовые отчеты' / currency / f"Отчет за {year} год.html"
+        write_report_html(fig, report_path)
         fig.show()
 
 

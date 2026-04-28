@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 
 import pandas as pd
 import plotly.graph_objects as go
@@ -10,7 +11,7 @@ from src import config, utils
 from src.model.create_tables import get_balance_by_month, get_act_receivables, get_month_transactions, \
     get_act_liabilities, get_cost_distribution, get_assets_by_currencies
 from src.data.get_finance import set_fx_network_enabled
-from src.reports.helpers import add_exchange_rates_table, add_table
+from src.reports.helpers import add_exchange_rates_table, add_table, write_report_html
 
 
 def create_month_report(year: str,
@@ -113,20 +114,9 @@ def create_month_report(year: str,
         img_byte_arr.seek(0)
         return img_byte_arr
     else:
-        # Create folder and save the report
-        month_folder_name = os.path.join(config.REPORTS_PATH, 'Месячные отчеты')
-        if 'Месячные отчеты' not in os.listdir(config.REPORTS_PATH):
-            os.makedirs(month_folder_name)
-
-        cur_folder_dir = os.path.join(month_folder_name, currency)
-        if currency not in os.listdir(month_folder_name):
-            os.makedirs(cur_folder_dir)
-
-        year_folder_dir = os.path.join(cur_folder_dir, year)
-        if year not in os.listdir(cur_folder_dir):
-            os.makedirs(year_folder_dir)
-            
-        fig.write_html(os.path.join(year_folder_dir, f"Отчет за {month} {year} года.html"))
+        report_path = (Path(config.REPORTS_PATH) / 'Месячные отчеты' / currency / year /
+                       f"Отчет за {month} {year} года.html")
+        write_report_html(fig, report_path)
         fig.show()
 
 

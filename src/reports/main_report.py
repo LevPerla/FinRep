@@ -1,15 +1,14 @@
-import os
-
 import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import plotly.io as pio
 import io
+from pathlib import Path
 
 from src import config, utils
 from src.model.create_tables import get_balance_by_month
 from src.data.get_finance import set_fx_network_enabled
-from src.reports.helpers import add_exchange_rates_table, add_table
+from src.reports.helpers import add_exchange_rates_table, add_table, write_report_html
 
 def create_main_report(currency: str,
                        return_image: bool = False,
@@ -35,7 +34,7 @@ def create_main_report(currency: str,
                [{"type": "bar", "colspan": 2}, None],
                ],
         subplot_titles=('Статистика по годам', 'Курсы валют и конвертация', 'Динамика доходов и расходов', 'Дельты', 'Динамика капитала'),
-        row_heights=[0.25, 0.25, 0.3, 0.3, 0.3],
+        row_heights=[0.5, 0.25, 0.3, 0.3, 0.3],
         # column_widths=[0.23, 0.52, 0.25]
     )
     balance_df = get_balance_by_month(currency)
@@ -94,7 +93,7 @@ def create_main_report(currency: str,
 
 
     fig.update_layout(
-        height=1700,
+        height=2000,
         showlegend=True,
         legend=dict(
             orientation="v",
@@ -118,7 +117,7 @@ def create_main_report(currency: str,
         img_byte_arr.seek(0)
         return img_byte_arr
     else:
-        fig.write_html(os.path.join(config.REPORTS_PATH, f"Основной отчет в валюте {currency}.html"))
+        write_report_html(fig, Path(config.REPORTS_PATH) / f"Основной отчет в валюте {currency}.html")
         fig.show()
 
 

@@ -1,6 +1,15 @@
+from pathlib import Path
+
 import plotly.graph_objects as go
 
 from src.data.exchange_rates_info import get_exchange_rates_info
+
+
+def write_report_html(fig, path):
+    report_path = Path(path)
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.write_html(report_path)
+    return report_path
 
 
 def add_table(fig, data, row, col, header_color='paleturquoise', cell_color='lavender',
