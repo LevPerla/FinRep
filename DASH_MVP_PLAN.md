@@ -29,11 +29,11 @@ The MVP should focus on the main report first and prove the new interaction mode
 - Add a new local Dash app entry point, for example `uv run python -m src.dashboard.app`.
 - Start with the main report only.
 - Keep Plotly as the charting library for the first version, but render charts as separate responsive `dcc.Graph` components instead of one large fixed-height subplot.
-- Use tabs for report nesting, for example:
-  - Overview;
-  - Cashflow;
-  - Capital;
-  - FX.
+- Use one tab per report type:
+  - Main report;
+  - Yearly report;
+  - Monthly report.
+- Inside each report tab, keep visual blocks in the same order as the corresponding existing Plotly dashboard.
 - Add per-widget data downloads to XLSX.
 - Add page or active-tab export to PNG/PDF for future Telegram sharing.
 
@@ -51,39 +51,40 @@ The MVP should focus on the main report first and prove the new interaction mode
 
 ### Phase 1: Dependencies and App Skeleton
 
-- [ ] Add dashboard dependencies to `pyproject.toml` and refresh `uv.lock`.
-- [ ] Create a new `src/dashboard/` package without changing the existing `src/reports/` entry points.
-- [ ] Add `src/dashboard/app.py` with a minimal Dash app and a local run command.
-- [ ] Add a simple landing layout with a title, currency selector, and placeholder tabs.
-- [ ] Confirm `uv run python -m src.dashboard.app` starts locally.
+- [x] Add dashboard dependencies to `pyproject.toml` and refresh `uv.lock`.
+- [x] Create a new `src/dashboard/` package without changing the existing `src/reports/` entry points.
+- [x] Add `src/dashboard/app.py` with a minimal Dash app and a local run command.
+- [x] Add a simple landing layout with a title, currency selector, and placeholder tabs.
+- [x] Confirm `uv run python -m src.dashboard.app` starts locally.
 - [ ] Confirm `uv run python main.py` still uses the existing Plotly report flow.
 
 ### Phase 2: Shared Main-report Data Adapter
 
-- [ ] Create a dashboard data adapter for the main report, separate from HTML rendering.
-- [ ] Reuse existing model/data functions such as `get_balance_by_month` and FX helpers.
-- [ ] Return raw or analysis-ready DataFrames for yearly stats, FX info, income/expense trend, delta, and capital.
-- [ ] Keep formatted display values separate from numeric values needed for charts and XLSX export.
-- [ ] Add a lightweight dataset registry with stable widget IDs and human-readable titles.
-- [ ] Add tests or smoke checks that the adapter returns expected datasets for a supported currency.
+- [x] Create a dashboard data adapter for the main report, separate from HTML rendering.
+- [x] Reuse existing model/data functions such as `get_balance_by_month` and FX helpers.
+- [x] Return raw or analysis-ready DataFrames for yearly stats, FX info, income/expense trend, delta, and capital.
+- [x] Keep formatted display values separate from numeric values needed for charts and XLSX export.
+- [x] Add a lightweight dataset registry with stable widget IDs and human-readable titles.
+- [x] Add tests or smoke checks that the adapter returns expected datasets for a supported currency.
 
 ### Phase 3: Main-report Dash UI
 
-- [ ] Replace placeholder tabs with `Overview`, `Cashflow`, `Capital`, and `FX`.
-- [ ] Render each chart as an independent `dcc.Graph(responsive=True)`.
-- [ ] Move away from fixed full-report Plotly subplot heights in the Dash UI.
-- [ ] Add responsive layout containers using `dash-bootstrap-components`.
-- [ ] Add table views for summary and FX data using Dash AG Grid or a simple Dash table component.
+- [x] Replace section tabs with report-level tabs: main, yearly, and monthly.
+- [x] Keep main-report widgets stacked in the original Plotly dashboard order.
+- [x] Render each chart as an independent `dcc.Graph(responsive=True)`.
+- [x] Move away from fixed full-report Plotly subplot heights in the Dash UI.
+- [x] Add responsive layout containers using `dash-bootstrap-components`.
+- [x] Add table views for summary and FX data using Dash AG Grid or a simple Dash table component.
 - [ ] Add empty/error states for missing CSV data or unavailable FX data.
 - [ ] Verify the UI remains usable on desktop and mobile-width viewports.
 
 ### Phase 4: XLSX Downloads
 
-- [ ] Add per-widget download buttons for chart/table source data.
-- [ ] Implement XLSX generation with `openpyxl` or pandas Excel writer.
-- [ ] Use clear filenames that include report type, widget ID, currency, and date.
-- [ ] Preserve numeric columns for Excel analysis instead of exporting only preformatted strings.
-- [ ] Validate generated XLSX files can be opened and contain expected columns.
+- [x] Add per-widget download buttons for chart/table source data.
+- [x] Implement XLSX generation with `openpyxl` or pandas Excel writer.
+- [x] Use clear filenames that include report type, widget ID, currency, and date.
+- [x] Preserve numeric columns for Excel analysis instead of exporting only preformatted strings.
+- [x] Validate generated XLSX files can be opened and contain expected columns.
 
 ### Phase 5: PNG/PDF Page Export
 
@@ -98,7 +99,7 @@ The MVP should focus on the main report first and prove the new interaction mode
 
 - [ ] Keep existing Plotly report functions available and unchanged unless a compatibility-preserving refactor is required.
 - [ ] Keep `main.py` behavior intact for the current main/year/month report generation.
-- [ ] Document the new Dash command in `README.md`.
+- [x] Document the new Dash command in `README.md`.
 - [ ] Document that Dash MVP is experimental and the current Plotly reports remain the fallback.
 - [ ] Add a final compatibility smoke check for both the Dash app import and old Plotly report imports.
 - [ ] Update this checklist as tasks are completed.
