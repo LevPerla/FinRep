@@ -78,7 +78,7 @@ def _to_date(value):
     return pd.to_datetime(value).date()
 
 
-def _fallback_rate_from_config(from_curr, to_curr):
+def get_fallback_rate(from_curr, to_curr):
     """
     Calculate cross-rate from config.FALLBACK_RATES (which stores currency->USD).
     """
@@ -97,6 +97,36 @@ def _fallback_rate_from_config(from_curr, to_curr):
     if from_usd is None or to_usd in (None, 0):
         return None
     return from_usd / to_usd
+
+
+def _fallback_rate_from_config(from_curr, to_curr):
+    return get_fallback_rate(from_curr, to_curr)
+
+
+def get_actual_fx_rate(from_curr, to_curr):
+    """
+    Get latest FX rate for a currency pair, falling back to config cross-rates.
+    """
+    from_curr = str(from_curr).upper()
+    to_curr = str(to_curr).upper()
+    if from_curr == to_curr:
+        return 1.0
+
+    ticker = f'{from_curr}{to_curr}=X' if config.STOCK_API == 'yf' else f'{from_curr}/{to_curr}'
+    try:
+        rates_df = get_actual_rates(tickers=[ticker])
+        rate_col = f'Актуальная_цена_{config.STOCK_API}'
+        if not rates_df.empty and rate_col in rates_df.columns:
+            rate = pd.to_numeric(rates_df[rate_col], errors='coerce').dropna()
+            if not rate.empty:
+                return float(rate.iloc[0])
+    except Exception as e:
+        logger.warning(f"Could not fetch actual FX rate for {from_curr}/{to_curr}: {e}")
+
+    fallback_rate = get_fallback_rate(from_curr, to_curr)
+    if fallback_rate is not None:
+        logger.warning(f"Using config fallback rate for {from_curr}/{to_curr}: {fallback_rate}")
+    return fallback_rate
 
 
 def _fetch_cbr_currency_series(currency, min_date, max_date):

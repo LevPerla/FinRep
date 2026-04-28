@@ -6,7 +6,7 @@ import pandas as pd
 from datetime import datetime, timedelta
 import logging
 
-from src.data.get_finance import get_actual_rates, get_rates
+from src.data.get_finance import get_actual_fx_rate, get_fallback_rate, get_rates
 from src.data.get import get_transactions
 from src import config
 
@@ -31,52 +31,19 @@ def get_exchange_rates_info(target_currency='RUB'):
         
         for currency in unique_currencies:
             try:
-                # Get current rate
                 ticker = f'{currency}{target_currency}=X'
-                current_rates = get_actual_rates([ticker])
-                
-                if not current_rates.empty and f'Актуальная_цена_{config.STOCK_API}' in current_rates.columns:
-                    rate = pd.to_numeric(
-                        current_rates[f'Актуальная_цена_{config.STOCK_API}'],
-                        errors='coerce'
-                    ).iloc[0]
-                    if not pd.isna(rate):
-                        # Check if this is actually a fallback rate by comparing with config values
-                        fallback_rate = pd.to_numeric(
-                            pd.Series([config.FALLBACK_RATES.get(currency, {}).get(target_currency)]),
-                            errors='coerce'
-                        ).iloc[0]
-                        if fallback_rate and abs(rate - fallback_rate) < (fallback_rate * 0.05):  # 5% tolerance
-                            # This is very close to our hardcoded fallback rate
-                            rate_source = 'Fallback (Hardcoded)'
-                            is_fallback = True
-                        else:
-                            # This came from Yahoo Finance
-                            rate_source = f'Yahoo Finance ({config.STOCK_API})'
-                            is_fallback = False
-                    else:
-                        rate = None
-                        rate_source = 'Yahoo Finance (No Data)'
-                        is_fallback = True
-                else:
-                    rate = None
-                    rate_source = 'Yahoo Finance (Empty)'
+                fallback_rate = get_fallback_rate(currency, target_currency)
+                rate = get_actual_fx_rate(currency, target_currency)
+                if rate is None:
+                    rate = 'Ошибка'
+                    rate_source = 'Недоступно'
                     is_fallback = True
-                
-                # Use fallback rates if no valid rate was obtained
-                if rate is None or pd.isna(rate):
-                    fallback_rate = pd.to_numeric(
-                        pd.Series([config.FALLBACK_RATES.get(currency, {}).get(target_currency)]),
-                        errors='coerce'
-                    ).iloc[0]
-                    if fallback_rate:
-                        rate = fallback_rate
-                        rate_source = 'Fallback (Hardcoded)'
-                        is_fallback = True
-                    else:
-                        rate = 'Ошибка'
-                        rate_source = 'Недоступно'
-                        is_fallback = True
+                elif fallback_rate and abs(rate - fallback_rate) < (fallback_rate * 0.05):
+                    rate_source = 'Fallback (Hardcoded)'
+                    is_fallback = True
+                else:
+                    rate_source = f'Rate provider ({config.STOCK_API})'
+                    is_fallback = False
                 
                 # Get historical rate for comparison (last 7 days)
                 try:
@@ -102,7 +69,7 @@ def get_exchange_rates_info(target_currency='RUB'):
                             ).dropna().iloc[-1]
                             last_update = historical_rates.index[-1].strftime('%Y-%m-%d')
                         
-                        rate_change = ((rate - last_historical_rate) / last_historical_rate * 100) if rate and last_historical_rate else 0
+                        rate_change = ((rate - last_historical_rate) / last_historical_rate * 100) if isinstance(rate, (int, float)) and last_historical_rate else 0
                     else:
                         rate_change = 0
                         last_update = 'N/A'
@@ -116,7 +83,7 @@ def get_exchange_rates_info(target_currency='RUB'):
                 
                 rates_info.append({
                     'Валюта': currency,
-                    'Курс': f"{rate:.4f}" if rate else "N/A",
+                    'Курс': f"{rate:.4f}" if isinstance(rate, (int, float)) else str(rate),
                     'Обратный курс': f"{inverse_rate:.4f}" if inverse_rate else "N/A",
                     'Источник': rate_source,
                     'Изменение (%)': f"{rate_change:+.2f}%" if rate_change != 0 else "N/A",
@@ -158,25 +125,8 @@ def get_currency_conversion_summary(target_currency='RUB'):
             total_amount = currency_transactions['Значение'].sum()
             transaction_count = len(currency_transactions)
             
-            # Get conversion rate
-            ticker = f'{currency}{target_currency}=X'
-            try:
-                current_rates = get_actual_rates([ticker])
-                if not current_rates.empty and f'Актуальная_цена_{config.STOCK_API}' in current_rates.columns:
-                    rate = pd.to_numeric(
-                        current_rates[f'Актуальная_цена_{config.STOCK_API}'],
-                        errors='coerce'
-                    ).iloc[0]
-                    if pd.isna(rate):
-                        rate = config.FALLBACK_RATES.get(currency, {}).get(target_currency, 1.0)
-                    converted_amount = total_amount * rate
-                else:
-                    # Use fallback rates from config
-                    rate = config.FALLBACK_RATES.get(currency, {}).get(target_currency, 1.0)
-                    converted_amount = total_amount * rate
-            except:
-                rate = 1.0
-                converted_amount = total_amount
+            rate = get_actual_fx_rate(currency, target_currency) or 1.0
+            converted_amount = total_amount * rate
             
             summary_info.append({
                 'Валюта': currency,
