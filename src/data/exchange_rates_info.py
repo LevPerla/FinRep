@@ -3,12 +3,10 @@ Exchange rates information module for dashboard display
 """
 
 import pandas as pd
-from datetime import datetime, timedelta
 import logging
 
-from src.data.get_finance import get_actual_fx_rate, get_fallback_rate, get_rates
+from src.data.get_finance import get_actual_fx_rate, get_fx_rate_info
 from src.data.get import get_transactions
-from src import config
 
 logger = logging.getLogger(__name__)
 
@@ -27,56 +25,18 @@ def get_exchange_rates_info(target_currency='RUB'):
             return pd.DataFrame()
         
         rates_info = []
-        current_date = datetime.now().date()
-        
         for currency in unique_currencies:
             try:
-                ticker = f'{currency}{target_currency}=X'
-                fallback_rate = get_fallback_rate(currency, target_currency)
-                rate = get_actual_fx_rate(currency, target_currency)
+                rate_info = get_fx_rate_info(currency, target_currency)
+                rate = rate_info['rate']
                 if rate is None:
-                    rate = 'Ошибка'
                     rate_source = 'Недоступно'
-                    is_fallback = True
-                elif fallback_rate and abs(rate - fallback_rate) < (fallback_rate * 0.05):
-                    rate_source = 'FX cache / fallback'
-                    is_fallback = True
-                else:
-                    rate_source = f'Rate provider ({config.STOCK_API})'
-                    is_fallback = False
-                
-                # Get historical rate for comparison (last 7 days)
-                try:
-                    historical_rates = get_rates(
-                        tickers=[ticker],
-                        min_date=current_date - timedelta(days=7),
-                        max_date=current_date
-                    )
-                    
-                    if not historical_rates.empty:
-                        if hasattr(historical_rates, 'columns') and ticker in historical_rates.columns:
-                            # DataFrame case
-                            last_historical_rate = pd.to_numeric(
-                                historical_rates[ticker],
-                                errors='coerce'
-                            ).dropna().iloc[-1]
-                            last_update = historical_rates.index[-1].strftime('%Y-%m-%d')
-                        else:
-                            # Series case
-                            last_historical_rate = pd.to_numeric(
-                                historical_rates,
-                                errors='coerce'
-                            ).dropna().iloc[-1]
-                            last_update = historical_rates.index[-1].strftime('%Y-%m-%d')
-                        
-                        rate_change = ((rate - last_historical_rate) / last_historical_rate * 100) if isinstance(rate, (int, float)) and last_historical_rate else 0
-                    else:
-                        rate_change = 0
-                        last_update = 'N/A'
-                except Exception as e:
-                    logger.warning(f"Could not get historical rates for {ticker}: {e}")
-                    rate_change = 0
                     last_update = 'N/A'
+                    rate_change = None
+                else:
+                    rate_source = rate_info['source']
+                    last_update = _format_date(rate_info['rate_date'])
+                    rate_change = rate_info['change_pct']
                 
                 # Calculate inverse rate (1/rate) for reference
                 inverse_rate = 1 / rate if isinstance(rate, (int, float)) and rate != 0 else None
@@ -86,9 +46,8 @@ def get_exchange_rates_info(target_currency='RUB'):
                     'Курс': f"{rate:.4f}" if isinstance(rate, (int, float)) else str(rate),
                     'Обратный курс': f"{inverse_rate:.4f}" if inverse_rate else "N/A",
                     'Источник': rate_source,
-                    'Изменение (%)': f"{rate_change:+.2f}%" if rate_change != 0 else "N/A",
+                    'Изменение (%)': f"{rate_change:+.2f}%" if rate_change is not None else "N/A",
                     'Последнее обновление': last_update,
-                    'Fallback': 'Да' if is_fallback else 'Нет'
                 })
                 
             except Exception as e:
@@ -100,7 +59,6 @@ def get_exchange_rates_info(target_currency='RUB'):
                     'Источник': "Недоступно",
                     'Изменение (%)': "N/A",
                     'Последнее обновление': "N/A",
-                    'Fallback': 'Да'
                 })
         
         return pd.DataFrame(rates_info)
@@ -108,6 +66,12 @@ def get_exchange_rates_info(target_currency='RUB'):
     except Exception as e:
         logger.error(f"Error getting exchange rates info: {e}")
         return pd.DataFrame()
+
+
+def _format_date(value):
+    if value is None or pd.isna(value):
+        return 'N/A'
+    return pd.Timestamp(value).strftime('%Y-%m-%d')
 
 def get_currency_conversion_summary(target_currency='RUB'):
     """

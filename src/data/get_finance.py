@@ -120,6 +120,58 @@ def get_actual_fx_rate(from_curr, to_curr):
     return float(values.iloc[-1]) if not values.empty else None
 
 
+def get_fx_rate_info(from_curr, to_curr, as_of_date=None, lookback_days=7) -> dict:
+    """
+    Return a cross-rate plus cache/provider metadata used to calculate it.
+    """
+    as_of = _to_timestamp(as_of_date or datetime.now().date())
+    start = as_of - timedelta(days=lookback_days)
+    from_curr = str(from_curr).upper()
+    to_curr = str(to_curr).upper()
+
+    rates = get_fx_rates(from_curr, to_curr, start, as_of)
+    rate_series = pd.to_numeric(rates.iloc[:, 0], errors='coerce').dropna() if not rates.empty else pd.Series(dtype=float)
+    if rate_series.empty:
+        return {
+            'from_currency': from_curr,
+            'to_currency': to_curr,
+            'rate': None,
+            'rate_date': None,
+            'previous_rate': None,
+            'previous_rate_date': None,
+            'change_pct': None,
+            'source': 'Недоступно',
+            'legs': [],
+        }
+
+    latest_date = pd.Timestamp(rate_series.index[-1]).normalize()
+    latest_rate = float(rate_series.iloc[-1])
+    previous = rate_series[rate_series.index < latest_date]
+    previous_rate = float(previous.iloc[-1]) if not previous.empty else None
+    previous_date = pd.Timestamp(previous.index[-1]).normalize() if not previous.empty else None
+    change_pct = None
+    if previous_rate not in (None, 0):
+        change_pct = (latest_rate - previous_rate) / previous_rate * 100
+
+    legs = [
+        _usd_rate_metadata(from_curr, latest_date),
+        _usd_rate_metadata(to_curr, latest_date),
+    ]
+    source = _format_fx_source(legs)
+
+    return {
+        'from_currency': from_curr,
+        'to_currency': to_curr,
+        'rate': latest_rate,
+        'rate_date': latest_date,
+        'previous_rate': previous_rate,
+        'previous_rate_date': previous_date,
+        'change_pct': change_pct,
+        'source': source,
+        'legs': legs,
+    }
+
+
 def update_fx_cache_interactive(currencies, min_date, max_date, tolerance_pct=1.0, providers=None):
     """
     Fetch USD rates from configured providers, compare them, and ask what to cache.
@@ -509,7 +561,9 @@ def _series_from_cache(currency: str, min_date: pd.Timestamp, max_date: pd.Times
         in_range = pd.concat([seed.tail(1), in_range])
     if in_range.empty:
         return pd.Series(np.nan, index=full_index, dtype=float)
-    return in_range[~in_range.index.duplicated(keep='last')].reindex(full_index).ffill().bfill()
+    values_for_fill = in_range[~in_range.index.duplicated(keep='last')]
+    fill_index = values_for_fill.index.union(full_index).sort_values()
+    return values_for_fill.reindex(fill_index).ffill().bfill().reindex(full_index)
 
 
 def _missing_dates(currency: str, min_date: pd.Timestamp, max_date: pd.Timestamp) -> list[pd.Timestamp]:
@@ -526,6 +580,61 @@ def _latest_cached_usd_rate(currency: str):
         return None
     values = pd.to_numeric(currency_cache['usd_rate'], errors='coerce').dropna()
     return float(values.iloc[-1]) if not values.empty else None
+
+
+def _usd_rate_metadata(currency: str, as_of_date: pd.Timestamp) -> dict:
+    currency = str(currency).upper()
+    as_of = _to_timestamp(as_of_date)
+    if currency == config.FX_BASE_CURRENCY:
+        return {
+            'currency': currency,
+            'usd_rate': 1.0,
+            'rate_date': as_of,
+            'source': 'base',
+            'fetched_at': '',
+        }
+
+    cache = _read_cache()
+    if cache.empty:
+        return {
+            'currency': currency,
+            'usd_rate': None,
+            'rate_date': None,
+            'source': 'missing',
+            'fetched_at': '',
+        }
+
+    currency_cache = cache[(cache['currency'] == currency) & (cache['date'] <= as_of)].sort_values('date')
+    if currency_cache.empty:
+        return {
+            'currency': currency,
+            'usd_rate': None,
+            'rate_date': None,
+            'source': 'missing',
+            'fetched_at': '',
+        }
+
+    row = currency_cache.iloc[-1]
+    return {
+        'currency': currency,
+        'usd_rate': float(row['usd_rate']),
+        'rate_date': pd.Timestamp(row['date']).normalize(),
+        'source': str(row['source']),
+        'fetched_at': str(row['fetched_at']) if pd.notna(row['fetched_at']) else '',
+    }
+
+
+def _format_fx_source(legs: list[dict]) -> str:
+    parts = []
+    for leg in legs:
+        currency = leg['currency']
+        source = leg.get('source') or 'missing'
+        rate_date = leg.get('rate_date')
+        if rate_date is not None:
+            parts.append(f"{currency}/USD: {source} {pd.Timestamp(rate_date).date().isoformat()}")
+        else:
+            parts.append(f"{currency}/USD: {source}")
+    return "; ".join(parts)
 
 
 def _read_cache() -> pd.DataFrame:
