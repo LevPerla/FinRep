@@ -1,6 +1,3 @@
-from sys import path
-path.append('/Users/levperla/PycharmProjects/FinRep')
-
 import pandas as pd
 
 from src.data.get_finance import get_rates
@@ -165,4 +162,3 @@ if __name__ == '__main__':
     # print(test[test['Значение'] != 0])
     
     print(test[test['Дата'] == '2016-10-24'])
-

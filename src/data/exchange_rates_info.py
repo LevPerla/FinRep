@@ -2,10 +2,6 @@
 Exchange rates information module for dashboard display
 """
 
-import sys
-import os
-sys.path.append('/Users/levperla/PycharmProjects/FinRep')
-
 import pandas as pd
 from datetime import datetime, timedelta
 import logging

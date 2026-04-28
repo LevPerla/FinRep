@@ -1,6 +1,3 @@
-from sys import path
-path.append('/Users/levperla/PycharmProjects/FinRep')
-
 import numpy as np
 import pandas as pd
 
