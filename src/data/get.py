@@ -2,12 +2,19 @@ import pandas as pd
 import numpy as np
 import os
 import warnings
+from functools import lru_cache
 
 warnings.filterwarnings('ignore')
 
-from src import config, utils
+from src import config
+
 
 def get_transactions():
+    return _get_transactions_cached().copy(deep=True)
+
+
+@lru_cache(maxsize=1)
+def _get_transactions_cached():
     transactions_df = pd.DataFrame()
     for folder_name in os.listdir(config.TRANSACTIONS_INFO_PATH):
         if folder_name == '.DS_Store':
@@ -56,6 +63,11 @@ def get_transactions():
 
 
 def get_assets():
+    return _get_assets_cached().copy(deep=True)
+
+
+@lru_cache(maxsize=1)
+def _get_assets_cached():
     assets_df = pd.DataFrame()
     for folder_name in os.listdir(config.ASSETS_INFO_PATH):
         if folder_name == '.DS_Store':
@@ -94,11 +106,22 @@ def get_assets():
 
 
 def get_investments():
+    return _get_investments_cached().copy(deep=True)
+
+
+@lru_cache(maxsize=1)
+def _get_investments_cached():
     data = pd.read_csv(config.INVESTMENTS_PATH, sep=';', decimal=',')
     data['Дата'] = data['Дата'].astype('datetime64[ns]')
     data['Валюта'] = data['Цена'].apply(lambda x: x.split('|')[1])
     data['Цена'] = data['Цена'].apply(lambda x: x.split('|')[0].replace(',', '.')).astype(float)
     return data
+
+
+def clear_data_cache():
+    _get_transactions_cached.cache_clear()
+    _get_assets_cached.cache_clear()
+    _get_investments_cached.cache_clear()
 
 if __name__ == '__main__':
     tmp_df = get_transactions()

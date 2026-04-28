@@ -1,5 +1,6 @@
 import numpy as np
 import pandas as pd
+from functools import lru_cache
 
 from src import config
 from src.data.get import get_investments, get_transactions, get_assets
@@ -89,6 +90,11 @@ def create_invest_tbl() -> (pd.DataFrame, pd.DataFrame):
 
 
 def get_balance_by_month(currency: str) -> pd.DataFrame:
+    return _get_balance_by_month_cached(str(currency).upper()).copy(deep=True)
+
+
+@lru_cache(maxsize=None)
+def _get_balance_by_month_cached(currency: str) -> pd.DataFrame:
     """
     Get PNL of all transactions
     :param currency: ticker of currency
@@ -137,6 +143,11 @@ def get_balance_by_month(currency: str) -> pd.DataFrame:
 
 
 def get_act_receivables():
+    return _get_act_receivables_cached().copy(deep=True)
+
+
+@lru_cache(maxsize=1)
+def _get_act_receivables_cached():
     transactions_df = get_transactions()
     
     receivable_df = transactions_df[(transactions_df['Категория'] == 'Дебиторская задолженность') &
@@ -161,6 +172,11 @@ def get_act_receivables():
 
 
 def get_act_liabilities():
+    return _get_act_liabilities_cached().copy(deep=True)
+
+
+@lru_cache(maxsize=1)
+def _get_act_liabilities_cached():
     transactions_df = get_transactions()
     liabilities_df = (transactions_df[(transactions_df['Категория'] == 'Кредиторская задолженность') &
                                       (transactions_df['Значение'] != 0)]
@@ -185,14 +201,21 @@ def get_act_liabilities():
 
 
 def get_cost_distribution(currency, year, month=None):
+    year_key = _as_tuple(year)
+    month_key = None if month is None else _as_month_tuple(month)
+    return _get_cost_distribution_cached(str(currency).upper(), year_key, month_key).copy(deep=True)
+
+
+@lru_cache(maxsize=None)
+def _get_cost_distribution_cached(currency, year_key, month_key=None):
     transactions_df = get_transactions()
 
     # Get transaction sample by chosen year
-    if month is None:
-        smpl_tr_df = transactions_df[transactions_df['Год'].isin(list(np.array(year).flat))].reset_index(drop=True)
+    if month_key is None:
+        smpl_tr_df = transactions_df[transactions_df['Год'].isin(list(year_key))].reset_index(drop=True)
     else:
-        smpl_tr_df = transactions_df[(transactions_df['Год'].isin(list(np.array(year).flat))) &
-                                     (transactions_df['Месяц'].isin(list(np.array(month).astype(int).astype(str).flat)))
+        smpl_tr_df = transactions_df[(transactions_df['Год'].isin(list(year_key))) &
+                                     (transactions_df['Месяц'].isin(list(month_key)))
                                      ].reset_index(drop=True)
 
     # Convert transactions to chosen currency
@@ -207,7 +230,7 @@ def get_cost_distribution(currency, year, month=None):
                      .droplevel(0, axis=1)
                      .rename({'sum': 'Суммарно'}, axis=1)
                      )
-    if month is None:
+    if month_key is None:
         cost_stats_df['Среднее'] = cost_stats_df['Суммарно'] / smpl_tr_df.Месяц.astype(int).max()
     else:
         cost_stats_df['Среднее'] = cost_stats_df['Суммарно'] / 30
@@ -296,6 +319,15 @@ def get_assets_by_currencies(year, month) -> pd.DataFrame:
 
 
 def get_month_transactions(currency, year, month):
+    return _get_month_transactions_cached(
+        str(currency).upper(),
+        str(year),
+        str(int(month)) if str(month).isdigit() else str(month),
+    ).copy(deep=True)
+
+
+@lru_cache(maxsize=None)
+def _get_month_transactions_cached(currency, year, month):
     transactions_df = get_transactions()
     smpl_tr_df = transactions_df[(transactions_df['Год'].isin(list(np.array(year).flat))) &
                                  (transactions_df['Месяц'].isin(list(np.array(month).astype(int).astype(str).flat)))
@@ -338,6 +370,22 @@ def get_month_transactions(currency, year, month):
         if col in month_tr_df.columns:
             month_tr_df.insert(num_of_cols - 1, col, month_tr_df.pop(col))
     return month_tr_df
+
+
+def clear_table_cache():
+    _get_balance_by_month_cached.cache_clear()
+    _get_act_receivables_cached.cache_clear()
+    _get_act_liabilities_cached.cache_clear()
+    _get_cost_distribution_cached.cache_clear()
+    _get_month_transactions_cached.cache_clear()
+
+
+def _as_tuple(value):
+    return tuple(np.array(value).astype(str).flat)
+
+
+def _as_month_tuple(value):
+    return tuple(np.array(value).astype(int).astype(str).flat)
 
 if __name__ == '__main__':
     pd.options.display.max_columns = 40
