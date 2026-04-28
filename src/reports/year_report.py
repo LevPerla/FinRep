@@ -10,8 +10,8 @@ import io
 
 from src import config, utils
 from src.model.create_tables import get_balance_by_month, get_cost_distribution
-from src.data.exchange_rates_info import get_exchange_rates_info, get_currency_conversion_summary
 from src.data.get_finance import set_fx_network_enabled
+from src.reports.helpers import add_exchange_rates_table, add_table
 
 def create_year_report(year, currency, return_image=False, fx_network_enabled: bool = True):
     assert currency in config.UNIQUE_TICKERS.keys(), f'currency должно быть из {config.UNIQUE_TICKERS.keys()}'
@@ -61,62 +61,11 @@ def create_year_report(year, currency, return_image=False, fx_network_enabled: b
     )
     
     # Add exchange rates information
-    try:
-        exchange_rates_df = get_exchange_rates_info(currency)
-        if not exchange_rates_df.empty:
-            fig.add_trace(
-                go.Table(
-                    header=dict(values=list(exchange_rates_df.columns),
-                                fill_color='lightblue',
-                                align='left'),
-                    cells=dict(values=[exchange_rates_df[colname] for colname in exchange_rates_df.columns],
-                               fill_color='lightcyan',
-                               align='left'),
-                ),
-                row=2, col=1
-            )
-        else:
-            # Add placeholder if no exchange rates info
-            fig.add_trace(
-                go.Table(
-                    header=dict(values=['Информация о курсах валют'],
-                                fill_color='lightblue',
-                                align='left'),
-                    cells=dict(values=[['Нет данных о курсах валют']],
-                               fill_color='lightcyan',
-                               align='left'),
-                ),
-                row=2, col=1
-            )
-    except Exception as e:
-        print(f"Error adding exchange rates info: {e}")
-        # Add error placeholder
-        fig.add_trace(
-            go.Table(
-                header=dict(values=['Информация о курсах валют'],
-                            fill_color='lightblue',
-                            align='left'),
-                cells=dict(values=[['Ошибка загрузки курсов валют']],
-                           fill_color='lightcyan',
-                           align='left'),
-            ),
-            row=2, col=1
-        )
+    add_exchange_rates_table(fig, currency, row=2, col=1)
 
     # Add costs stats by categories
     cost_stats_df = get_cost_distribution(currency=currency, year=year)
-    fig.add_trace(
-        go.Table(
-            header=dict(values=list(cost_stats_df.columns),
-                        fill_color='paleturquoise',
-                        align='left'),
-            cells=dict(values=[cost_stats_df[colname] for colname in cost_stats_df.columns],
-                       fill_color='lavender',
-                       font={'color': ['black', 'black'], 'size': [10, 12]},
-                       align='left'),
-        ),
-        row=3, col=1
-    )
+    add_table(fig, cost_stats_df, row=3, col=1, font={'color': ['black', 'black'], 'size': [10, 12]})
 
     # Add cost distribution bar plot
     cost_plot_df = _create_cost_plot_table(cost_stats_df)

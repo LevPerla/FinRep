@@ -8,8 +8,8 @@ import io
 
 from src import config, utils
 from src.model.create_tables import get_balance_by_month
-from src.data.exchange_rates_info import get_exchange_rates_info, get_currency_conversion_summary
 from src.data.get_finance import set_fx_network_enabled
+from src.reports.helpers import add_exchange_rates_table, add_table
 
 def create_main_report(currency: str,
                        return_image: bool = False,
@@ -42,60 +42,10 @@ def create_main_report(currency: str,
 
     # Add table with sum income and cost stats by year
     all_stats_df = _create_sum_stats(balance_df, currency)
-    fig.add_trace(
-        go.Table(
-            header=dict(values=list(all_stats_df.columns),
-                        fill_color='paleturquoise',
-                        align='left'),
-            cells=dict(values=[all_stats_df[colname] for colname in all_stats_df.columns],
-                       fill_color='lavender',
-                       align='left'),
-        ),
-        row=1, col=1
-    )
+    add_table(fig, all_stats_df, row=1, col=1)
     
     # Add exchange rates information
-    try:
-        exchange_rates_df = get_exchange_rates_info(currency)
-        if not exchange_rates_df.empty:
-            fig.add_trace(
-                go.Table(
-                    header=dict(values=list(exchange_rates_df.columns),
-                                fill_color='lightblue',
-                                align='left'),
-                    cells=dict(values=[exchange_rates_df[colname] for colname in exchange_rates_df.columns],
-                               fill_color='lightcyan',
-                               align='left'),
-                ),
-                row=2, col=1
-            )
-        else:
-            # Add placeholder if no exchange rates info
-            fig.add_trace(
-                go.Table(
-                    header=dict(values=['Информация о курсах валют'],
-                                fill_color='lightblue',
-                                align='left'),
-                    cells=dict(values=[['Нет данных о курсах валют']],
-                               fill_color='lightcyan',
-                               align='left'),
-                ),
-                row=2, col=1
-            )
-    except Exception as e:
-        print(f"Error adding exchange rates info: {e}")
-        # Add error placeholder
-        fig.add_trace(
-            go.Table(
-                header=dict(values=['Информация о курсах валют'],
-                            fill_color='lightblue',
-                            align='left'),
-                cells=dict(values=[['Ошибка загрузки курсов валют']],
-                           fill_color='lightcyan',
-                           align='left'),
-            ),
-            row=2, col=1
-        )
+    add_exchange_rates_table(fig, currency, row=2, col=1)
 
     # Add plots of cost and income changing by years
     income_df = balance_df['Доход'].reset_index()

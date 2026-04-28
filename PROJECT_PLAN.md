@@ -11,7 +11,7 @@ FinRep is a personal finance monitoring project. Source data is stored in CSV fi
 - [x] Add a CSV preflight validation step for weekly data updates.
 - [x] Simplify and centralize currency-rate/conversion logic.
 - [x] Cache data loading and repeated calculations within one `main.py` run.
-- [ ] Extract repeated report blocks into shared helpers.
+- [x] Extract repeated report blocks into shared helpers.
 - [ ] Make report directory creation robust with `Path.mkdir(parents=True, exist_ok=True)`.
 - [ ] Clean or fix permissions for stale `__pycache__` directories.
 - [ ] Decide whether to commit or ignore `FinRep.code-workspace`.

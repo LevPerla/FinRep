@@ -9,8 +9,8 @@ import io
 from src import config, utils
 from src.model.create_tables import get_balance_by_month, get_act_receivables, get_month_transactions, \
     get_act_liabilities, get_cost_distribution, get_assets_by_currencies
-from src.data.exchange_rates_info import get_exchange_rates_info, get_currency_conversion_summary
 from src.data.get_finance import set_fx_network_enabled
+from src.reports.helpers import add_exchange_rates_table, add_table
 
 
 def create_month_report(year: str,
@@ -55,119 +55,28 @@ def create_month_report(year: str,
 
     # Add month transactions table
     month_tr_df = get_month_transactions(currency, year, month)
-    fig.add_trace(
-        go.Table(
-            header=dict(values=list(month_tr_df.columns),
-                        fill_color='paleturquoise',
-                        align='left'),
-            cells=dict(values=[month_tr_df[colname] for colname in month_tr_df.columns],
-                       fill_color='lavender',
-                       align='left'),
-        ),
-        row=1, col=1
-    )
+    add_table(fig, month_tr_df, row=1, col=1)
     
     # Add exchange rates information
-    try:
-        exchange_rates_df = get_exchange_rates_info(currency)
-        if not exchange_rates_df.empty:
-            fig.add_trace(
-                go.Table(
-                    header=dict(values=list(exchange_rates_df.columns),
-                                fill_color='lightblue',
-                                align='left'),
-                    cells=dict(values=[exchange_rates_df[colname] for colname in exchange_rates_df.columns],
-                               fill_color='lightcyan',
-                               align='left'),
-                ),
-                row=2, col=1
-            )
-        else:
-            # Add placeholder if no exchange rates info
-            fig.add_trace(
-                go.Table(
-                    header=dict(values=['Информация о курсах валют'],
-                                fill_color='lightblue',
-                                align='left'),
-                    cells=dict(values=[['Нет данных о курсах валют']],
-                               fill_color='lightcyan',
-                               align='left'),
-                ),
-                row=2, col=1
-            )
-    except Exception as e:
-        print(f"Error adding exchange rates info: {e}")
-        # Add error placeholder
-        fig.add_trace(
-            go.Table(
-                header=dict(values=['Информация о курсах валют'],
-                            fill_color='lightblue',
-                            align='left'),
-                cells=dict(values=[['Ошибка загрузки курсов валют']],
-                           fill_color='lightcyan',
-                           align='left'),
-            ),
-            row=2, col=1
-        )
+    add_exchange_rates_table(fig, currency, row=2, col=1)
 
     # Add table with month sum stats
     capital_df_ = utils.process_num_cols(capital_df, not_num_cols=[], currency=currency)
-    fig.add_trace(
-        go.Table(
-            header=dict(values=list(capital_df_.columns),
-                        fill_color='paleturquoise',
-                        align='left'),
-            cells=dict(values=[capital_df_[colname] for colname in capital_df_.columns],
-                       fill_color='lavender',
-                       align='left'),
-        ),
-        row=3, col=1
-    )
+    add_table(fig, capital_df_, row=3, col=1)
 
     # Add actual receivables table
     receivables_df = get_act_receivables()
     receivables_df = utils.fill_if_empty(receivables_df)
-    fig.add_trace(
-        go.Table(
-            header=dict(values=list(receivables_df.columns),
-                        fill_color='paleturquoise',
-                        align='left'),
-            cells=dict(values=[receivables_df[colname] for colname in receivables_df.columns],
-                       fill_color='lavender',
-                       align='left'),
-        ),
-        row=4, col=1
-    )
+    add_table(fig, receivables_df, row=4, col=1)
 
     # Add actual liabilities table
     liabilities_df = get_act_liabilities()
     liabilities_df = utils.fill_if_empty(liabilities_df)
-    fig.add_trace(
-        go.Table(
-            header=dict(values=list(liabilities_df.columns),
-                        fill_color='paleturquoise',
-                        align='left'),
-            cells=dict(values=[liabilities_df[colname] for colname in liabilities_df.columns],
-                       fill_color='lavender',
-                       align='left'),
-        ),
-        row=4, col=3
-    )
+    add_table(fig, liabilities_df, row=4, col=3)
 
     # Add costs distribution table
     cost_stats_df = get_cost_distribution(currency=currency, year=year, month=month)
-    fig.add_trace(
-        go.Table(
-            header=dict(values=list(cost_stats_df.columns),
-                        fill_color='paleturquoise',
-                        align='left'),
-            cells=dict(values=[cost_stats_df[colname] for colname in cost_stats_df.columns],
-                       fill_color='lavender',
-                       font={'color': ['black', 'black'], 'size': [10, 12]},
-                       align='left'),
-        ),
-        row=5, col=1
-    )
+    add_table(fig, cost_stats_df, row=5, col=1, font={'color': ['black', 'black'], 'size': [10, 12]})
 
     # Add cost distribution bar plot
     cost_plot_df = _create_cost_plot_table(cost_stats_df)
@@ -178,17 +87,7 @@ def create_month_report(year: str,
     # Add table with distribution of assets in different currencies
     assets_by_currencies = get_assets_by_currencies(year, month)
     assets_by_currencies = utils.fill_if_empty(assets_by_currencies)
-    fig.add_trace(
-        go.Table(
-            header=dict(values=list(assets_by_currencies.columns),
-                        fill_color='paleturquoise',
-                        align='left'),
-            cells=dict(values=[assets_by_currencies[colname] for colname in assets_by_currencies.columns],
-                       fill_color='lavender',
-                       align='left'),
-        ),
-        row=7, col=1
-    )
+    add_table(fig, assets_by_currencies, row=7, col=1)
 
     fig.update_layout(
         height=3500,
