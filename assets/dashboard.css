@@ -1,5 +1,5 @@
 body {
-  background: #f8fafc;
+  background: #dcdcdc;
 }
 
 .finrep-shell {
@@ -13,8 +13,8 @@ body {
 }
 
 .finrep-theme-dark {
-  background: #0f172a;
-  color: #e5e7eb;
+  background: #2b2b2b;
+  color: #a9b7c6;
 }
 
 .finrep-theme-dark h1,
@@ -23,59 +23,59 @@ body {
 .finrep-theme-dark h4,
 .finrep-theme-dark h5,
 .finrep-theme-dark h6 {
-  color: #f8fafc;
+  color: #dcdcdc;
 }
 
 .finrep-theme-dark .nav-tabs {
-  border-bottom-color: #334155;
+  border-bottom-color: #555555;
 }
 
 .finrep-theme-dark .nav-tabs .nav-link {
-  color: #cbd5e1;
+  color: #a9b7c6;
   background: transparent;
   border-color: transparent;
 }
 
 .finrep-theme-dark .nav-tabs .nav-link.active {
-  color: #f8fafc;
+  color: #dcdcdc;
   background: #1e293b;
-  border-color: #334155 #334155 #1e293b;
+  border-color: #555555 #555555 #1e293b;
 }
 
 .finrep-theme-dark .Select-control,
 .finrep-theme-dark .Select-menu-outer,
 .finrep-theme-dark .Select-value,
 .finrep-theme-dark .Select-placeholder {
-  background-color: #111827 !important;
-  border-color: #334155 !important;
-  color: #e5e7eb !important;
+  background-color: #2b2b2b !important;
+  border-color: #555555 !important;
+  color: #a9b7c6 !important;
 }
 
 .finrep-theme-dark .Select-value-label,
 .finrep-theme-dark .Select-input > input,
 .finrep-theme-dark .Select-option {
-  color: #e5e7eb !important;
+  color: #a9b7c6 !important;
 }
 
 .finrep-theme-dark .Select-option {
-  background-color: #111827 !important;
+  background-color: #2b2b2b !important;
 }
 
 .finrep-theme-dark .Select-option.is-focused {
-  background-color: #1f2937 !important;
+  background-color: #3c3f41 !important;
 }
 
 .finrep-theme-dark .ag-theme-alpine {
-  --ag-background-color: #111827;
-  --ag-foreground-color: #e5e7eb;
-  --ag-header-background-color: #1f2937;
-  --ag-header-foreground-color: #f8fafc;
-  --ag-odd-row-background-color: #172033;
-  --ag-row-hover-color: #263349;
-  --ag-border-color: #334155;
-  --ag-secondary-border-color: #334155;
-  --ag-input-border-color: #475569;
-  --ag-control-panel-background-color: #111827;
+  --ag-background-color: #2b2b2b;
+  --ag-foreground-color: #a9b7c6;
+  --ag-header-background-color: #3c3f41;
+  --ag-header-foreground-color: #dcdcdc;
+  --ag-odd-row-background-color: #323232;
+  --ag-row-hover-color: #4b4b4b;
+  --ag-border-color: #555555;
+  --ag-secondary-border-color: #555555;
+  --ag-input-border-color: #646464;
+  --ag-control-panel-background-color: #2b2b2b;
   --ag-modal-overlay-background-color: rgba(15, 23, 42, 0.6);
 }
 
@@ -83,12 +83,12 @@ body {
 .finrep-theme-dark .ag-theme-alpine .ag-header,
 .finrep-theme-dark .ag-theme-alpine .ag-row,
 .finrep-theme-dark .ag-theme-alpine .ag-cell {
-  border-color: #334155;
+  border-color: #555555;
 }
 
 .finrep-theme-dark .dash-graph,
 .finrep-theme-dark .js-plotly-plot {
-  background: #111827;
+  background: #2b2b2b;
 }
 
 .finrep-theme-dark .alert-warning {
@@ -100,23 +100,23 @@ body {
 
 .finrep-theme-dark .btn-outline-secondary,
 .finrep-theme-dark .btn-outline-primary {
-  color: #dbeafe !important;
-  border-color: #475569 !important;
+  color: #a9b7c6 !important;
+  border-color: #646464 !important;
 }
 
 .finrep-theme-dark .nav-tabs .nav-link,
 .finrep-theme-dark .nav-tabs .nav-link:hover,
 .finrep-theme-dark .nav-tabs .nav-link:focus {
-  color: #93c5fd !important;
+  color: #6897bb !important;
   background-color: transparent !important;
   border-color: transparent !important;
 }
 
 .finrep-theme-dark .nav-tabs .nav-link.active,
 .finrep-theme-dark .nav-tabs .nav-item.show .nav-link {
-  color: #f8fafc !important;
+  color: #dcdcdc !important;
   background-color: #1e293b !important;
-  border-color: #475569 #475569 #1e293b !important;
+  border-color: #646464 #646464 #1e293b !important;
 }
 
 .finrep-theme-dark .Select,
@@ -126,9 +126,9 @@ body {
 .finrep-theme-dark .Select-option,
 .finrep-theme-dark .Select-value,
 .finrep-theme-dark .Select-placeholder {
-  background-color: #111827 !important;
-  border-color: #475569 !important;
-  color: #e5e7eb !important;
+  background-color: #2b2b2b !important;
+  border-color: #646464 !important;
+  color: #a9b7c6 !important;
 }
 
 .finrep-theme-dark .Select-value-label,
@@ -136,32 +136,32 @@ body {
 .finrep-theme-dark .Select-input > input,
 .finrep-theme-dark .Select-arrow-zone,
 .finrep-theme-dark .Select-clear-zone {
-  color: #e5e7eb !important;
+  color: #a9b7c6 !important;
 }
 
 .finrep-theme-dark .Select-arrow {
-  border-top-color: #e5e7eb !important;
+  border-top-color: #a9b7c6 !important;
 }
 
 .finrep-theme-dark .Select-option.is-focused,
 .finrep-theme-dark .Select-option.is-selected {
-  background-color: #1f2937 !important;
-  color: #f8fafc !important;
+  background-color: #3c3f41 !important;
+  color: #dcdcdc !important;
 }
 
 .finrep-theme-dark .ag-theme-alpine,
 .finrep-theme-dark .ag-theme-alpine-dark {
-  --ag-background-color: #111827 !important;
-  --ag-foreground-color: #e5e7eb !important;
-  --ag-header-background-color: #1f2937 !important;
-  --ag-header-foreground-color: #f8fafc !important;
-  --ag-data-color: #e5e7eb !important;
-  --ag-odd-row-background-color: #172033 !important;
-  --ag-row-hover-color: #263349 !important;
-  --ag-border-color: #334155 !important;
-  --ag-secondary-border-color: #334155 !important;
-  --ag-input-border-color: #475569 !important;
-  --ag-control-panel-background-color: #111827 !important;
+  --ag-background-color: #2b2b2b !important;
+  --ag-foreground-color: #a9b7c6 !important;
+  --ag-header-background-color: #3c3f41 !important;
+  --ag-header-foreground-color: #dcdcdc !important;
+  --ag-data-color: #a9b7c6 !important;
+  --ag-odd-row-background-color: #323232 !important;
+  --ag-row-hover-color: #4b4b4b !important;
+  --ag-border-color: #555555 !important;
+  --ag-secondary-border-color: #555555 !important;
+  --ag-input-border-color: #646464 !important;
+  --ag-control-panel-background-color: #2b2b2b !important;
   --ag-modal-overlay-background-color: rgba(15, 23, 42, 0.6) !important;
 }
 
@@ -175,20 +175,20 @@ body {
 .finrep-theme-dark .ag-theme-alpine-dark .ag-cell {
   background-color: var(--ag-background-color) !important;
   color: var(--ag-foreground-color) !important;
-  border-color: #334155 !important;
+  border-color: #555555 !important;
 }
 
 .finrep-theme-dark .ag-theme-alpine .ag-header-cell,
 .finrep-theme-dark .ag-theme-alpine-dark .ag-header-cell,
 .finrep-theme-dark .ag-theme-alpine .ag-header-group-cell,
 .finrep-theme-dark .ag-theme-alpine-dark .ag-header-group-cell {
-  background-color: #1f2937 !important;
-  color: #f8fafc !important;
+  background-color: #3c3f41 !important;
+  color: #dcdcdc !important;
 }
 
 .finrep-theme-dark .ag-theme-alpine .ag-icon,
 .finrep-theme-dark .ag-theme-alpine-dark .ag-icon {
-  color: #cbd5e1 !important;
+  color: #a9b7c6 !important;
   filter: invert(1) opacity(0.8);
 }
 
@@ -200,9 +200,9 @@ body {
 .finrep-theme-dark .dash-dropdown,
 .finrep-theme-dark .dash-dropdown .Select-control,
 .finrep-theme-dark .dash-dropdown .Select__control {
-  background-color: #111827 !important;
-  border-color: #475569 !important;
-  color: #e5e7eb !important;
+  background-color: #2b2b2b !important;
+  border-color: #646464 !important;
+  color: #a9b7c6 !important;
   box-shadow: none !important;
 }
 .finrep-theme-dark .dash-dropdown .Select-value-label,
@@ -212,7 +212,7 @@ body {
 .finrep-theme-dark .dash-dropdown .Select__input-container,
 .finrep-theme-dark .dash-dropdown .Select__input,
 .finrep-theme-dark .dash-dropdown input {
-  color: #e5e7eb !important;
+  color: #a9b7c6 !important;
 }
 .finrep-theme-dark .dash-dropdown .Select-menu-outer,
 .finrep-theme-dark .dash-dropdown .Select-menu,
@@ -220,22 +220,58 @@ body {
 .finrep-theme-dark .dash-dropdown .Select__menu-list,
 .finrep-theme-dark .dash-dropdown .Select-option,
 .finrep-theme-dark .dash-dropdown .Select__option {
-  background-color: #111827 !important;
-  border-color: #475569 !important;
-  color: #e5e7eb !important;
+  background-color: #2b2b2b !important;
+  border-color: #646464 !important;
+  color: #a9b7c6 !important;
 }
 .finrep-theme-dark .dash-dropdown .Select-option.is-focused,
 .finrep-theme-dark .dash-dropdown .Select-option.is-selected,
 .finrep-theme-dark .dash-dropdown .Select__option--is-focused,
 .finrep-theme-dark .dash-dropdown .Select__option--is-selected {
-  background-color: #1f2937 !important;
-  color: #f8fafc !important;
+  background-color: #3c3f41 !important;
+  color: #dcdcdc !important;
 }
 .finrep-theme-dark .dash-dropdown .Select-arrow,
 .finrep-theme-dark .dash-dropdown .Select__dropdown-indicator,
 .finrep-theme-dark .dash-dropdown .Select__indicator,
 .finrep-theme-dark .dash-dropdown .Select__indicator svg {
-  color: #cbd5e1 !important;
-  fill: #cbd5e1 !important;
-  border-top-color: #cbd5e1 !important;
+  color: #a9b7c6 !important;
+  fill: #a9b7c6 !important;
+  border-top-color: #a9b7c6 !important;
+}
+
+.dashboard-toolbar .dashboard-filter .Select-control,
+.dashboard-toolbar .dashboard-filter .Select__control {
+  min-height: 36px !important;
+  height: 36px !important;
+  border-radius: 6px !important;
+}
+.dashboard-toolbar .dashboard-filter .Select-placeholder,
+.dashboard-toolbar .dashboard-filter .Select-value,
+.dashboard-toolbar .dashboard-filter .Select__value-container,
+.dashboard-toolbar .dashboard-filter .Select__single-value {
+  line-height: 34px !important;
+  min-height: 34px !important;
+  padding-top: 0 !important;
+  padding-bottom: 0 !important;
+  font-weight: 600 !important;
+}
+.dashboard-toolbar .btn {
+  height: 36px;
+  padding-top: 0.35rem;
+  padding-bottom: 0.35rem;
+}
+.finrep-theme-dark .dashboard-toolbar .dashboard-filter,
+.finrep-theme-dark .dashboard-toolbar .dashboard-filter .Select-control,
+.finrep-theme-dark .dashboard-toolbar .dashboard-filter .Select__control {
+  background-color: #2b2b2b !important;
+  border-color: #646464 !important;
+  color: #a9b7c6 !important;
+}
+.finrep-theme-dark .dashboard-toolbar .dashboard-filter .Select-value-label,
+.finrep-theme-dark .dashboard-toolbar .dashboard-filter .Select__single-value,
+.finrep-theme-dark .dashboard-toolbar .dashboard-filter .Select-placeholder,
+.finrep-theme-dark .dashboard-toolbar .dashboard-filter .Select__placeholder,
+.finrep-theme-dark .dashboard-toolbar .dashboard-filter input {
+  color: #a9b7c6 !important;
 }

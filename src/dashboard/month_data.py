@@ -33,11 +33,11 @@ def build_month_dashboard_data(
 
     transactions = get_month_transactions(currency, year, month)
     fx_info = get_exchange_rates_info(currency)
-    summary = get_balance_by_month(currency).loc[f"{year}-{month}"].reset_index()
+    summary = _prepare_summary(get_balance_by_month(currency).loc[f"{year}-{month}"].reset_index())
     receivables = get_act_receivables()
     liabilities = get_act_liabilities()
     cost_distribution = _cost_distribution(year, month, currency)
-    assets = get_assets_by_currencies(year, month)
+    assets = _prepare_assets(get_assets_by_currencies(year, month))
 
     return {
         "month_transactions": DashboardDataset(
@@ -56,7 +56,7 @@ def build_month_dashboard_data(
             id="month_summary",
             title="Суммарные показатели",
             dataframe=summary,
-            display_dataframe=_format_summary(summary, currency),
+            display_dataframe=_format_money_columns(summary, currency, ["Категория"]),
         ),
         "month_receivables": DashboardDataset(
             id="month_receivables",
@@ -89,6 +89,55 @@ def build_month_dashboard_data(
             display_dataframe=utils.fill_if_empty(assets.copy(deep=True)),
         ),
     }
+
+
+def _prepare_summary(data: pd.DataFrame) -> pd.DataFrame:
+    order = [
+        "Доход",
+        "Инвестиции",
+        "Сбережения",
+        "Дебиторская задолженность",
+        "Кредиторская задолженность",
+        "Погашение деб. зад.",
+        "Погашение кред. зад.",
+        "Расход",
+        "Баланс",
+        "Капитал",
+        "Дельта",
+    ]
+    display = data.drop(columns=["Дата"], errors="ignore").copy(deep=True)
+    return display[[column for column in order if column in display.columns]]
+
+
+def _prepare_assets(data: pd.DataFrame) -> pd.DataFrame:
+    if data.empty or "Счет" not in data.columns:
+        return data.copy(deep=True)
+
+    display = data.copy(deep=True)
+    priority = {"Всего": 0, "Всего в валюте": 1, "Всего в валюте,%": 2}
+    display["__priority"] = display["Счет"].map(priority).fillna(3).astype(int)
+    if "RUB" in display.columns:
+        display["__rub_sort"] = display["RUB"].map(_to_number).fillna(0)
+    else:
+        display["__rub_sort"] = 0
+    display = display.sort_values(
+        ["__priority", "__rub_sort"],
+        ascending=[True, False],
+        kind="mergesort",
+    )
+    return display.drop(columns=["__priority", "__rub_sort"]).reset_index(drop=True)
+
+
+def _to_number(value) -> float:
+    if pd.isna(value):
+        return 0.0
+    if isinstance(value, (int, float)):
+        return float(value)
+    cleaned = str(value)
+    for symbol in ["₽", "$", "€", "₸", "£", "%", " "]:
+        cleaned = cleaned.replace(symbol, "")
+    cleaned = cleaned.replace(",", ".")
+    return pd.to_numeric(cleaned, errors="coerce")
 
 
 def _cost_distribution(year: str, month: str, currency: str) -> pd.DataFrame:
@@ -132,11 +181,6 @@ def _format_integer_table(data: pd.DataFrame, not_num_cols: list[str]) -> pd.Dat
         numeric = pd.to_numeric(display[column], errors="coerce").fillna(0).round().astype(int)
         display[column] = numeric.map(lambda value: f"{value:,}".replace(",", " "))
     return display.fillna(0)
-
-
-def _format_summary(data: pd.DataFrame, currency: str) -> pd.DataFrame:
-    display = data.drop(columns=["Дата"], errors="ignore").copy(deep=True)
-    return utils.process_num_cols(display, not_num_cols=["Категория"], currency=currency)
 
 
 def _cost_distribution_figure(data: pd.DataFrame) -> go.Figure:

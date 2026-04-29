@@ -104,11 +104,16 @@ def _format_money_columns(
     return utils.process_num_cols(display, not_num_cols=not_money_cols, currency=currency)
 
 
+def _month_start_dates(data: pd.DataFrame) -> pd.Series:
+    return pd.to_datetime(data["Дата"]).dt.to_period("M").dt.to_timestamp()
+
+
 def _income_expense_figure(data: pd.DataFrame) -> go.Figure:
     fig = go.Figure()
+    x_dates = _month_start_dates(data)
     fig.add_trace(
         go.Scatter(
-            x=data["Дата"],
+            x=x_dates,
             y=data["Доход"],
             mode="lines+markers",
             name="Доход",
@@ -117,7 +122,7 @@ def _income_expense_figure(data: pd.DataFrame) -> go.Figure:
     )
     fig.add_trace(
         go.Scatter(
-            x=data["Дата"],
+            x=x_dates,
             y=data["Расход"],
             mode="lines+markers",
             name="Расход",
@@ -131,7 +136,7 @@ def _income_expense_figure(data: pd.DataFrame) -> go.Figure:
 def _delta_figure(data: pd.DataFrame, currency: str) -> go.Figure:
     fig = go.Figure(
         go.Bar(
-            x=data["Дата"],
+            x=_month_start_dates(data),
             y=data["Дельта"],
             name="Дельта",
             hovertemplate="%{x|%Y-%m}<br>%{y:,.0f}<extra></extra>",
@@ -145,7 +150,7 @@ def _delta_figure(data: pd.DataFrame, currency: str) -> go.Figure:
 def _capital_figure(data: pd.DataFrame, currency: str) -> go.Figure:
     fig = go.Figure(
         go.Scatter(
-            x=data["Дата"],
+            x=_month_start_dates(data),
             y=data["Капитал"],
             mode="lines+markers+text",
             name="Капитал",
@@ -155,6 +160,12 @@ def _capital_figure(data: pd.DataFrame, currency: str) -> go.Figure:
         )
     )
     _apply_dashboard_chart_layout(fig, "Динамика капитала", range_slider=True)
+    max_value = pd.to_numeric(data["Капитал"], errors="coerce").max()
+    if pd.notna(max_value) and max_value > 0:
+        fig.update_layout(
+            margin=dict(l=70, r=30, t=105, b=55),
+            yaxis=dict(range=[0, max_value * 1.18], tickfont=dict(size=CHART_FONT_SIZE)),
+        )
     return fig
 
 
@@ -211,7 +222,7 @@ def _important_delta_annotations(data: pd.DataFrame, currency: str, max_labels: 
         label = f"{value:,.0f}".replace(",", " ") + symbol
         annotations.append(
             dict(
-                x=data.loc[index, "Дата"],
+                x=pd.to_datetime(data.loc[index, "Дата"]).to_period("M").to_timestamp(),
                 y=value,
                 text=label,
                 showarrow=True,

@@ -124,9 +124,19 @@ def _quarter_stats(year_balance: pd.DataFrame) -> pd.DataFrame:
             }
         )
     )
-    quarter_stats["Квартал"] = quarter_stats["Квартал"].dt.quarter
+    quarter_stats["Квартал"] = quarter_stats["Квартал"].dt.quarter.astype(str)
     quarter_stats["Сальдо"] = quarter_stats["Общий доход"] - quarter_stats["Общий расход"]
-    return quarter_stats
+    total = pd.DataFrame(
+        [
+            {
+                "Квартал": "Всего",
+                "Общий доход": quarter_stats["Общий доход"].sum(),
+                "Общий расход": quarter_stats["Общий расход"].sum(),
+                "Сальдо": quarter_stats["Сальдо"].sum(),
+            }
+        ]
+    )
+    return pd.concat([quarter_stats, total], ignore_index=True)
 
 
 def _cost_distribution(year: str, currency: str) -> pd.DataFrame:
@@ -207,6 +217,10 @@ def _format_cost_distribution(data: pd.DataFrame, currency: str) -> pd.DataFrame
     return display
 
 
+def _month_start_dates(data: pd.DataFrame) -> pd.Series:
+    return pd.to_datetime(data["Дата"]).dt.to_period("M").dt.to_timestamp()
+
+
 def _cost_distribution_figure(data: pd.DataFrame) -> go.Figure:
     fig = go.Figure(
         go.Bar(
@@ -222,9 +236,11 @@ def _cost_distribution_figure(data: pd.DataFrame) -> go.Figure:
 
 def _income_expense_figure(income: pd.DataFrame, cost: pd.DataFrame) -> go.Figure:
     fig = go.Figure()
+    income_dates = _month_start_dates(income)
+    cost_dates = _month_start_dates(cost)
     fig.add_trace(
         go.Scatter(
-            x=income["Дата"],
+            x=income_dates,
             y=income["Доход"],
             mode="lines+markers",
             name="Доход",
@@ -233,7 +249,7 @@ def _income_expense_figure(income: pd.DataFrame, cost: pd.DataFrame) -> go.Figur
     )
     fig.add_trace(
         go.Scatter(
-            x=cost["Дата"],
+            x=cost_dates,
             y=cost["Расход"],
             mode="lines+markers",
             name="Расход",
@@ -247,7 +263,7 @@ def _income_expense_figure(income: pd.DataFrame, cost: pd.DataFrame) -> go.Figur
 def _capital_figure(data: pd.DataFrame) -> go.Figure:
     fig = go.Figure(
         go.Scatter(
-            x=data["Дата"],
+            x=_month_start_dates(data),
             y=data["Капитал"],
             mode="lines+markers",
             name="Капитал",

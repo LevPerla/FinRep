@@ -33,19 +33,19 @@ def _app_index_string() -> str:
         {%favicon%}
         {%css%}
         <style>
-            .finrep-theme-dark .nav-tabs { border-bottom-color: #475569 !important; }
+            .finrep-theme-dark .nav-tabs { border-bottom-color: #646464 !important; }
             .finrep-theme-dark .nav-tabs .nav-link,
             .finrep-theme-dark .nav-tabs .nav-link:hover,
             .finrep-theme-dark .nav-tabs .nav-link:focus {
-                color: #93c5fd !important;
+                color: #6897bb !important;
                 background-color: transparent !important;
                 border-color: transparent !important;
             }
             .finrep-theme-dark .nav-tabs .nav-link.active,
             .finrep-theme-dark .nav-tabs .nav-item.show .nav-link {
-                color: #f8fafc !important;
+                color: #dcdcdc !important;
                 background-color: #1e293b !important;
-                border-color: #475569 #475569 #1e293b !important;
+                border-color: #646464 #646464 #1e293b !important;
             }
             .finrep-theme-dark .Select,
             .finrep-theme-dark .Select-control,
@@ -54,34 +54,34 @@ def _app_index_string() -> str:
             .finrep-theme-dark .Select-option,
             .finrep-theme-dark .Select-value,
             .finrep-theme-dark .Select-placeholder {
-                background-color: #111827 !important;
-                border-color: #475569 !important;
-                color: #e5e7eb !important;
+                background-color: #2b2b2b !important;
+                border-color: #646464 !important;
+                color: #a9b7c6 !important;
             }
             .finrep-theme-dark .Select-value-label,
             .finrep-theme-dark .Select-input,
             .finrep-theme-dark .Select-input > input,
             .finrep-theme-dark .Select-arrow-zone,
             .finrep-theme-dark .Select-clear-zone {
-                color: #e5e7eb !important;
+                color: #a9b7c6 !important;
             }
-            .finrep-theme-dark .Select-arrow { border-top-color: #e5e7eb !important; }
+            .finrep-theme-dark .Select-arrow { border-top-color: #a9b7c6 !important; }
             .finrep-theme-dark .Select-option.is-focused,
             .finrep-theme-dark .Select-option.is-selected {
-                background-color: #1f2937 !important;
-                color: #f8fafc !important;
+                background-color: #3c3f41 !important;
+                color: #dcdcdc !important;
             }
             .finrep-theme-dark .dash-dropdown,
             .finrep-theme-dark .dash-dropdown .Select-control,
             .finrep-theme-dark .dash-dropdown .Select__control {
-                background-color: #111827 !important;
-                border-color: #475569 !important;
-                color: #e5e7eb !important;
+                background-color: #2b2b2b !important;
+                border-color: #646464 !important;
+                color: #a9b7c6 !important;
                 box-shadow: none !important;
             }
             .finrep-theme-dark .dash-dropdown .Select-control:hover,
             .finrep-theme-dark .dash-dropdown .Select__control:hover {
-                border-color: #64748b !important;
+                border-color: #6f6f6f !important;
             }
             .finrep-theme-dark .dash-dropdown .Select-value-label,
             .finrep-theme-dark .dash-dropdown .Select-placeholder,
@@ -90,47 +90,47 @@ def _app_index_string() -> str:
             .finrep-theme-dark .dash-dropdown .Select__input-container,
             .finrep-theme-dark .dash-dropdown .Select__input,
             .finrep-theme-dark .dash-dropdown input {
-                color: #e5e7eb !important;
+                color: #a9b7c6 !important;
             }
             .finrep-theme-dark .dash-dropdown .Select-menu-outer,
             .finrep-theme-dark .dash-dropdown .Select-menu,
             .finrep-theme-dark .dash-dropdown .Select__menu,
             .finrep-theme-dark .dash-dropdown .Select__menu-list {
-                background-color: #111827 !important;
-                border-color: #475569 !important;
-                color: #e5e7eb !important;
+                background-color: #2b2b2b !important;
+                border-color: #646464 !important;
+                color: #a9b7c6 !important;
             }
             .finrep-theme-dark .dash-dropdown .Select-option,
             .finrep-theme-dark .dash-dropdown .Select__option {
-                background-color: #111827 !important;
-                color: #e5e7eb !important;
+                background-color: #2b2b2b !important;
+                color: #a9b7c6 !important;
             }
             .finrep-theme-dark .dash-dropdown .Select-option.is-focused,
             .finrep-theme-dark .dash-dropdown .Select-option.is-selected,
             .finrep-theme-dark .dash-dropdown .Select__option--is-focused,
             .finrep-theme-dark .dash-dropdown .Select__option--is-selected {
-                background-color: #1f2937 !important;
-                color: #f8fafc !important;
+                background-color: #3c3f41 !important;
+                color: #dcdcdc !important;
             }
             .finrep-theme-dark .dash-dropdown .Select-arrow,
             .finrep-theme-dark .dash-dropdown .Select__dropdown-indicator,
             .finrep-theme-dark .dash-dropdown .Select__indicator,
             .finrep-theme-dark .dash-dropdown .Select__indicator svg {
-                color: #cbd5e1 !important;
-                fill: #cbd5e1 !important;
-                border-top-color: #cbd5e1 !important;
+                color: #a9b7c6 !important;
+                fill: #a9b7c6 !important;
+                border-top-color: #a9b7c6 !important;
             }
             .finrep-theme-dark .ag-theme-alpine,
             .finrep-theme-dark .ag-theme-alpine-dark {
-                --ag-background-color: #111827 !important;
-                --ag-foreground-color: #e5e7eb !important;
-                --ag-header-background-color: #1f2937 !important;
-                --ag-header-foreground-color: #f8fafc !important;
-                --ag-data-color: #e5e7eb !important;
-                --ag-odd-row-background-color: #172033 !important;
-                --ag-row-hover-color: #263349 !important;
-                --ag-border-color: #334155 !important;
-                --ag-secondary-border-color: #334155 !important;
+                --ag-background-color: #2b2b2b !important;
+                --ag-foreground-color: #a9b7c6 !important;
+                --ag-header-background-color: #3c3f41 !important;
+                --ag-header-foreground-color: #dcdcdc !important;
+                --ag-data-color: #a9b7c6 !important;
+                --ag-odd-row-background-color: #323232 !important;
+                --ag-row-hover-color: #4b4b4b !important;
+                --ag-border-color: #555555 !important;
+                --ag-secondary-border-color: #555555 !important;
             }
             .finrep-theme-dark .ag-theme-alpine .ag-root-wrapper,
             .finrep-theme-dark .ag-theme-alpine-dark .ag-root-wrapper,
@@ -138,19 +138,56 @@ def _app_index_string() -> str:
             .finrep-theme-dark .ag-theme-alpine-dark .ag-header,
             .finrep-theme-dark .ag-theme-alpine .ag-header-cell,
             .finrep-theme-dark .ag-theme-alpine-dark .ag-header-cell {
-                background-color: #1f2937 !important;
-                color: #f8fafc !important;
-                border-color: #334155 !important;
+                background-color: #3c3f41 !important;
+                color: #dcdcdc !important;
+                border-color: #555555 !important;
             }
             .finrep-theme-dark .ag-theme-alpine .ag-row,
             .finrep-theme-dark .ag-theme-alpine-dark .ag-row,
             .finrep-theme-dark .ag-theme-alpine .ag-cell,
             .finrep-theme-dark .ag-theme-alpine-dark .ag-cell {
-                border-color: #334155 !important;
+                border-color: #555555 !important;
             }
+
+.dashboard-toolbar .dashboard-filter .Select-control,
+.dashboard-toolbar .dashboard-filter .Select__control {
+  min-height: 36px !important;
+  height: 36px !important;
+  border-radius: 6px !important;
+}
+.dashboard-toolbar .dashboard-filter .Select-placeholder,
+.dashboard-toolbar .dashboard-filter .Select-value,
+.dashboard-toolbar .dashboard-filter .Select__value-container,
+.dashboard-toolbar .dashboard-filter .Select__single-value {
+  line-height: 34px !important;
+  min-height: 34px !important;
+  padding-top: 0 !important;
+  padding-bottom: 0 !important;
+  font-weight: 600 !important;
+}
+.dashboard-toolbar .btn {
+  height: 36px;
+  padding-top: 0.35rem;
+  padding-bottom: 0.35rem;
+}
+.finrep-theme-dark .dashboard-toolbar .dashboard-filter,
+.finrep-theme-dark .dashboard-toolbar .dashboard-filter .Select-control,
+.finrep-theme-dark .dashboard-toolbar .dashboard-filter .Select__control {
+  background-color: #2b2b2b !important;
+  border-color: #646464 !important;
+  color: #a9b7c6 !important;
+}
+.finrep-theme-dark .dashboard-toolbar .dashboard-filter .Select-value-label,
+.finrep-theme-dark .dashboard-toolbar .dashboard-filter .Select__single-value,
+.finrep-theme-dark .dashboard-toolbar .dashboard-filter .Select-placeholder,
+.finrep-theme-dark .dashboard-toolbar .dashboard-filter .Select__placeholder,
+.finrep-theme-dark .dashboard-toolbar .dashboard-filter input {
+  color: #a9b7c6 !important;
+}
+
             .finrep-theme-dark .ag-theme-alpine .ag-icon,
             .finrep-theme-dark .ag-theme-alpine-dark .ag-icon {
-                color: #cbd5e1 !important;
+                color: #a9b7c6 !important;
                 filter: invert(1) opacity(0.8);
             }
         </style>
@@ -197,53 +234,44 @@ def create_layout():
                     dbc.Col(
                         html.H1("FinRep Dashboard", className="h3 mb-0"),
                         xs=12,
-                        md=2,
-                    ),
-                    dbc.Col(
-                        dcc.Dropdown(
-                            id="dashboard-currency",
-                            options=currency_options,
-                            value=DEFAULT_CURRENCY,
-                            clearable=False,
-                        ),
-                        xs=12,
-                        md=2,
-                        className="mt-3 mt-md-0",
-                    ),
-                    dbc.Col(
-                        dcc.Dropdown(
-                            id="dashboard-year",
-                            options=year_options,
-                            value=DEFAULT_YEAR,
-                            clearable=False,
-                        ),
-                        xs=12,
-                        md=2,
-                        className="mt-3 mt-md-0",
-                    ),
-                    dbc.Col(
-                        dcc.Dropdown(
-                            id="dashboard-month",
-                            options=month_options,
-                            value=DEFAULT_MONTH,
-                            clearable=False,
-                        ),
-                        xs=12,
-                        md=1,
-                        className="mt-3 mt-md-0",
+                        md=4,
                     ),
                     dbc.Col(
                         html.Div(
                             [
+                                dcc.Dropdown(
+                                    id="dashboard-currency",
+                                    options=currency_options,
+                                    value=DEFAULT_CURRENCY,
+                                    clearable=False,
+                                    className="dashboard-filter",
+                                    style={"width": "92px"},
+                                ),
+                                dcc.Dropdown(
+                                    id="dashboard-year",
+                                    options=year_options,
+                                    value=DEFAULT_YEAR,
+                                    clearable=False,
+                                    className="dashboard-filter",
+                                    style={"width": "104px"},
+                                ),
+                                dcc.Dropdown(
+                                    id="dashboard-month",
+                                    options=month_options,
+                                    value=DEFAULT_MONTH,
+                                    clearable=False,
+                                    className="dashboard-filter",
+                                    style={"width": "78px"},
+                                ),
                                 dbc.Button("Светлая", id="theme-toggle", color="secondary", outline=True),
                                 dbc.Button("PNG", id="export-png", color="primary", outline=True),
                                 dbc.Button("PDF", id="export-pdf", color="primary", outline=True),
                                 dcc.Download(id="page-export-download"),
                             ],
-                            className="d-flex justify-content-md-end gap-2",
+                            className="dashboard-toolbar d-flex flex-wrap justify-content-md-end align-items-center gap-2",
                         ),
                         xs=12,
-                        md=5,
+                        md=8,
                         className="mt-3 mt-md-0",
                     ),
                 ],
@@ -363,7 +391,7 @@ def register_callbacks(app: Dash) -> None:
                 _grid_section(datasets["fx_rates"], height="260px", theme=theme),
                 _graph_section(datasets["income_expense"], theme=theme),
                 _graph_section(datasets["delta"], theme=theme),
-                _graph_section(datasets["capital"], theme=theme),
+                _graph_section(datasets["capital"], height="640px", theme=theme),
             ],
             className="d-grid gap-4",
         )
@@ -435,13 +463,13 @@ def register_callbacks(app: Dash) -> None:
 
 def _theme_shell_style(theme: str | None) -> dict:
     if theme == "dark":
-        return {"backgroundColor": "#0f172a", "color": "#e5e7eb", "minHeight": "100vh"}
+        return {"backgroundColor": "#2b2b2b", "color": "#a9b7c6", "minHeight": "100vh"}
     return {"backgroundColor": "#ffffff", "color": "#212529", "minHeight": "100vh"}
 
 
 def _section_style(theme: str | None) -> dict:
     if theme == "dark":
-        return {"backgroundColor": "#0f172a", "color": "#e5e7eb"}
+        return {"backgroundColor": "#2b2b2b", "color": "#a9b7c6"}
     return {}
 
 
@@ -452,20 +480,20 @@ def _apply_theme_to_datasets(datasets: dict[str, DashboardDataset], theme: str |
         if dataset.figure is None:
             continue
         dataset.figure.update_layout(
-            paper_bgcolor="#111827",
-            plot_bgcolor="#1f2937",
-            font=dict(color="#e5e7eb"),
+            paper_bgcolor="#2b2b2b",
+            plot_bgcolor="#3c3f41",
+            font=dict(color="#a9b7c6"),
             title=dict(font=dict(color="#f3f4f6")),
-            legend=dict(font=dict(color="#e5e7eb")),
+            legend=dict(font=dict(color="#a9b7c6")),
             xaxis=dict(
                 color="#d1d5db",
-                gridcolor="#374151",
-                zerolinecolor="#4b5563",
+                gridcolor="#555555",
+                zerolinecolor="#646464",
             ),
             yaxis=dict(
                 color="#d1d5db",
-                gridcolor="#374151",
-                zerolinecolor="#4b5563",
+                gridcolor="#555555",
+                zerolinecolor="#646464",
             ),
         )
 
@@ -490,7 +518,7 @@ def _year_report_layout(datasets: dict[str, DashboardDataset], theme: str | None
             dbc.Row(
                 [
                     dbc.Col(_grid_section(datasets["year_income_by_month"], height="560px", theme=theme), xs=12, lg=3),
-                    dbc.Col(_graph_section(datasets["year_income_expense"], theme=theme), xs=12, lg=6),
+                    dbc.Col(_graph_section(datasets["year_income_expense"], height="560px", theme=theme), xs=12, lg=6),
                     dbc.Col(_grid_section(datasets["year_cost_by_month"], height="560px", theme=theme), xs=12, lg=3),
                 ],
                 className="g-4",
@@ -499,7 +527,7 @@ def _year_report_layout(datasets: dict[str, DashboardDataset], theme: str | None
             dbc.Row(
                 [
                     dbc.Col(_grid_section(datasets["year_capital_by_month"], height="560px", theme=theme), xs=12, lg=4),
-                    dbc.Col(_graph_section(datasets["year_capital_chart"], theme=theme), xs=12, lg=8),
+                    dbc.Col(_graph_section(datasets["year_capital_chart"], height="560px", theme=theme), xs=12, lg=8),
                 ],
                 className="g-4",
             ),
@@ -579,7 +607,7 @@ def _grid_section(dataset: DashboardDataset, height: str = "360px", theme: str |
                     "filter": True,
                     "resizable": True,
                 },
-                columnSize="sizeToFit",
+                columnSize="autoSize" if dataset.id in {"fx_rates", "year_fx_rates", "month_fx_rates"} else "sizeToFit",
                 dashGridOptions={
                     "pagination": False,
                 },
@@ -612,9 +640,25 @@ def _grid_row_data(dataset: DashboardDataset, data: pd.DataFrame) -> list[dict]:
         return records
 
     if dataset.id == "year_quarter_stats":
-        _add_level_metadata(records, raw, {"Общий доход": "__quarter_income_level"})
-        _add_level_metadata(records, raw, {"Общий расход": "__quarter_expense_level"})
-        _add_sign_metadata(records, raw, {"Сальдо": "__quarter_balance_sign"})
+        total_mask = raw["Квартал"].astype(str) == "Всего"
+        _add_level_metadata(records, raw[~total_mask].reset_index(drop=True), {"Общий доход": "__quarter_income_level"})
+        _add_level_metadata(records, raw[~total_mask].reset_index(drop=True), {"Общий расход": "__quarter_expense_level"})
+        for index, record in enumerate(records):
+            if index >= len(raw):
+                continue
+            row = raw.iloc[index]
+            is_total = str(row.get("Квартал")) == "Всего"
+            record["__is_total"] = is_total
+            if is_total:
+                record["__quarter_income_level"] = 0
+                record["__quarter_expense_level"] = 0
+                record["__quarter_balance_sign"] = "total"
+            else:
+                record["__quarter_balance_sign"] = _value_sign(row.get("Сальдо"))
+        return records
+
+    if dataset.id == "year_income_cost_stats":
+        _add_level_metadata(records, raw, {"Доход": "__stats_income_level", "Расход": "__stats_expense_level"})
         return records
 
     if dataset.id in {"year_cost_distribution", "month_cost_distribution"}:
@@ -674,11 +718,33 @@ def _grid_column_defs(dataset: DashboardDataset, data: pd.DataFrame, theme: str 
             column_defs.append(column_def)
         return column_defs
 
+    if dataset.id in {"fx_rates", "year_fx_rates", "month_fx_rates"}:
+        widths = {
+            "Валюта": {"width": 88, "maxWidth": 100},
+            "Курс": {"width": 112, "maxWidth": 128},
+            "Обратный курс": {"width": 138, "maxWidth": 158},
+            "Источник": {"width": 620, "minWidth": 520},
+            "Изменение (%)": {"width": 142, "maxWidth": 160},
+        }
+        return [
+            {
+                "field": column,
+                "cellStyle": _plain_cell_style(theme),
+                **widths.get(column, {"flex": 1}),
+            }
+            for column in data.columns
+        ]
+
     style_by_dataset = {
         "year_quarter_stats": {
-            "Общий доход": _level_style("__quarter_income_level", "green", theme),
-            "Общий расход": _level_style("__quarter_expense_level", "red", theme),
-            "Сальдо": _sign_style("__quarter_balance_sign", theme),
+            "Квартал": _total_row_style(theme),
+            "Общий доход": _merge_total_style(_level_style("__quarter_income_level", "green", theme), theme),
+            "Общий расход": _merge_total_style(_level_style("__quarter_expense_level", "red", theme), theme),
+            "Сальдо": _merge_total_style(_sign_style("__quarter_balance_sign", theme), theme),
+        },
+        "year_income_cost_stats": {
+            "Доход": _level_style("__stats_income_level", "green", theme),
+            "Расход": _level_style("__stats_expense_level", "red", theme),
         },
         "year_cost_distribution": {
             "Суммарно": _level_style("__cost_sum_level", "red", theme),
@@ -709,7 +775,7 @@ def _grid_column_defs(dataset: DashboardDataset, data: pd.DataFrame, theme: str 
 
 
 def _plain_cell_style(theme: str | None = None) -> dict:
-    return {"backgroundColor": "#111827", "color": "#e5e7eb"} if theme == "dark" else {}
+    return {"backgroundColor": "#2b2b2b", "color": "#a9b7c6"} if theme == "dark" else {}
 
 
 def _add_level_metadata(records: list[dict], raw: pd.DataFrame, field_map: dict[str, str]) -> None:
@@ -740,8 +806,15 @@ def _add_asset_metadata(records: list[dict], raw: pd.DataFrame) -> None:
         row = raw.iloc[index]
         account = str(row.get("Счет", ""))
         record["__is_asset_total"] = account in {"Всего", "Всего в валюте"}
+        record["__is_asset_currency_total"] = account == "Всего в валюте,%"
+        row_max = _positive_max_from_any(row[value_columns]) if record["__is_asset_currency_total"] else 0.0
         for column in value_columns:
-            record[f"__asset_{column}_level"] = _gradient_level(_to_number(row.get(column)), max_by_column[column])
+            if record["__is_asset_total"]:
+                record[f"__asset_{column}_level"] = 0
+                record[f"__asset_blue_{column}_level"] = 0
+            else:
+                record[f"__asset_{column}_level"] = _gradient_level(_to_number(row.get(column)), max_by_column[column])
+                record[f"__asset_blue_{column}_level"] = _gradient_level(_to_number(row.get(column)), row_max)
 
 
 def _month_transaction_column_styles(data: pd.DataFrame, theme: str | None = None) -> dict:
@@ -758,10 +831,16 @@ def _month_transaction_column_styles(data: pd.DataFrame, theme: str | None = Non
 
 def _month_asset_column_styles(data: pd.DataFrame, theme: str | None = None) -> dict:
     return {
-        column: _merge_asset_total_style(_level_style(f"__asset_{column}_level", "green", theme), theme)
+        column: _merge_asset_total_style(
+            _merge_row_level_style(
+                _level_style(f"__asset_blue_{column}_level", "blue", theme),
+                _level_style(f"__asset_{column}_level", "green", theme),
+            ),
+            theme,
+        )
         for column in data.columns
         if column != "Счет"
-    } | {"Счет": _asset_total_row_style(theme)}
+    } | {"Счет": _merge_asset_currency_total_style(_asset_total_row_style(theme), theme)}
 
 
 def _asset_total_row_style(theme: str | None = None) -> dict:
@@ -784,6 +863,37 @@ def _merge_asset_total_style(style: dict, theme: str | None = None) -> dict:
     return {
         "styleConditions": [total_condition] + style.get("styleConditions", []),
         "defaultStyle": style.get("defaultStyle", {}),
+    }
+
+
+def _asset_currency_total_style(theme: str | None = None) -> dict:
+    if theme == "dark":
+        base_style = {"backgroundColor": "#3c3f41", "color": "#a9b7c6", "fontWeight": "600"}
+    else:
+        base_style = {"backgroundColor": "#a9b7c6", "color": "#1e3a8a", "fontWeight": "600"}
+    return {
+        "styleConditions": [
+            {
+                "condition": "params.data.__is_asset_currency_total",
+                "style": base_style,
+            }
+        ],
+        "defaultStyle": _plain_cell_style(theme),
+    }
+
+
+def _merge_asset_currency_total_style(style: dict, theme: str | None = None) -> dict:
+    currency_condition = _asset_currency_total_style(theme)["styleConditions"][0]
+    return {
+        "styleConditions": style.get("styleConditions", []) + [currency_condition],
+        "defaultStyle": style.get("defaultStyle", _plain_cell_style(theme)),
+    }
+
+
+def _merge_row_level_style(primary: dict, secondary: dict) -> dict:
+    return {
+        "styleConditions": primary.get("styleConditions", []) + secondary.get("styleConditions", []),
+        "defaultStyle": primary.get("defaultStyle", secondary.get("defaultStyle", {})),
     }
 
 
@@ -847,8 +957,8 @@ def _percentage_sign(value) -> str:
 
 def _sign_style(field: str, theme: str | None = None) -> dict:
     if theme == "dark":
-        positive_style = {"backgroundColor": "#163624", "color": "#bbf7d0"}
-        negative_style = {"backgroundColor": "#3f1d20", "color": "#fecaca"}
+        positive_style = {"backgroundColor": "#31452f", "color": "#b6d7a8"}
+        negative_style = {"backgroundColor": "#4a2f2f", "color": "#d99694"}
     else:
         positive_style = {"backgroundColor": "#dff3e3", "color": "#1f5130"}
         negative_style = {"backgroundColor": "#f8dddd", "color": "#6b2626"}
@@ -869,7 +979,7 @@ def _sign_style(field: str, theme: str | None = None) -> dict:
 
 def _total_style(theme: str | None = None) -> dict:
     if theme == "dark":
-        return {"backgroundColor": "#334155", "color": "#f8fafc", "fontWeight": "600"}
+        return {"backgroundColor": "#555555", "color": "#dcdcdc", "fontWeight": "600"}
     return {"backgroundColor": "rgba(108, 117, 125, 0.16)", "color": "#2f3742", "fontWeight": "600"}
 
 
@@ -898,14 +1008,20 @@ def _merge_total_style(style: dict, theme: str | None = None) -> dict:
 
 def _level_style(field: str, palette: str, theme: str | None = None) -> dict:
     if theme == "dark" and palette == "green":
-        colors = {1: "#132f22", 2: "#1b4a31", 3: "#25633f"}
-        text_color = "#bbf7d0"
+        colors = {1: "#2f3d2f", 2: "#3d5a3a", 3: "#4f714b"}
+        text_color = "#b6d7a8"
+    elif theme == "dark" and palette == "blue":
+        colors = {1: "#2f3d4a", 2: "#38546b", 3: "#4a6f8a"}
+        text_color = "#a9b7c6"
     elif theme == "dark":
-        colors = {1: "#3a1d1f", 2: "#55262a", 3: "#743238"}
-        text_color = "#fecaca"
+        colors = {1: "#3f2d2d", 2: "#5a3838", 3: "#704444"}
+        text_color = "#d99694"
     elif palette == "green":
         colors = {1: "#edf8ef", 2: "#d7efd9", 3: "#bde5c0"}
         text_color = "#214d2c"
+    elif palette == "blue":
+        colors = {1: "#eff6ff", 2: "#a9b7c6", 3: "#a9b7c6"}
+        text_color = "#1e3a8a"
     else:
         colors = {1: "#fff0ed", 2: "#f9d8d2", 3: "#f1c0b8"}
         text_color = "#63312c"
