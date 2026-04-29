@@ -13,6 +13,7 @@ from src import config
 from src.dashboard.export import export_dashboard_page
 from src.dashboard.main_data import DashboardDataset, build_main_dashboard_data
 from src.dashboard.month_data import build_month_dashboard_data
+from src.dashboard.planning_data import build_planning_dashboard_data
 from src.dashboard.year_data import build_year_dashboard_data
 from src import utils
 
@@ -283,6 +284,7 @@ def create_layout():
                     dbc.Tab(label="Основной отчет", tab_id="main"),
                     dbc.Tab(label="Годовой отчет", tab_id="year"),
                     dbc.Tab(label="Месячный отчет", tab_id="month"),
+                    dbc.Tab(label="План и прогноз", tab_id="planning"),
                 ],
                 id="dashboard-tabs",
                 active_tab="main",
@@ -336,7 +338,7 @@ def register_callbacks(app: Dash) -> None:
             year = DEFAULT_YEAR
         if month not in {f"{value:02d}" for value in range(1, 13)}:
             month = DEFAULT_MONTH
-        if tab not in {"main", "year", "month"}:
+        if tab not in {"main", "year", "month", "planning"}:
             tab = "main"
         return currency, year, month, tab
 
@@ -361,6 +363,19 @@ def register_callbacks(app: Dash) -> None:
 
             _apply_theme_to_datasets(datasets, theme)
             return _year_report_layout(datasets, theme)
+
+        if active_tab == "planning":
+            try:
+                datasets = build_planning_dashboard_data(
+                    year,
+                    currency,
+                    fx_network_enabled=DEFAULT_FX_NETWORK_ENABLED,
+                )
+            except Exception as exc:
+                return _error_state("Не удалось загрузить данные плана и прогноза.", exc)
+
+            _apply_theme_to_datasets(datasets, theme)
+            return _planning_report_layout(datasets, theme)
 
         if active_tab == "month":
             try:
@@ -536,6 +551,77 @@ def _year_report_layout(datasets: dict[str, DashboardDataset], theme: str | None
     )
 
 
+def _planning_report_layout(datasets: dict[str, DashboardDataset], theme: str | None):
+    return html.Div(
+        [
+            _grid_section(datasets["planning_goals"], height="260px", theme=theme),
+            dbc.Row(
+                [
+                    dbc.Col(_graph_section(datasets["planning_capital_forecast"], height="520px", theme=theme), xs=12, lg=8),
+                    dbc.Col(_runway_section(datasets["planning_runway"], theme=theme), xs=12, lg=4),
+                ],
+                className="g-4",
+            ),
+            dbc.Row(
+                [
+                    dbc.Col(_grid_section(datasets["planning_fx_scenarios"], height="320px", theme=theme), xs=12, lg=5),
+                    dbc.Col(_graph_section(datasets["planning_fx_scenarios"], height="360px", theme=theme), xs=12, lg=7),
+                ],
+                className="g-4",
+            ),
+        ],
+        className="d-grid gap-4",
+    )
+
+
+def _runway_section(dataset: DashboardDataset, theme: str | None = None):
+    data = dataset.display_dataframe if dataset.display_dataframe is not None else dataset.dataframe
+    if data.empty:
+        return _empty_section(dataset)
+
+    row = data.iloc[0]
+    card_style = {
+        "backgroundColor": "#3c3f41",
+        "border": "1px solid #555555",
+        "color": "#a9b7c6",
+        "borderRadius": "8px",
+        "padding": "16px",
+    } if theme == "dark" else {
+        "backgroundColor": "#ffffff",
+        "border": "1px solid #dee2e6",
+        "borderRadius": "8px",
+        "padding": "16px",
+    }
+    label_style = {"fontSize": "0.82rem", "opacity": 0.75, "marginBottom": "6px"}
+    value_style = {"fontSize": "1.55rem", "fontWeight": 700, "lineHeight": 1.15}
+
+    def card(label: str, value: str):
+        return html.Div(
+            [
+                html.Div(label, style=label_style),
+                html.Div(value, style=value_style),
+            ],
+            style=card_style,
+        )
+
+    return html.Section(
+        [
+            _section_header(dataset),
+            html.Div(
+                [
+                    card("Runway в месяцах", str(row.get("Runway, мес.", "не рассчитано"))),
+                    card("Runway в годах", str(row.get("Runway, лет", "не рассчитано"))),
+                    card("Капитал", str(row.get("Капитал", "не задано"))),
+                    card("Средний расход/мес", str(row.get("Средний расход", "не задано"))),
+                    html.Div(str(row.get("Статус", "")), className="small", style={"opacity": 0.7}),
+                ],
+                className="d-grid gap-3",
+            ),
+        ],
+        style=_section_style(theme),
+    )
+
+
 def _month_report_layout(datasets: dict[str, DashboardDataset], theme: str | None):
     return html.Div(
         [
@@ -688,6 +774,22 @@ def _grid_row_data(dataset: DashboardDataset, data: pd.DataFrame) -> list[dict]:
         _add_asset_metadata(records, raw)
         return records
 
+    if dataset.id == "planning_goals":
+        for index, record in enumerate(records):
+            if index >= len(raw):
+                continue
+            row = raw.iloc[index]
+            record["__planning_delta_sign"] = _value_sign(row.get("Отклонение"))
+            record["__planning_progress_level"] = _gradient_level(row.get("Прогресс (%)"), 100)
+        return records
+
+    if dataset.id == "planning_fx_scenarios":
+        _add_level_metadata(records, raw, {"Капитал": "__planning_fx_capital_level"})
+        for index, record in enumerate(records):
+            if index < len(raw):
+                record["__planning_fx_delta_sign"] = _value_sign(raw.iloc[index].get("Изменение капитала"))
+        return records
+
     simple_level_tables = {
         "year_income_by_month": {"Доход": ("__monthly_income_level", "green")},
         "year_cost_by_month": {"Расход": ("__monthly_cost_level", "red")},
@@ -766,6 +868,14 @@ def _grid_column_defs(dataset: DashboardDataset, data: pd.DataFrame, theme: str 
         "year_income_by_month": {"Доход": _level_style("__monthly_income_level", "green", theme)},
         "year_cost_by_month": {"Расход": _level_style("__monthly_cost_level", "red", theme)},
         "year_capital_by_month": {"Капитал": _level_style("__monthly_capital_level", "green", theme)},
+        "planning_goals": {
+            "Отклонение": _sign_style("__planning_delta_sign", theme),
+            "Прогресс (%)": _level_style("__planning_progress_level", "green", theme),
+        },
+        "planning_fx_scenarios": {
+            "Капитал": _level_style("__planning_fx_capital_level", "blue", theme),
+            "Изменение капитала": _sign_style("__planning_fx_delta_sign", theme),
+        },
     }
     column_styles = style_by_dataset.get(dataset.id, {})
     return [
@@ -1088,6 +1198,12 @@ def _datasets_for_tab(
             currency,
             fx_network_enabled=DEFAULT_FX_NETWORK_ENABLED,
         )
+    if active_tab == "planning":
+        return build_planning_dashboard_data(
+            year,
+            currency,
+            fx_network_enabled=DEFAULT_FX_NETWORK_ENABLED,
+        )
     if active_tab == "month":
         return build_month_dashboard_data(
             year,
@@ -1113,6 +1229,8 @@ def _download_filename(
         return f"year_report_{year}_{dataset.id}_{currency}_{timestamp}.xlsx"
     if active_tab == "month":
         return f"month_report_{year}_{month}_{dataset.id}_{currency}_{timestamp}.xlsx"
+    if active_tab == "planning":
+        return f"planning_{year}_{dataset.id}_{currency}_{timestamp}.xlsx"
     return f"main_report_{dataset.id}_{currency}_{timestamp}.xlsx"
 
 

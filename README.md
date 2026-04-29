@@ -103,6 +103,24 @@ Within a single Python process, repeated CSV reads and repeated report calculati
 - `src/model/create_tables.py` caches repeated report tables.
 - Public cached functions return deep copies so report code does not mutate the cached DataFrame.
 
+## Planning And Forecasting
+
+Dash includes a `План и прогноз` tab. It uses manually maintained annual goals from:
+
+```text
+data/plans/goals.csv
+```
+
+Expected columns:
+
+```text
+year;currency;target_capital;target_monthly_income;target_monthly_expense;notes
+```
+
+`target_monthly_income` and `target_monthly_expense` are average monthly goals. Goals can be entered once in one currency, for example `RUB`; when another dashboard currency is selected, money goals are converted through the FX layer.
+
+The planning tab shows goal progress, a capital chart with facts from the start of the previous year plus a 12-month forecast, runway in months and years based on average monthly expenses, and FX stress scenarios `-20%`, `-10%`, `0%`, `+10%`, `+20%`. In FX scenarios the selected dashboard currency is what changes: for example, `RUB +20%` means RUB strengthens against the other asset currencies by 20%, so non-RUB assets become worth less in RUB.
+
 ## Dash MVP
 
 The Dash dashboard is developed in parallel with the existing Plotly report flow. The old `main.py` report generation remains the fallback.

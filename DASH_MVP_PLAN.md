@@ -173,3 +173,13 @@ The `Годовой отчет` and `Месячный отчет` tabs should st
 - [x] Move the yearly cost distribution chart above the table, expand the table height, and add red conditional formatting to cost columns.
 - [x] Format yearly monthly-table dates as `YYYY-MM-DD` and add green/red conditional formatting to income, expense, and capital columns.
 - [x] Remove data zoom range sliders from the yearly income/expense and capital charts.
+
+## Planning And Forecast V1
+
+- [x] Add `data/plans/goals.csv` as a manual annual-goals file with monthly income/expense targets.
+- [x] Add a Dash planning adapter for annual goals, 12-month capital forecast, runway in months/years, and FX stress scenarios.
+- [x] Support entering goals once in one currency and converting them for the selected dashboard currency.
+- [x] Show capital facts from the start of the previous year before the 12-month forecast.
+- [x] Add explicit FX scenario labels where the selected dashboard currency strengthens or weakens against other currencies.
+- [x] Add the `План и прогноз` Dash tab without changing the legacy Plotly report flow.
+- [x] Keep planning data outside protected source folders `data/transactions_info/` and `data/assets_info/`.
