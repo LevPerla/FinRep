@@ -232,7 +232,7 @@ def create_layout():
             dbc.Row(
                 [
                     dbc.Col(
-                        html.H1("FinRep Dashboard", className="h3 mb-0"),
+                        html.H1("Finance Dashboard", className="h3 mb-0"),
                         xs=12,
                         md=4,
                     ),
