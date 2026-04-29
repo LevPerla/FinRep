@@ -75,8 +75,8 @@ The MVP should focus on the main report first and prove the new interaction mode
 - [x] Move away from fixed full-report Plotly subplot heights in the Dash UI.
 - [x] Add responsive layout containers using `dash-bootstrap-components`.
 - [x] Add table views for summary and FX data using Dash AG Grid or a simple Dash table component.
-- [ ] Add empty/error states for missing CSV data or unavailable FX data.
-- [ ] Verify the UI remains usable on desktop and mobile-width viewports.
+- [x] Add empty/error states for missing CSV data or unavailable FX data.
+- [x] Verify the UI remains usable on desktop and mobile-width viewports.
 
 ### Phase 4: XLSX Downloads
 
@@ -88,21 +88,21 @@ The MVP should focus on the main report first and prove the new interaction mode
 
 ### Phase 5: PNG/PDF Page Export
 
-- [ ] Add export buttons for PNG and PDF in the Dash top control bar.
-- [ ] Implement a Playwright-based export helper that opens the current dashboard URL.
-- [ ] Wait for Dash and Plotly charts to finish rendering before capture.
-- [ ] Export the active tab or full rendered page to `reports/dashboard_exports/<currency>/`.
-- [ ] Use filenames that include report type, active tab, currency, and timestamp.
-- [ ] Verify exported PNG/PDF files are non-empty and do not cut off visible charts.
+- [x] Add export buttons for PNG and PDF in the Dash top control bar.
+- [x] Implement a Playwright-based export helper that opens the current dashboard URL.
+- [x] Wait for Dash and Plotly charts to finish rendering before capture.
+- [x] Export the active tab or full rendered page to `reports/dashboard_exports/<currency>/`.
+- [x] Use filenames that include report type, active tab, currency, and timestamp.
+- [x] Verify exported PNG/PDF files are non-empty and do not cut off visible charts.
 
 ### Phase 6: Compatibility and Documentation
 
-- [ ] Keep existing Plotly report functions available and unchanged unless a compatibility-preserving refactor is required.
-- [ ] Keep `main.py` behavior intact for the current main/year/month report generation.
+- [x] Keep existing Plotly report functions available and unchanged unless a compatibility-preserving refactor is required.
+- [x] Keep `main.py` behavior intact for the current main/year/month report generation.
 - [x] Document the new Dash command in `README.md`.
-- [ ] Document that Dash MVP is experimental and the current Plotly reports remain the fallback.
-- [ ] Add a final compatibility smoke check for both the Dash app import and old Plotly report imports.
-- [ ] Update this checklist as tasks are completed.
+- [x] Document that Dash MVP is experimental and the current Plotly reports remain the fallback.
+- [x] Add a final compatibility smoke check for both the Dash app import and old Plotly report imports.
+- [x] Update this checklist as tasks are completed.
 
 ## Test Plan
 
@@ -113,9 +113,63 @@ The MVP should focus on the main report first and prove the new interaction mode
 - Use Playwright smoke checks for desktop and mobile viewport sizes to confirm charts render and tabs switch.
 - Verify PNG/PDF export creates non-empty files and does not cut off the active tab content.
 
+## Next Extension Plan: Yearly and Monthly Reports
+
+### Extension Goal
+
+Add Dash versions of the existing yearly and monthly reports while preserving the current Plotly report functions as fallback.
+
+The `Годовой отчет` and `Месячный отчет` tabs should stop being placeholders and become full report pages. Each tab should keep the visual block order from the corresponding existing Plotly dashboard, use the shared XLSX/export mechanisms, and reuse existing data/currency functions instead of duplicating CSV parsing or FX logic.
+
+### Yearly Report Checklist
+
+- [x] Add year selector to the top control bar or a report-specific controls row.
+- [x] Create `build_year_dashboard_data(year, currency, fx_network_enabled=False)` in a dashboard data adapter.
+- [x] Reuse existing data functions such as `get_balance_by_month`, `get_cost_distribution`, and FX info helpers.
+- [x] Return stable datasets for quarter totals, FX rates, cost distribution, cost distribution chart, income by month, cost by month, income/cost stats, capital by month, and capital chart.
+- [x] Keep raw numeric DataFrames separate from display-formatted tables for XLSX export.
+- [x] Render the yearly report tab in the same order as `src/reports/year_report.py`.
+- [x] Use independent responsive Plotly graphs instead of one large fixed subplot.
+- [x] Use Dash AG Grid for table-heavy blocks.
+- [x] Add XLSX buttons for every yearly report widget using the existing download callback pattern.
+- [x] Ensure PNG/PDF export works for the yearly tab and filenames include `year`.
+- [x] Add smoke checks for supported year/currency combinations.
+
+### Monthly Report Checklist
+
+- [x] Add month selector next to the year selector, visible or relevant for the monthly tab.
+- [x] Create `build_month_dashboard_data(year, month, currency, fx_network_enabled=False)` in a dashboard data adapter.
+- [x] Reuse existing data functions such as `get_month_transactions`, `get_balance_by_month`, `get_act_receivables`, `get_act_liabilities`, `get_cost_distribution`, `get_assets_by_currencies`, and FX info helpers.
+- [x] Return stable datasets for transactions, FX rates, monthly summary stats, receivables, liabilities, cost distribution, cost distribution chart, and assets by currency/account.
+- [x] Keep raw numeric DataFrames separate from display-formatted tables for XLSX export.
+- [x] Render the monthly report tab in the same order as `src/reports/month_report.py`.
+- [x] Use responsive table heights and pagination so large transaction tables remain usable on mobile and desktop.
+- [x] Add XLSX buttons for every monthly report widget using the existing download callback pattern.
+- [x] Ensure PNG/PDF export works for the monthly tab and filenames include `year` and `month`.
+- [x] Add smoke checks for the currently selected `YEAR`/`MONTH` defaults from `main.py`.
+
+### Shared Extension Tasks
+
+- [ ] Refactor common dashboard UI helpers if yearly/monthly implementation duplicates main-report rendering patterns.
+- [x] Extend URL state with `year` and `month` query parameters so export URLs reproduce the selected report state.
+- [x] Extend export filename generation to include report type, currency, year, month when applicable.
+- [x] Keep old `create_year_report` and `create_month_report` untouched unless a compatibility-preserving shared helper extraction is needed.
+- [x] Add final compatibility smoke checks for Dash main/year/month tabs and old Plotly report imports.
+- [x] Update README with the supported Dash report tabs and selector behavior.
+
 ## Assumptions
 
 - The old Plotly reports stay as the reliable fallback until a later migration plan says otherwise.
 - The first Dash version is local-only and does not require authentication, hosting, or Telegram integration.
 - The first export implementation captures the rendered page state controlled by Dash UI inputs, not manual browser-only Plotly interactions such as temporary zoom or pan.
 - More advanced charting libraries can be evaluated later after the Dash shell proves useful.
+
+## Yearly Dashboard Polish
+
+- [x] Add pastel conditional formatting to the Yearly Stats grid: green balance for positive values, red for negative values, green income gradient, and red expense gradient.
+- [x] Disable mouse wheel zoom for the yearly Income and Expense chart because the range slider already covers zooming and wheel zoom interferes with scrolling.
+- [x] Add sparse, readable value labels to yearly Delta and Capital charts so the trend is informative without label collisions.
+- [x] Add conditional formatting to the yearly quarter totals grid.
+- [x] Move the yearly cost distribution chart above the table, expand the table height, and add red conditional formatting to cost columns.
+- [x] Format yearly monthly-table dates as `YYYY-MM-DD` and add green/red conditional formatting to income, expense, and capital columns.
+- [x] Remove data zoom range sliders from the yearly income/expense and capital charts.

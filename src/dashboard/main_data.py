@@ -21,6 +21,7 @@ class DashboardDataset:
     dataframe: pd.DataFrame
     display_dataframe: pd.DataFrame | None = None
     figure: go.Figure | None = None
+    graph_config: dict | None = None
 
 
 def build_main_dashboard_data(
@@ -62,18 +63,19 @@ def build_main_dashboard_data(
             title="Income and Expense",
             dataframe=income_expense,
             figure=_income_expense_figure(income_expense),
+            graph_config={"scrollZoom": False},
         ),
         "delta": DashboardDataset(
             id="delta",
             title="Delta",
             dataframe=delta,
-            figure=_delta_figure(delta),
+            figure=_delta_figure(delta, currency),
         ),
         "capital": DashboardDataset(
             id="capital",
             title="Capital",
             dataframe=capital,
-            figure=_capital_figure(capital),
+            figure=_capital_figure(capital, currency),
         ),
     }
 
@@ -126,7 +128,7 @@ def _income_expense_figure(data: pd.DataFrame) -> go.Figure:
     return fig
 
 
-def _delta_figure(data: pd.DataFrame) -> go.Figure:
+def _delta_figure(data: pd.DataFrame, currency: str) -> go.Figure:
     fig = go.Figure(
         go.Bar(
             x=data["Дата"],
@@ -136,21 +138,97 @@ def _delta_figure(data: pd.DataFrame) -> go.Figure:
         )
     )
     _apply_dashboard_chart_layout(fig, "Дельты", range_slider=True)
+    fig.update_layout(annotations=_important_delta_annotations(data, currency, max_labels=6))
     return fig
 
 
-def _capital_figure(data: pd.DataFrame) -> go.Figure:
+def _capital_figure(data: pd.DataFrame, currency: str) -> go.Figure:
     fig = go.Figure(
         go.Scatter(
             x=data["Дата"],
             y=data["Капитал"],
-            mode="lines+markers",
+            mode="lines+markers+text",
             name="Капитал",
+            text=_sparse_money_labels(data["Капитал"], currency),
+            textposition="top center",
             line=dict(color="green", width=2),
         )
     )
     _apply_dashboard_chart_layout(fig, "Динамика капитала", range_slider=True)
     return fig
+
+
+def _sparse_money_labels(values: pd.Series, currency: str, max_labels: int = 10) -> list[str]:
+    if values.empty:
+        return []
+
+    step = max(1, int(len(values) / max_labels))
+    label_indexes = set(range(0, len(values), step))
+    label_indexes.add(len(values) - 1)
+    symbol = config.UNIQUE_TICKERS[currency]
+
+    labels = []
+    for index, value in enumerate(values):
+        if index not in label_indexes or pd.isna(value):
+            labels.append("")
+            continue
+        labels.append(f"{value:,.0f}".replace(",", " ") + symbol)
+    return labels
+
+
+def _important_money_labels(values: pd.Series, currency: str, max_labels: int = 7) -> list[str]:
+    if values.empty:
+        return []
+
+    numeric = pd.to_numeric(values, errors="coerce")
+    label_indexes = set(numeric.abs().nlargest(min(max_labels, len(numeric))).index)
+    label_indexes.add(numeric.index[-1])
+    symbol = config.UNIQUE_TICKERS[currency]
+
+    labels = []
+    for index, value in numeric.items():
+        if index not in label_indexes or pd.isna(value):
+            labels.append("")
+            continue
+        labels.append(f"{value:,.0f}".replace(",", " ") + symbol)
+    return labels
+
+
+def _important_delta_annotations(data: pd.DataFrame, currency: str, max_labels: int = 6) -> list[dict]:
+    if data.empty or "Дельта" not in data:
+        return []
+
+    values = pd.to_numeric(data["Дельта"], errors="coerce")
+    important_indexes = set(values.abs().nlargest(min(max_labels, len(values))).index)
+    important_indexes.add(values.index[-1])
+    symbol = config.UNIQUE_TICKERS[currency]
+    annotations = []
+
+    for index in sorted(important_indexes):
+        value = values.loc[index]
+        if pd.isna(value):
+            continue
+        label = f"{value:,.0f}".replace(",", " ") + symbol
+        annotations.append(
+            dict(
+                x=data.loc[index, "Дата"],
+                y=value,
+                text=label,
+                showarrow=True,
+                arrowhead=1,
+                arrowsize=0.8,
+                arrowwidth=1,
+                arrowcolor="#5f6bff",
+                ax=0,
+                ay=-28 if value >= 0 else 28,
+                font=dict(size=12, color="#243b63"),
+                bgcolor="rgba(255,255,255,0.82)",
+                bordercolor="rgba(36,59,99,0.18)",
+                borderwidth=1,
+                borderpad=3,
+            )
+        )
+    return annotations
 
 
 def _apply_dashboard_chart_layout(fig: go.Figure, title: str, range_slider: bool = False) -> None:

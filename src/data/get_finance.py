@@ -129,7 +129,18 @@ def get_fx_rate_info(from_curr, to_curr, as_of_date=None, lookback_days=7) -> di
     from_curr = str(from_curr).upper()
     to_curr = str(to_curr).upper()
 
-    rates = get_fx_rates(from_curr, to_curr, start, as_of)
+    initial_legs = [
+        _usd_rate_metadata(from_curr, as_of),
+        _usd_rate_metadata(to_curr, as_of),
+    ]
+    quote_dates = [
+        leg['rate_date']
+        for leg in initial_legs
+        if leg.get('source') not in {'base', 'missing'} and leg.get('rate_date') is not None
+    ]
+    effective_date = min(quote_dates) if quote_dates else as_of
+
+    rates = get_fx_rates(from_curr, to_curr, start, effective_date)
     rate_series = pd.to_numeric(rates.iloc[:, 0], errors='coerce').dropna() if not rates.empty else pd.Series(dtype=float)
     if rate_series.empty:
         return {

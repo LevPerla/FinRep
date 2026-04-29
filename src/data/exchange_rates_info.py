@@ -31,11 +31,9 @@ def get_exchange_rates_info(target_currency='RUB'):
                 rate = rate_info['rate']
                 if rate is None:
                     rate_source = 'Недоступно'
-                    last_update = 'N/A'
                     rate_change = None
                 else:
                     rate_source = rate_info['source']
-                    last_update = _format_date(rate_info['rate_date'])
                     rate_change = rate_info['change_pct']
                 
                 # Calculate inverse rate (1/rate) for reference
@@ -47,7 +45,6 @@ def get_exchange_rates_info(target_currency='RUB'):
                     'Обратный курс': f"{inverse_rate:.4f}" if inverse_rate else "N/A",
                     'Источник': rate_source,
                     'Изменение (%)': f"{rate_change:+.2f}%" if rate_change is not None else "N/A",
-                    'Последнее обновление': last_update,
                 })
                 
             except Exception as e:
@@ -58,7 +55,6 @@ def get_exchange_rates_info(target_currency='RUB'):
                     'Обратный курс': "N/A",
                     'Источник': "Недоступно",
                     'Изменение (%)': "N/A",
-                    'Последнее обновление': "N/A",
                 })
         
         return pd.DataFrame(rates_info)
@@ -67,11 +63,6 @@ def get_exchange_rates_info(target_currency='RUB'):
         logger.error(f"Error getting exchange rates info: {e}")
         return pd.DataFrame()
 
-
-def _format_date(value):
-    if value is None or pd.isna(value):
-        return 'N/A'
-    return pd.Timestamp(value).strftime('%Y-%m-%d')
 
 def get_currency_conversion_summary(target_currency='RUB'):
     """

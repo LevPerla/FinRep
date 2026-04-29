@@ -1,0 +1,241 @@
+body {
+  background: #f8fafc;
+}
+
+.finrep-shell {
+  min-height: 100vh;
+  transition: background-color 160ms ease, color 160ms ease;
+}
+
+.finrep-theme-light {
+  background: #ffffff;
+  color: #212529;
+}
+
+.finrep-theme-dark {
+  background: #0f172a;
+  color: #e5e7eb;
+}
+
+.finrep-theme-dark h1,
+.finrep-theme-dark h2,
+.finrep-theme-dark h3,
+.finrep-theme-dark h4,
+.finrep-theme-dark h5,
+.finrep-theme-dark h6 {
+  color: #f8fafc;
+}
+
+.finrep-theme-dark .nav-tabs {
+  border-bottom-color: #334155;
+}
+
+.finrep-theme-dark .nav-tabs .nav-link {
+  color: #cbd5e1;
+  background: transparent;
+  border-color: transparent;
+}
+
+.finrep-theme-dark .nav-tabs .nav-link.active {
+  color: #f8fafc;
+  background: #1e293b;
+  border-color: #334155 #334155 #1e293b;
+}
+
+.finrep-theme-dark .Select-control,
+.finrep-theme-dark .Select-menu-outer,
+.finrep-theme-dark .Select-value,
+.finrep-theme-dark .Select-placeholder {
+  background-color: #111827 !important;
+  border-color: #334155 !important;
+  color: #e5e7eb !important;
+}
+
+.finrep-theme-dark .Select-value-label,
+.finrep-theme-dark .Select-input > input,
+.finrep-theme-dark .Select-option {
+  color: #e5e7eb !important;
+}
+
+.finrep-theme-dark .Select-option {
+  background-color: #111827 !important;
+}
+
+.finrep-theme-dark .Select-option.is-focused {
+  background-color: #1f2937 !important;
+}
+
+.finrep-theme-dark .ag-theme-alpine {
+  --ag-background-color: #111827;
+  --ag-foreground-color: #e5e7eb;
+  --ag-header-background-color: #1f2937;
+  --ag-header-foreground-color: #f8fafc;
+  --ag-odd-row-background-color: #172033;
+  --ag-row-hover-color: #263349;
+  --ag-border-color: #334155;
+  --ag-secondary-border-color: #334155;
+  --ag-input-border-color: #475569;
+  --ag-control-panel-background-color: #111827;
+  --ag-modal-overlay-background-color: rgba(15, 23, 42, 0.6);
+}
+
+.finrep-theme-dark .ag-theme-alpine .ag-root-wrapper,
+.finrep-theme-dark .ag-theme-alpine .ag-header,
+.finrep-theme-dark .ag-theme-alpine .ag-row,
+.finrep-theme-dark .ag-theme-alpine .ag-cell {
+  border-color: #334155;
+}
+
+.finrep-theme-dark .dash-graph,
+.finrep-theme-dark .js-plotly-plot {
+  background: #111827;
+}
+
+.finrep-theme-dark .alert-warning {
+  background-color: #42340f;
+  border-color: #6b5417;
+  color: #fde68a;
+}
+
+
+.finrep-theme-dark .btn-outline-secondary,
+.finrep-theme-dark .btn-outline-primary {
+  color: #dbeafe !important;
+  border-color: #475569 !important;
+}
+
+.finrep-theme-dark .nav-tabs .nav-link,
+.finrep-theme-dark .nav-tabs .nav-link:hover,
+.finrep-theme-dark .nav-tabs .nav-link:focus {
+  color: #93c5fd !important;
+  background-color: transparent !important;
+  border-color: transparent !important;
+}
+
+.finrep-theme-dark .nav-tabs .nav-link.active,
+.finrep-theme-dark .nav-tabs .nav-item.show .nav-link {
+  color: #f8fafc !important;
+  background-color: #1e293b !important;
+  border-color: #475569 #475569 #1e293b !important;
+}
+
+.finrep-theme-dark .Select,
+.finrep-theme-dark .Select-control,
+.finrep-theme-dark .Select-menu-outer,
+.finrep-theme-dark .Select-menu,
+.finrep-theme-dark .Select-option,
+.finrep-theme-dark .Select-value,
+.finrep-theme-dark .Select-placeholder {
+  background-color: #111827 !important;
+  border-color: #475569 !important;
+  color: #e5e7eb !important;
+}
+
+.finrep-theme-dark .Select-value-label,
+.finrep-theme-dark .Select-input,
+.finrep-theme-dark .Select-input > input,
+.finrep-theme-dark .Select-arrow-zone,
+.finrep-theme-dark .Select-clear-zone {
+  color: #e5e7eb !important;
+}
+
+.finrep-theme-dark .Select-arrow {
+  border-top-color: #e5e7eb !important;
+}
+
+.finrep-theme-dark .Select-option.is-focused,
+.finrep-theme-dark .Select-option.is-selected {
+  background-color: #1f2937 !important;
+  color: #f8fafc !important;
+}
+
+.finrep-theme-dark .ag-theme-alpine,
+.finrep-theme-dark .ag-theme-alpine-dark {
+  --ag-background-color: #111827 !important;
+  --ag-foreground-color: #e5e7eb !important;
+  --ag-header-background-color: #1f2937 !important;
+  --ag-header-foreground-color: #f8fafc !important;
+  --ag-data-color: #e5e7eb !important;
+  --ag-odd-row-background-color: #172033 !important;
+  --ag-row-hover-color: #263349 !important;
+  --ag-border-color: #334155 !important;
+  --ag-secondary-border-color: #334155 !important;
+  --ag-input-border-color: #475569 !important;
+  --ag-control-panel-background-color: #111827 !important;
+  --ag-modal-overlay-background-color: rgba(15, 23, 42, 0.6) !important;
+}
+
+.finrep-theme-dark .ag-theme-alpine .ag-root-wrapper,
+.finrep-theme-dark .ag-theme-alpine-dark .ag-root-wrapper,
+.finrep-theme-dark .ag-theme-alpine .ag-header,
+.finrep-theme-dark .ag-theme-alpine-dark .ag-header,
+.finrep-theme-dark .ag-theme-alpine .ag-row,
+.finrep-theme-dark .ag-theme-alpine-dark .ag-row,
+.finrep-theme-dark .ag-theme-alpine .ag-cell,
+.finrep-theme-dark .ag-theme-alpine-dark .ag-cell {
+  background-color: var(--ag-background-color) !important;
+  color: var(--ag-foreground-color) !important;
+  border-color: #334155 !important;
+}
+
+.finrep-theme-dark .ag-theme-alpine .ag-header-cell,
+.finrep-theme-dark .ag-theme-alpine-dark .ag-header-cell,
+.finrep-theme-dark .ag-theme-alpine .ag-header-group-cell,
+.finrep-theme-dark .ag-theme-alpine-dark .ag-header-group-cell {
+  background-color: #1f2937 !important;
+  color: #f8fafc !important;
+}
+
+.finrep-theme-dark .ag-theme-alpine .ag-icon,
+.finrep-theme-dark .ag-theme-alpine-dark .ag-icon {
+  color: #cbd5e1 !important;
+  filter: invert(1) opacity(0.8);
+}
+
+.finrep-theme-dark .ag-theme-alpine .ag-row .ag-cell[style*="background-color"],
+.finrep-theme-dark .ag-theme-alpine-dark .ag-row .ag-cell[style*="background-color"] {
+  color: inherit;
+}
+
+.finrep-theme-dark .dash-dropdown,
+.finrep-theme-dark .dash-dropdown .Select-control,
+.finrep-theme-dark .dash-dropdown .Select__control {
+  background-color: #111827 !important;
+  border-color: #475569 !important;
+  color: #e5e7eb !important;
+  box-shadow: none !important;
+}
+.finrep-theme-dark .dash-dropdown .Select-value-label,
+.finrep-theme-dark .dash-dropdown .Select-placeholder,
+.finrep-theme-dark .dash-dropdown .Select__single-value,
+.finrep-theme-dark .dash-dropdown .Select__placeholder,
+.finrep-theme-dark .dash-dropdown .Select__input-container,
+.finrep-theme-dark .dash-dropdown .Select__input,
+.finrep-theme-dark .dash-dropdown input {
+  color: #e5e7eb !important;
+}
+.finrep-theme-dark .dash-dropdown .Select-menu-outer,
+.finrep-theme-dark .dash-dropdown .Select-menu,
+.finrep-theme-dark .dash-dropdown .Select__menu,
+.finrep-theme-dark .dash-dropdown .Select__menu-list,
+.finrep-theme-dark .dash-dropdown .Select-option,
+.finrep-theme-dark .dash-dropdown .Select__option {
+  background-color: #111827 !important;
+  border-color: #475569 !important;
+  color: #e5e7eb !important;
+}
+.finrep-theme-dark .dash-dropdown .Select-option.is-focused,
+.finrep-theme-dark .dash-dropdown .Select-option.is-selected,
+.finrep-theme-dark .dash-dropdown .Select__option--is-focused,
+.finrep-theme-dark .dash-dropdown .Select__option--is-selected {
+  background-color: #1f2937 !important;
+  color: #f8fafc !important;
+}
+.finrep-theme-dark .dash-dropdown .Select-arrow,
+.finrep-theme-dark .dash-dropdown .Select__dropdown-indicator,
+.finrep-theme-dark .dash-dropdown .Select__indicator,
+.finrep-theme-dark .dash-dropdown .Select__indicator svg {
+  color: #cbd5e1 !important;
+  fill: #cbd5e1 !important;
+  border-top-color: #cbd5e1 !important;
+}
