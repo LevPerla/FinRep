@@ -154,7 +154,7 @@ def _capital_figure(data: pd.DataFrame, currency: str) -> go.Figure:
             y=data["Капитал"],
             mode="lines+markers+text",
             name="Капитал",
-            text=_sparse_money_labels(data["Капитал"], currency),
+            text=_sparse_money_labels(data["Капитал"], currency, max_labels=7),
             textposition="top center",
             line=dict(color="green", width=2),
         )
@@ -169,15 +169,26 @@ def _capital_figure(data: pd.DataFrame, currency: str) -> go.Figure:
     return fig
 
 
-def _sparse_money_labels(values: pd.Series, currency: str, max_labels: int = 10) -> list[str]:
+def _sparse_money_labels(values: pd.Series, currency: str, max_labels: int = 7) -> list[str]:
     if values.empty:
         return []
 
-    step = max(1, int(len(values) / max_labels))
-    label_indexes = set(range(0, len(values), step))
-    label_indexes.add(len(values) - 1)
-    symbol = config.UNIQUE_TICKERS[currency]
+    count = len(values)
+    label_count = min(max_labels, count)
+    min_gap = max(2, count // max(label_count + 1, 1))
+    if label_count <= 1:
+        label_indexes = {count - 1}
+    else:
+        candidates = [round(index * (count - 1) / (label_count - 1)) for index in range(label_count)]
+        label_indexes = []
+        for candidate in candidates:
+            if not label_indexes or candidate - label_indexes[-1] >= min_gap:
+                label_indexes.append(candidate)
+        label_indexes = [index for index in label_indexes if count - 1 - index >= min_gap]
+        label_indexes.append(count - 1)
+        label_indexes = set(label_indexes)
 
+    symbol = config.UNIQUE_TICKERS[currency]
     labels = []
     for index, value in enumerate(values):
         if index not in label_indexes or pd.isna(value):

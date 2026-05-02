@@ -5,6 +5,7 @@ from pathlib import Path
 import pandas as pd
 
 from src import config
+from src.data.staging import validate_transaction_drafts as validate_transaction_draft_rows
 
 
 TRANSACTION_FILE_RE = re.compile(r"^(?P<year>\d{4})_(?P<month>\d{2})_?\.csv$")
@@ -38,6 +39,7 @@ def validate_all_data(raise_on_error: bool = True) -> list[ValidationIssue]:
     issues.extend(validate_transactions())
     issues.extend(validate_assets())
     issues.extend(validate_investments())
+    issues.extend(validate_transaction_draft_staging())
 
     if issues and raise_on_error:
         raise DataValidationError(issues)
@@ -52,6 +54,8 @@ def validate_transactions() -> list[ValidationIssue]:
         return [ValidationIssue(root, "transactions folder does not exist")]
 
     for csv_path in sorted(root.glob("*/*.csv")):
+        if ".backup_" in csv_path.name:
+            continue
         issues.extend(_validate_transaction_file(csv_path))
 
     return issues
@@ -103,6 +107,17 @@ def validate_investments() -> list[ValidationIssue]:
         if currency not in config.UNIQUE_TICKERS:
             issues.append(ValidationIssue(csv_path, f"row {row_number}: unsupported currency {currency!r}"))
 
+    return issues
+
+
+def validate_transaction_draft_staging() -> list[ValidationIssue]:
+    csv_path = Path(config.TRANSACTION_DRAFTS_PATH)
+    if not csv_path.exists():
+        return []
+
+    issues = []
+    for issue in validate_transaction_draft_rows(path=csv_path):
+        issues.append(ValidationIssue(csv_path, str(issue)))
     return issues
 
 

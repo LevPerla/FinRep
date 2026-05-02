@@ -10,11 +10,26 @@ import pandas as pd
 from dash.exceptions import PreventUpdate
 
 from src import config
+from src.data.get import clear_data_cache, get_transactions
+from src.data.assets_editor import read_asset_snapshot, write_asset_snapshot
+from src.data.importers.kaspi_pdf import parse_kaspi_upload_contents, save_kaspi_import_to_staging
+from src.data.staging import (
+    DRAFT_COLUMNS,
+    DRAFT_STATUSES,
+    append_transaction_draft,
+    delete_transaction_drafts,
+    export_monthly_transaction_drafts,
+    merge_transaction_draft_rows,
+    preview_monthly_transaction_export,
+    read_monthly_transaction_csv,
+    read_transaction_drafts,
+)
 from src.dashboard.export import export_dashboard_page
 from src.dashboard.main_data import DashboardDataset, build_main_dashboard_data
 from src.dashboard.month_data import build_month_dashboard_data
-from src.dashboard.planning_data import build_planning_dashboard_data
+from src.dashboard.planning_data import build_planning_dashboard_data, save_goal_targets
 from src.dashboard.year_data import build_year_dashboard_data
+from src.model.create_tables import clear_table_cache
 from src import utils
 
 
@@ -191,6 +206,116 @@ def _app_index_string() -> str:
                 color: #a9b7c6 !important;
                 filter: invert(1) opacity(0.8);
             }
+            .finrep-theme-dark #transaction-input-date,
+            .finrep-theme-dark #transaction-input-amount,
+            .finrep-theme-dark #transaction-input-comment {
+                background-color: #2b2b2b !important;
+                border-color: #646464 !important;
+                color: #dcdcdc !important;
+                -webkit-text-fill-color: #dcdcdc !important;
+                caret-color: #dcdcdc !important;
+            }
+            .finrep-theme-dark #transaction-input-date::placeholder,
+            .finrep-theme-dark #transaction-input-amount::placeholder,
+            .finrep-theme-dark #transaction-input-comment::placeholder {
+                color: #dcdcdc !important;
+                -webkit-text-fill-color: #dcdcdc !important;
+                opacity: 1 !important;
+            }
+            .finrep-theme-dark #transaction-input-date::-webkit-input-placeholder,
+            .finrep-theme-dark #transaction-input-amount::-webkit-input-placeholder,
+            .finrep-theme-dark #transaction-input-comment::-webkit-input-placeholder {
+                color: #dcdcdc !important;
+                -webkit-text-fill-color: #dcdcdc !important;
+                opacity: 1 !important;
+            }
+            .finrep-theme-dark #transaction-input-date::-moz-placeholder,
+            .finrep-theme-dark #transaction-input-amount::-moz-placeholder,
+            .finrep-theme-dark #transaction-input-comment::-moz-placeholder {
+                color: #dcdcdc !important;
+                opacity: 1 !important;
+            }
+            .finrep-theme-dark #transaction-input-date::-webkit-calendar-picker-indicator {
+                filter: invert(0.85) brightness(1.4) !important;
+                opacity: 1 !important;
+            }
+            .finrep-theme-dark #transaction-input-category .Select-control,
+            .finrep-theme-dark #transaction-input-currency .Select-control,
+            .finrep-theme-dark #transaction-filter-month .Select-control,
+            .finrep-theme-dark #transaction-filter-category .Select-control,
+            .finrep-theme-dark #transaction-filter-status .Select-control,
+            .finrep-theme-dark #transaction-filter-source .Select-control,
+            .finrep-theme-dark #transaction-input-category .Select__control,
+            .finrep-theme-dark #transaction-input-currency .Select__control,
+            .finrep-theme-dark #transaction-filter-month .Select__control,
+            .finrep-theme-dark #transaction-filter-category .Select__control,
+            .finrep-theme-dark #transaction-filter-status .Select__control,
+            .finrep-theme-dark #transaction-filter-source .Select__control {
+                background-color: #2b2b2b !important;
+                border-color: #646464 !important;
+                color: #dcdcdc !important;
+            }
+            .finrep-theme-dark #transaction-input-category .Select-placeholder,
+            .finrep-theme-dark #transaction-input-currency .Select-placeholder,
+            .finrep-theme-dark #transaction-filter-month .Select-placeholder,
+            .finrep-theme-dark #transaction-filter-category .Select-placeholder,
+            .finrep-theme-dark #transaction-filter-status .Select-placeholder,
+            .finrep-theme-dark #transaction-filter-source .Select-placeholder,
+            .finrep-theme-dark #transaction-input-category .Select-value-label,
+            .finrep-theme-dark #transaction-input-currency .Select-value-label,
+            .finrep-theme-dark #transaction-filter-month .Select-value-label,
+            .finrep-theme-dark #transaction-filter-category .Select-value-label,
+            .finrep-theme-dark #transaction-filter-status .Select-value-label,
+            .finrep-theme-dark #transaction-filter-source .Select-value-label,
+            .finrep-theme-dark #transaction-input-category .Select-input > input,
+            .finrep-theme-dark #transaction-input-currency .Select-input > input,
+            .finrep-theme-dark #transaction-filter-month .Select-input > input,
+            .finrep-theme-dark #transaction-filter-category .Select-input > input,
+            .finrep-theme-dark #transaction-filter-status .Select-input > input,
+            .finrep-theme-dark #transaction-filter-source .Select-input > input,
+            .finrep-theme-dark #transaction-input-category .Select__placeholder,
+            .finrep-theme-dark #transaction-input-currency .Select__placeholder,
+            .finrep-theme-dark #transaction-filter-month .Select__placeholder,
+            .finrep-theme-dark #transaction-filter-category .Select__placeholder,
+            .finrep-theme-dark #transaction-filter-status .Select__placeholder,
+            .finrep-theme-dark #transaction-filter-source .Select__placeholder,
+            .finrep-theme-dark #transaction-input-category .Select__single-value,
+            .finrep-theme-dark #transaction-input-currency .Select__single-value,
+            .finrep-theme-dark #transaction-filter-month .Select__single-value,
+            .finrep-theme-dark #transaction-filter-category .Select__single-value,
+            .finrep-theme-dark #transaction-filter-status .Select__single-value,
+            .finrep-theme-dark #transaction-filter-source .Select__single-value,
+            .finrep-theme-dark #transaction-input-category .Select__input,
+            .finrep-theme-dark #transaction-input-currency .Select__input,
+            .finrep-theme-dark #transaction-filter-month .Select__input,
+            .finrep-theme-dark #transaction-filter-category .Select__input,
+            .finrep-theme-dark #transaction-filter-status .Select__input,
+            .finrep-theme-dark #transaction-filter-source .Select__input {
+                color: #dcdcdc !important;
+                -webkit-text-fill-color: #dcdcdc !important;
+            }
+            .finrep-theme-dark #transaction-input-category .Select-arrow,
+            .finrep-theme-dark #transaction-input-currency .Select-arrow,
+            .finrep-theme-dark #transaction-filter-month .Select-arrow,
+            .finrep-theme-dark #transaction-filter-category .Select-arrow,
+            .finrep-theme-dark #transaction-filter-status .Select-arrow,
+            .finrep-theme-dark #transaction-filter-source .Select-arrow,
+            .finrep-theme-dark #transaction-input-category .Select-clear,
+            .finrep-theme-dark #transaction-input-currency .Select-clear,
+            .finrep-theme-dark #transaction-filter-month .Select-clear,
+            .finrep-theme-dark #transaction-filter-category .Select-clear,
+            .finrep-theme-dark #transaction-filter-status .Select-clear,
+            .finrep-theme-dark #transaction-filter-source .Select-clear,
+            .finrep-theme-dark #transaction-input-category .Select__indicator,
+            .finrep-theme-dark #transaction-input-currency .Select__indicator,
+            .finrep-theme-dark #transaction-filter-month .Select__indicator,
+            .finrep-theme-dark #transaction-filter-category .Select__indicator,
+            .finrep-theme-dark #transaction-filter-status .Select__indicator,
+            .finrep-theme-dark #transaction-filter-source .Select__indicator {
+                color: #dcdcdc !important;
+                fill: #dcdcdc !important;
+                border-top-color: #dcdcdc !important;
+            }
         </style>
     </head>
     <body>
@@ -230,6 +355,7 @@ def create_layout():
         [
             dcc.Location(id="dashboard-location"),
             dcc.Store(id="dashboard-theme", data="dark"),
+            dcc.Store(id="dashboard-refresh-token", data=0),
             dbc.Row(
                 [
                     dbc.Col(
@@ -264,6 +390,8 @@ def create_layout():
                                     className="dashboard-filter",
                                     style={"width": "78px"},
                                 ),
+                                dbc.Button("Обновить", id="refresh-reports", color="secondary", outline=True),
+                                dbc.Button("Обновить курс", id="refresh-fx-rates", color="warning", outline=True),
                                 dbc.Button("Светлая", id="theme-toggle", color="secondary", outline=True),
                                 dbc.Button("PNG", id="export-png", color="primary", outline=True),
                                 dbc.Button("PDF", id="export-pdf", color="primary", outline=True),
@@ -285,6 +413,7 @@ def create_layout():
                     dbc.Tab(label="Годовой отчет", tab_id="year"),
                     dbc.Tab(label="Месячный отчет", tab_id="month"),
                     dbc.Tab(label="План и прогноз", tab_id="planning"),
+                    dbc.Tab(label="Ввод данных", tab_id="input"),
                 ],
                 id="dashboard-tabs",
                 active_tab="main",
@@ -302,6 +431,36 @@ def create_layout():
 
 
 def register_callbacks(app: Dash) -> None:
+    @app.callback(
+        Output("dashboard-refresh-token", "data"),
+        Input("refresh-reports", "n_clicks"),
+        State("dashboard-refresh-token", "data"),
+        prevent_initial_call=True,
+    )
+    def refresh_reports(n_clicks: int | None, current_token: int | None):
+        if not n_clicks:
+            raise PreventUpdate
+        clear_data_cache()
+        clear_table_cache()
+        return int(current_token or 0) + 1
+
+    @app.callback(
+        Output("dashboard-refresh-token", "data", allow_duplicate=True),
+        Input("planning_goals-grid", "cellValueChanged"),
+        State("planning_goals-grid", "rowData"),
+        State("dashboard-year", "value"),
+        State("dashboard-currency", "value"),
+        State("dashboard-refresh-token", "data"),
+        prevent_initial_call=True,
+    )
+    def save_planning_goal_cell(cell_change, row_data, year, currency, current_token):
+        if not _ag_grid_changed_column(cell_change, "Цель"):
+            raise PreventUpdate
+        save_goal_targets(year, currency, row_data or [])
+        clear_data_cache()
+        clear_table_cache()
+        return int(current_token or 0) + 1
+
     @app.callback(
         Output("dashboard-theme", "data"),
         Output("dashboard-shell", "className"),
@@ -338,7 +497,7 @@ def register_callbacks(app: Dash) -> None:
             year = DEFAULT_YEAR
         if month not in {f"{value:02d}" for value in range(1, 13)}:
             month = DEFAULT_MONTH
-        if tab not in {"main", "year", "month", "planning"}:
+        if tab not in {"main", "year", "month", "planning", "input"}:
             tab = "main"
         return currency, year, month, tab
 
@@ -349,14 +508,20 @@ def register_callbacks(app: Dash) -> None:
         Input("dashboard-month", "value"),
         Input("dashboard-tabs", "active_tab"),
         Input("dashboard-theme", "data"),
+        Input("dashboard-refresh-token", "data"),
+        Input("refresh-fx-rates", "n_clicks"),
     )
-    def render_dashboard_content(currency: str, year: str, month: str, active_tab: str, theme: str):
+    def render_dashboard_content(currency: str, year: str, month: str, active_tab: str, theme: str, refresh_token: int, fx_refresh_clicks: int | None):
+        fx_network_enabled = ctx.triggered_id == "refresh-fx-rates"
+        if fx_network_enabled:
+            clear_table_cache()
+
         if active_tab == "year":
             try:
                 datasets = build_year_dashboard_data(
                     year,
                     currency,
-                    fx_network_enabled=DEFAULT_FX_NETWORK_ENABLED,
+                    fx_network_enabled=fx_network_enabled,
                 )
             except Exception as exc:
                 return _error_state("Не удалось загрузить данные годового отчета.", exc)
@@ -369,7 +534,7 @@ def register_callbacks(app: Dash) -> None:
                 datasets = build_planning_dashboard_data(
                     year,
                     currency,
-                    fx_network_enabled=DEFAULT_FX_NETWORK_ENABLED,
+                    fx_network_enabled=fx_network_enabled,
                 )
             except Exception as exc:
                 return _error_state("Не удалось загрузить данные плана и прогноза.", exc)
@@ -383,7 +548,7 @@ def register_callbacks(app: Dash) -> None:
                     year,
                     month,
                     currency,
-                    fx_network_enabled=DEFAULT_FX_NETWORK_ENABLED,
+                    fx_network_enabled=fx_network_enabled,
                 )
             except Exception as exc:
                 return _error_state("Не удалось загрузить данные месячного отчета.", exc)
@@ -391,10 +556,13 @@ def register_callbacks(app: Dash) -> None:
             _apply_theme_to_datasets(datasets, theme)
             return _month_report_layout(datasets, theme)
 
+        if active_tab == "input":
+            return _input_report_layout(currency, year, month, theme)
+
         try:
             datasets = build_main_dashboard_data(
                 currency,
-                fx_network_enabled=DEFAULT_FX_NETWORK_ENABLED,
+                fx_network_enabled=fx_network_enabled,
             )
         except Exception as exc:
             return _error_state("Не удалось загрузить данные основного отчета.", exc)
@@ -474,6 +642,238 @@ def register_callbacks(app: Dash) -> None:
             month=month if active_tab == "month" else None,
         )
         return dcc.send_file(str(export_path))
+
+    @app.callback(
+        Output("kaspi-import-grid", "rowData"),
+        Output("kaspi-import-grid", "columnDefs"),
+        Output("kaspi-import-message", "children"),
+        Output("kaspi-import-message", "color"),
+        Input("kaspi-upload", "contents"),
+        State("kaspi-upload", "filename"),
+        prevent_initial_call=True,
+    )
+    def preview_kaspi_pdf(contents, filename):
+        if not contents:
+            raise PreventUpdate
+        try:
+            data = parse_kaspi_upload_contents(contents)
+            internal_count = int(data["skip_reason"].eq("internal_transfer").sum()) if "skip_reason" in data else 0
+            message = (
+                f"{filename or 'PDF'}: найдено строк {len(data)}, "
+                f"к импорту {int(data['import_action'].eq('import').sum())}, "
+                f"skip {int(data['import_action'].eq('skip').sum())}, "
+                f"внутренние переводы {internal_count}."
+            )
+            return _dataframe_records(data), _kaspi_import_column_defs(), message, "secondary"
+        except Exception as exc:
+            return [], _kaspi_import_column_defs(), str(exc), "danger"
+
+    @app.callback(
+        Output("kaspi-import-message", "children", allow_duplicate=True),
+        Output("kaspi-import-message", "color", allow_duplicate=True),
+        Output("transaction-drafts-grid", "rowData", allow_duplicate=True),
+        Input("kaspi-save-button", "n_clicks"),
+        State("kaspi-import-grid", "rowData"),
+        State("transaction-filter-month", "value"),
+        State("transaction-filter-category", "value"),
+        State("transaction-filter-status", "value"),
+        State("transaction-filter-source", "value"),
+        prevent_initial_call=True,
+    )
+    def save_kaspi_import(n_clicks, row_data, month_filter, category_filter, status_filter, source_filter):
+        if not n_clicks:
+            raise PreventUpdate
+        try:
+            result = save_kaspi_import_to_staging(row_data or [])
+            message = f"Сохранено в staging: {result['accepted_rows']}. Пропущено дублей/skip: {result['skipped_rows']}."
+            color = "success"
+        except Exception as exc:
+            message = str(exc)
+            color = "danger"
+        return message, color, _transaction_draft_records(month_filter, category_filter, status_filter, source_filter)
+
+
+    @app.callback(
+        Output("transaction-drafts-grid", "rowData"),
+        Output("transaction-input-message", "children"),
+        Output("transaction-input-message", "color"),
+        Output("transaction-filter-month", "value"),
+        Input("transaction-add-button", "n_clicks"),
+        Input("transaction-save-grid-button", "n_clicks"),
+        Input("transaction-delete-button", "n_clicks"),
+        Input("transaction-filter-month", "value"),
+        Input("transaction-filter-category", "value"),
+        Input("transaction-filter-status", "value"),
+        Input("transaction-filter-source", "value"),
+        State("transaction-input-date", "value"),
+        State("transaction-input-category", "value"),
+        State("transaction-input-currency", "value"),
+        State("transaction-input-amount", "value"),
+        State("transaction-input-comment", "value"),
+        State("transaction-drafts-grid", "rowData"),
+        State("transaction-drafts-grid", "selectedRows"),
+    )
+    def sync_transaction_drafts(
+        add_clicks,
+        save_clicks,
+        delete_clicks,
+        month_filter,
+        category_filter,
+        status_filter,
+        source_filter,
+        input_date,
+        input_category,
+        input_currency,
+        input_amount,
+        input_comment,
+        row_data,
+        selected_rows,
+    ):
+        trigger = ctx.triggered_id
+        message = ""
+        color = "secondary"
+
+        try:
+            if trigger == "transaction-add-button":
+                if not input_date or not input_category or not input_currency or input_amount in {None, ""}:
+                    raise ValueError("Заполни дату, категорию, валюту и сумму.")
+                append_transaction_draft(
+                    date=input_date,
+                    category=input_category,
+                    currency=input_currency,
+                    amount=input_amount,
+                    comment=input_comment or "",
+                )
+                month_filter = pd.to_datetime(input_date).strftime("%Y-%m")
+                message = "Черновик добавлен."
+                color = "success"
+            elif trigger == "transaction-save-grid-button":
+                merge_transaction_draft_rows(row_data or [])
+                message = "Правки в таблице сохранены."
+                color = "success"
+            elif trigger == "transaction-delete-button":
+                if not selected_rows:
+                    raise ValueError("Выбери строки для удаления.")
+                delete_transaction_drafts(selected_rows)
+                message = f"Удалено строк: {len(selected_rows)}."
+                color = "warning"
+        except Exception as exc:
+            message = str(exc)
+            color = "danger"
+
+        return _transaction_draft_records(month_filter, category_filter, status_filter, source_filter), message, color, month_filter
+
+    @app.callback(
+        Output("transaction-export-preview-grid", "rowData"),
+        Output("transaction-export-preview-grid", "columnDefs"),
+        Output("transaction-export-message", "children"),
+        Output("transaction-export-message", "color"),
+        Input("transaction-preview-export-button", "n_clicks"),
+        Input("transaction-confirm-export-button", "n_clicks"),
+        State("dashboard-year", "value"),
+        State("dashboard-month", "value"),
+        State("transaction-export-preview-grid", "rowData"),
+        prevent_initial_call=True,
+    )
+    def preview_or_export_transaction_month(preview_clicks, export_clicks, year, month, preview_rows):
+        trigger = ctx.triggered_id
+        try:
+            if trigger == "transaction-confirm-export-button":
+                result = export_monthly_transaction_drafts(year, month, preview_rows=preview_rows or None)
+                preview = read_monthly_transaction_csv(year, month)
+                message = (
+                    f"Экспортировано строк: {result['exported_rows']}. "
+                    f"Файл: {result['target_path']}. "
+                    f"Backup: {result['backup_path'] or 'не создавался'}."
+                )
+                return _dataframe_records(preview), _simple_column_defs(preview), message, "success"
+
+            preview = preview_monthly_transaction_export(year, month)
+            message = f"Preview построен для {year}-{str(month).zfill(2)}. Запись в source CSV еще не выполнена."
+            return _dataframe_records(preview), _simple_column_defs(preview), message, "secondary"
+        except Exception as exc:
+            empty = pd.DataFrame()
+            return [], _simple_column_defs(empty), str(exc), "danger"
+
+
+    @app.callback(
+        Output("transaction-drafts-download", "data"),
+        Input("transaction-export-csv-button", "n_clicks"),
+        State("transaction-filter-month", "value"),
+        State("transaction-filter-category", "value"),
+        State("transaction-filter-status", "value"),
+        State("transaction-filter-source", "value"),
+        prevent_initial_call=True,
+    )
+    def export_transaction_drafts(n_clicks, month_filter, category_filter, status_filter, source_filter):
+        if not n_clicks:
+            raise PreventUpdate
+        data = pd.DataFrame(_transaction_draft_records(month_filter, category_filter, status_filter, source_filter))
+        filename = f"transaction_drafts_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+        return dcc.send_data_frame(data.to_csv, filename, sep=";", index=False)
+
+    @app.callback(
+        Output("assets-input-grid", "rowData"),
+        Output("assets-input-message", "children"),
+        Output("assets-input-message", "color"),
+        Input("assets-load-button", "n_clicks"),
+        Input("assets-add-row-button", "n_clicks"),
+        Input("assets-delete-row-button", "n_clicks"),
+        Input("assets-apply-button", "n_clicks"),
+        Input("dashboard-year", "value"),
+        Input("dashboard-month", "value"),
+        State("assets-input-grid", "rowData"),
+        State("assets-input-grid", "selectedRows"),
+    )
+    def sync_assets_snapshot(load_clicks, add_clicks, delete_clicks, apply_clicks, year, month, row_data, selected_rows):
+        trigger = ctx.triggered_id
+        try:
+            if trigger == "assets-add-row-button":
+                rows = list(row_data or [])
+                rows.append({"account": "", "amount": 0, "currency": DEFAULT_CURRENCY})
+                return rows, "Добавлена пустая строка. Заполни счет, сумму и валюту, затем нажми Применить.", "secondary"
+
+            if trigger == "assets-delete-row-button":
+                rows = list(row_data or [])
+                if not selected_rows:
+                    raise ValueError("Выбери строки активов для удаления.")
+                selected_keys = {_asset_row_key(row) for row in selected_rows}
+                rows = [row for row in rows if _asset_row_key(row) not in selected_keys]
+                return rows, f"Удалено строк: {len(selected_rows)}. Нажми Применить, чтобы записать изменения в CSV.", "warning"
+
+            if trigger == "assets-apply-button":
+                result = write_asset_snapshot(row_data or [], year, month)
+                clear_data_cache()
+                clear_table_cache()
+                message = (
+                    f"Активы сохранены: {result['rows']} строк. "
+                    f"Файл: {result['path']}. "
+                    f"Backup: {result['backup_path'] or 'не создавался'}."
+                )
+                return _asset_input_records(year, month), message, "success"
+
+            read_asset_snapshot(year, month)
+            path_info = f"Файл: {config.ASSETS_INFO_PATH}/{year}/{year}_{str(int(month)).zfill(2)}.csv"
+            if trigger == "assets-load-button":
+                message = f"Активы загружены для {year}-{str(int(month)).zfill(2)}. {path_info}"
+            else:
+                message = f"Активы для выбранного месяца. Если файла не было, он создан из предыдущего месяца. {path_info}"
+            return _asset_input_records(year, month), message, "secondary"
+        except Exception as exc:
+            return row_data or [], str(exc), "danger"
+
+
+def _ag_grid_changed_column(change_event, column_name: str) -> bool:
+    if not change_event:
+        return False
+    events = change_event if isinstance(change_event, list) else [change_event]
+    for event in events:
+        if not isinstance(event, dict):
+            continue
+        changed_column = event.get("colId") or event.get("column") or event.get("field")
+        if changed_column == column_name:
+            return True
+    return False
 
 
 def _theme_shell_style(theme: str | None) -> dict:
@@ -641,6 +1041,362 @@ def _month_report_layout(datasets: dict[str, DashboardDataset], theme: str | Non
         ],
         className="d-grid gap-4",
     )
+
+
+def _input_report_layout(currency: str, year: str, month: str, theme: str | None):
+    return dbc.Tabs(
+        [
+            dbc.Tab(_transaction_input_layout(currency, year, month, theme), label="Транзакции", tab_id="input-transactions"),
+            dbc.Tab(_assets_input_layout(year, month, theme), label="Активы", tab_id="input-assets"),
+        ],
+        id="input-inner-tabs",
+        active_tab="input-transactions",
+        className="mb-3",
+    )
+
+
+def _transaction_input_layout(currency: str, year: str, month: str, theme: str | None):
+    category_options = _transaction_category_options()
+    currency_options = [{"label": ticker, "value": ticker} for ticker in config.UNIQUE_TICKERS]
+    month_value = f"{year}-{str(month).zfill(2)}"
+
+    return html.Div(
+        [
+            html.Section(
+                [
+                    html.H2("Ручной ввод транзакции", className="h5 mb-3"),
+                    dbc.Row(
+                        [
+                            dbc.Col(dbc.Input(id="transaction-input-date", type="date", value=datetime.now().date().isoformat(), className="finrep-native-input", style=_form_control_style(theme)), xs=12, md=2),
+                            dbc.Col(dcc.Dropdown(id="transaction-input-category", options=category_options, value=category_options[0]["value"] if category_options else None, clearable=False, className="dash-dropdown"), xs=12, md=2),
+                            dbc.Col(dcc.Dropdown(id="transaction-input-currency", options=currency_options, value=currency, clearable=False, className="dash-dropdown"), xs=12, md=2),
+                            dbc.Col(dbc.Input(id="transaction-input-amount", type="number", placeholder="Сумма", step="any", className="finrep-native-input", style=_form_control_style(theme)), xs=12, md=2),
+                            dbc.Col(dbc.Input(id="transaction-input-comment", type="text", placeholder="Комментарий", className="finrep-native-input", style=_form_control_style(theme)), xs=12, md=3),
+                            dbc.Col(dbc.Button("Добавить", id="transaction-add-button", color="primary", className="w-100"), xs=12, md=1),
+                        ],
+                        className="g-2",
+                    ),
+                    dbc.Alert(id="transaction-input-message", children="", color="secondary", is_open=True, className="mt-3 mb-0 py-2"),
+                ],
+                style=_section_style(theme),
+            ),
+            html.Section(
+                [
+                    html.Div(
+                        [
+                            html.H2("Импорт Kaspi PDF", className="h5 mb-0"),
+                            dbc.Button("Сохранить импорт в staging", id="kaspi-save-button", color="primary", outline=True, size="sm"),
+                        ],
+                        className="d-flex justify-content-between align-items-center mb-3",
+                    ),
+                    dcc.Upload(
+                        id="kaspi-upload",
+                        children=html.Div(
+                            [
+                                html.Div("Перетащи Kaspi PDF сюда", className="fw-semibold"),
+                                html.Div("или нажми для выбора файла", className="small opacity-75"),
+                            ],
+                            className="kaspi-upload-content",
+                        ),
+                        multiple=False,
+                        accept=".pdf,application/pdf",
+                        className="kaspi-upload-zone",
+                        style={
+                            "border": "1px dashed #646464",
+                            "borderRadius": "8px",
+                            "padding": "28px",
+                            "textAlign": "center",
+                            "cursor": "pointer",
+                            "minHeight": "112px",
+                            "display": "flex",
+                            "alignItems": "center",
+                            "justifyContent": "center",
+                            **_section_style(theme),
+                        },
+                    ),
+                    dbc.Alert(id="kaspi-import-message", children="PDF preview появится здесь. Дубли из staging/source CSV будут помечены как skip.", color="secondary", is_open=True, className="my-3 py-2"),
+                    dag.AgGrid(
+                        id="kaspi-import-grid",
+                        rowData=[],
+                        columnDefs=_kaspi_import_column_defs(),
+                        defaultColDef={"sortable": True, "filter": True, "resizable": True, "editable": False},
+                        dashGridOptions={"pagination": False, "stopEditingWhenCellsLoseFocus": True},
+                        className="ag-theme-alpine-dark" if theme == "dark" else "ag-theme-alpine",
+                        style={"height": "420px", "width": "100%"},
+                    ),
+                ],
+                style=_section_style(theme),
+            ),
+            html.Section(
+                [
+                    html.Div(
+                        [
+                            html.H2("Черновики транзакций", className="h5 mb-0"),
+                            html.Div(
+                                [
+                                    dbc.Button("Сохранить правки", id="transaction-save-grid-button", color="primary", outline=True, size="sm"),
+                                    dbc.Button("Удалить выбранные", id="transaction-delete-button", color="danger", outline=True, size="sm"),
+                                    dbc.Button("CSV", id="transaction-export-csv-button", color="secondary", outline=True, size="sm"),
+                                    dcc.Download(id="transaction-drafts-download"),
+                                ],
+                                className="d-flex flex-wrap gap-2",
+                            ),
+                        ],
+                        className="d-flex justify-content-between align-items-center mb-3",
+                    ),
+                    dbc.Row(
+                        [
+                            dbc.Col(dbc.Select(id="transaction-filter-month", options=_native_select_options(_transaction_month_options(month_value), "Месяц", include_empty=False), value=month_value, className="finrep-native-input", style=_form_control_style(theme)), xs=12, md=3),
+                            dbc.Col(dbc.Select(id="transaction-filter-category", options=_native_select_options(category_options, "Все категории"), value="__all__", className="finrep-native-input", style=_form_control_style(theme)), xs=12, md=3),
+                            dbc.Col(dbc.Select(id="transaction-filter-status", options=_native_select_options(_draft_status_options(), "Все статусы"), value="__all__", className="finrep-native-input", style=_form_control_style(theme)), xs=12, md=3),
+                            dbc.Col(dbc.Select(id="transaction-filter-source", options=_native_select_options(_draft_source_options(), "Все источники"), value="__all__", className="finrep-native-input", style=_form_control_style(theme)), xs=12, md=3),
+                        ],
+                        className="g-2 mb-3",
+                    ),
+                    dag.AgGrid(
+                        id="transaction-drafts-grid",
+                        rowData=_transaction_draft_records(month_value, None, None, None),
+                        columnDefs=_transaction_draft_column_defs(category_options, list(config.UNIQUE_TICKERS)),
+                        defaultColDef={"sortable": True, "filter": True, "resizable": True, "editable": True},
+                        dashGridOptions={"pagination": False, "rowSelection": "multiple", "stopEditingWhenCellsLoseFocus": True},
+                        className="ag-theme-alpine-dark" if theme == "dark" else "ag-theme-alpine",
+                        style={"height": "640px", "width": "100%"},
+                    ),
+                ],
+                style=_section_style(theme),
+            ),
+            html.Section(
+                [
+                    html.Div(
+                        [
+                            html.H2("Экспорт в месячный CSV", className="h5 mb-0"),
+                            html.Div(
+                                [
+                                    dbc.Button("Preview", id="transaction-preview-export-button", color="secondary", outline=True, size="sm"),
+                                    dbc.Button("Подтвердить экспорт", id="transaction-confirm-export-button", color="danger", outline=True, size="sm"),
+                                ],
+                                className="d-flex flex-wrap gap-2",
+                            ),
+                        ],
+                        className="d-flex justify-content-between align-items-center mb-3",
+                    ),
+                    dbc.Alert(id="transaction-export-message", children="Preview покажет итоговый месячный CSV. Запись произойдет только после подтверждения.", color="secondary", is_open=True, className="mb-3 py-2"),
+                    dag.AgGrid(
+                        id="transaction-export-preview-grid",
+                        rowData=[],
+                        columnDefs=[],
+                        defaultColDef={"sortable": True, "filter": True, "resizable": True, "editable": True},
+                        dashGridOptions={"pagination": False, "stopEditingWhenCellsLoseFocus": True, "undoRedoCellEditing": True},
+                        className="ag-theme-alpine-dark" if theme == "dark" else "ag-theme-alpine",
+                        style={"height": "520px", "width": "100%"},
+                    ),
+                ],
+                style=_section_style(theme),
+            ),
+        ],
+        className="d-grid gap-4 pt-3",
+    )
+
+
+def _assets_input_layout(year: str, month: str, theme: str | None):
+    return html.Div(
+        [
+            html.Section(
+                [
+                    html.Div(
+                        [
+                            html.H2("Активы", className="h5 mb-0"),
+                            html.Div(
+                                [
+                                    dbc.Button("Загрузить/создать", id="assets-load-button", color="secondary", outline=True, size="sm"),
+                                    dbc.Button("Добавить строку", id="assets-add-row-button", color="secondary", outline=True, size="sm"),
+                                    dbc.Button("Удалить выбранные", id="assets-delete-row-button", color="danger", outline=True, size="sm"),
+                                    dbc.Button("Применить", id="assets-apply-button", color="primary", outline=True, size="sm"),
+                                ],
+                                className="d-flex flex-wrap gap-2",
+                            ),
+                        ],
+                        className="d-flex justify-content-between align-items-center mb-3",
+                    ),
+                    dbc.Alert(
+                        id="assets-input-message",
+                        children=f"Редактируется snapshot активов за {year}-{str(int(month)).zfill(2)}. Если файла нет, он будет создан копией предыдущего месяца.",
+                        color="secondary",
+                        is_open=True,
+                        className="mb-3 py-2",
+                    ),
+                    dag.AgGrid(
+                        id="assets-input-grid",
+                        rowData=_asset_input_records(year, month),
+                        columnDefs=_asset_input_column_defs(),
+                        defaultColDef={"sortable": True, "filter": True, "resizable": True, "editable": True},
+                        dashGridOptions={"pagination": False, "rowSelection": "multiple", "stopEditingWhenCellsLoseFocus": True, "undoRedoCellEditing": True},
+                        className="ag-theme-alpine-dark" if theme == "dark" else "ag-theme-alpine",
+                        style={"height": "920px", "width": "100%"},
+                    ),
+                ],
+                style=_section_style(theme),
+            ),
+        ],
+        className="d-grid gap-4 pt-3",
+    )
+
+def _dataframe_records(data: pd.DataFrame) -> list[dict]:
+    if data.empty:
+        return []
+    return data.fillna("0").to_dict("records")
+
+
+def _simple_column_defs(data: pd.DataFrame) -> list[dict]:
+    if data.empty:
+        return []
+    return [{"field": column, "minWidth": 120, "flex": 1 if column != "Дата" else 0} for column in data.columns]
+
+
+def _form_control_style(theme: str | None) -> dict:
+    if theme == "dark":
+        return {
+            "backgroundColor": "#2b2b2b",
+            "borderColor": "#646464",
+            "color": "#dcdcdc",
+            "WebkitTextFillColor": "#dcdcdc",
+            "caretColor": "#dcdcdc",
+            "height": "38px",
+            "fontWeight": 600,
+        }
+    return {
+        "backgroundColor": "#ffffff",
+        "borderColor": "#ced4da",
+        "color": "#212529",
+        "WebkitTextFillColor": "#212529",
+        "caretColor": "#212529",
+        "height": "38px",
+    }
+
+
+def _native_select_options(options: list[dict], placeholder: str, include_empty: bool = True) -> list[dict]:
+    normalized = [{"label": str(option.get("label", "")), "value": str(option.get("value", ""))} for option in options]
+    if include_empty:
+        return [{"label": placeholder, "value": "__all__"}, *normalized]
+    return normalized
+
+
+def _transaction_category_options() -> list[dict]:
+    try:
+        categories = sorted(str(value) for value in get_transactions()["Категория"].dropna().unique())
+    except Exception:
+        categories = sorted(config.NOT_COST_COLS)
+    return [{"label": category, "value": category} for category in categories]
+
+
+def _draft_status_options() -> list[dict]:
+    return [{"label": status, "value": status} for status in sorted(DRAFT_STATUSES)]
+
+
+def _draft_source_options() -> list[dict]:
+    data = read_transaction_drafts()
+    sources = sorted(source for source in data["source"].dropna().unique() if str(source))
+    return [{"label": source, "value": source} for source in sources]
+
+
+def _transaction_month_options(selected_month: str | None = None) -> list[dict]:
+    data = read_transaction_drafts()
+    months = set(pd.to_datetime(data["date"], errors="coerce").dropna().dt.strftime("%Y-%m").unique())
+    if selected_month:
+        months.add(str(selected_month))
+    return [{"label": month, "value": month} for month in sorted(months, reverse=True)]
+
+
+def _transaction_draft_records(month_filter, category_filter, status_filter, source_filter) -> list[dict]:
+    data = read_transaction_drafts()
+    category_filter = None if category_filter in {None, "", "__all__"} else category_filter
+    status_filter = None if status_filter in {None, "", "__all__"} else status_filter
+    source_filter = None if source_filter in {None, "", "__all__"} else source_filter
+    if month_filter:
+        months = pd.to_datetime(data["date"], errors="coerce").dt.strftime("%Y-%m")
+        data = data[months == str(month_filter)]
+    if category_filter:
+        data = data[data["category"] == str(category_filter)]
+    if status_filter:
+        data = data[data["status"] == str(status_filter)]
+    if source_filter:
+        data = data[data["source"] == str(source_filter)]
+    return data.sort_values(["date", "category", "comment"], kind="mergesort").to_dict("records")
+
+
+def _asset_input_records(year: str, month: str) -> list[dict]:
+    data = read_asset_snapshot(year, month).copy(deep=True)
+    if data.empty:
+        return []
+    data["amount_sort"] = pd.to_numeric(data["amount"], errors="coerce").fillna(0)
+    data = data.sort_values("amount_sort", ascending=False, kind="mergesort")
+    data["amount"] = data["amount"].map(_format_input_amount)
+    return _dataframe_records(data)
+
+
+def _asset_input_column_defs() -> list[dict]:
+    currencies = list(config.UNIQUE_TICKERS)
+    return [
+        {"field": "account", "headerName": "Счет", "editable": True, "flex": 1, "minWidth": 260},
+        {"field": "amount", "headerName": "Сумма", "editable": True, "width": 170},
+        {"field": "currency", "headerName": "Валюта", "editable": True, "cellEditor": "agSelectCellEditor", "cellEditorParams": {"values": currencies}, "width": 120},
+        {"field": "amount_sort", "hide": True, "sort": "desc", "sortIndex": 0},
+    ]
+
+
+def _asset_row_key(row: dict) -> tuple[str, str, str]:
+    return (str(row.get("account", "")), str(row.get("amount", "")), str(row.get("currency", "")))
+
+
+def _format_input_amount(value) -> str:
+    numeric = pd.to_numeric(value, errors="coerce")
+    if pd.isna(numeric):
+        return "0"
+    if float(numeric).is_integer():
+        return f"{int(numeric):,}".replace(",", " ")
+    return f"{float(numeric):,.2f}".replace(",", " ").rstrip("0").rstrip(".")
+
+
+def _kaspi_import_column_defs() -> list[dict]:
+    categories = [option["value"] for option in _transaction_category_options()]
+    category_class_rules = {
+        "kaspi-category-income": "params.value == 'Доход'",
+        "kaspi-category-saving": "params.value == 'Сбережения' || params.value == 'Инвестиции'",
+        "kaspi-category-internal": "params.value == 'Внутренний перевод'",
+        "kaspi-category-food": "params.value == 'Пища'",
+        "kaspi-category-transport": "params.value == 'Транспорт'",
+        "kaspi-category-communication": "params.value == 'Связь'",
+        "kaspi-category-other": "params.value == 'Прочее'",
+    }
+    return [
+        {"field": "category", "headerName": "Категория", "editable": True, "cellEditor": "agSelectCellEditor", "cellEditorParams": {"values": categories}, "width": 190, "sort": "asc", "cellClassRules": category_class_rules},
+        {"field": "date", "headerName": "Дата", "width": 120, "sort": "asc", "sortIndex": 1},
+        {"field": "amount", "headerName": "Сумма", "width": 120},
+        {"field": "currency", "headerName": "Валюта", "width": 100},
+        {"field": "comment", "headerName": "Комментарий", "editable": True, "flex": 1, "minWidth": 220},
+        {"field": "import_action", "headerName": "Действие", "editable": True, "cellEditor": "agSelectCellEditor", "cellEditorParams": {"values": ["import", "skip"]}, "width": 120},
+        {"field": "skip_reason", "headerName": "Причина skip", "width": 170},
+        {"field": "duplicate_in_source", "headerName": "Дубль в CSV", "width": 130},
+        {"field": "duplicate_in_staging", "headerName": "Дубль в staging", "width": 150},
+        {"field": "details", "headerName": "Детали PDF", "flex": 1, "minWidth": 240},
+        {"field": "source_id", "headerName": "ID", "hide": True},
+        {"field": "source", "headerName": "Источник", "hide": True},
+        {"field": "status", "headerName": "Статус", "hide": True},
+    ]
+
+
+def _transaction_draft_column_defs(category_options: list[dict], currencies: list[str]) -> list[dict]:
+    categories = [option["value"] for option in category_options]
+    return [
+        {"field": "date", "headerName": "Дата", "width": 130},
+        {"field": "category", "headerName": "Категория", "cellEditor": "agSelectCellEditor", "cellEditorParams": {"values": categories}, "width": 180},
+        {"field": "currency", "headerName": "Валюта", "cellEditor": "agSelectCellEditor", "cellEditorParams": {"values": currencies}, "width": 110},
+        {"field": "amount", "headerName": "Сумма", "width": 130},
+        {"field": "comment", "headerName": "Комментарий", "flex": 1, "minWidth": 220},
+        {"field": "status", "headerName": "Статус", "cellEditor": "agSelectCellEditor", "cellEditorParams": {"values": sorted(DRAFT_STATUSES)}, "width": 130},
+        {"field": "source", "headerName": "Источник", "editable": False, "width": 130},
+        {"field": "source_id", "headerName": "ID", "editable": False, "width": 220},
+    ]
 
 
 def _error_state(message: str, exc: Exception):
@@ -869,6 +1625,7 @@ def _grid_column_defs(dataset: DashboardDataset, data: pd.DataFrame, theme: str 
         "year_cost_by_month": {"Расход": _level_style("__monthly_cost_level", "red", theme)},
         "year_capital_by_month": {"Капитал": _level_style("__monthly_capital_level", "green", theme)},
         "planning_goals": {
+            "Цель": _editable_cell_style(theme),
             "Отклонение": _sign_style("__planning_delta_sign", theme),
             "Прогресс (%)": _level_style("__planning_progress_level", "green", theme),
         },
@@ -878,14 +1635,28 @@ def _grid_column_defs(dataset: DashboardDataset, data: pd.DataFrame, theme: str 
         },
     }
     column_styles = style_by_dataset.get(dataset.id, {})
-    return [
-        {"field": column, "cellStyle": column_styles.get(column, _plain_cell_style(theme))}
-        for column in data.columns
-    ]
+    column_defs = []
+    for column in data.columns:
+        column_def = {"field": column, "cellStyle": column_styles.get(column, _plain_cell_style(theme))}
+        if dataset.id == "planning_goals" and column == "Цель":
+            column_def.update({"editable": True, "singleClickEdit": True})
+        column_defs.append(column_def)
+    return column_defs
 
 
 def _plain_cell_style(theme: str | None = None) -> dict:
     return {"backgroundColor": "#2b2b2b", "color": "#a9b7c6"} if theme == "dark" else {}
+
+
+def _editable_cell_style(theme: str | None = None) -> dict:
+    if theme == "dark":
+        return {
+            "backgroundColor": "#333b45",
+            "color": "#dcdcdc",
+            "border": "1px solid #6897bb",
+            "fontWeight": "600",
+        }
+    return {"backgroundColor": "#eef6ff", "border": "1px solid #9ec5fe", "fontWeight": "600"}
 
 
 def _add_level_metadata(records: list[dict], raw: pd.DataFrame, field_map: dict[str, str]) -> None:

@@ -66,12 +66,14 @@ def create_month_report(year: str,
     add_table(fig, capital_df_, row=3, col=1)
 
     # Add actual receivables table
-    receivables_df = get_act_receivables()
+    receivables_df = get_act_receivables(currency)
+    receivables_df = utils.process_num_cols(receivables_df, not_num_cols=['Комментарий'], currency=currency)
     receivables_df = utils.fill_if_empty(receivables_df)
     add_table(fig, receivables_df, row=4, col=1)
 
     # Add actual liabilities table
-    liabilities_df = get_act_liabilities()
+    liabilities_df = get_act_liabilities(currency)
+    liabilities_df = utils.process_num_cols(liabilities_df, not_num_cols=['Комментарий'], currency=currency)
     liabilities_df = utils.fill_if_empty(liabilities_df)
     add_table(fig, liabilities_df, row=4, col=3)
 

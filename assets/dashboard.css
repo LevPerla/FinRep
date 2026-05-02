@@ -275,3 +275,236 @@ body {
 .finrep-theme-dark .dashboard-toolbar .dashboard-filter input {
   color: #a9b7c6 !important;
 }
+
+.kaspi-category-income {
+  background-color: rgba(75, 181, 106, 0.22) !important;
+  color: #1f5d37 !important;
+  font-weight: 600;
+}
+.kaspi-category-saving {
+  background-color: rgba(64, 156, 255, 0.20) !important;
+  color: #225f9f !important;
+  font-weight: 600;
+}
+.kaspi-category-internal {
+  background-color: rgba(150, 150, 150, 0.20) !important;
+  color: #5b5b5b !important;
+  font-weight: 600;
+}
+.kaspi-category-food {
+  background-color: rgba(255, 185, 80, 0.22) !important;
+  color: #8a5312 !important;
+  font-weight: 600;
+}
+.kaspi-category-transport {
+  background-color: rgba(123, 104, 238, 0.20) !important;
+  color: #4638a8 !important;
+  font-weight: 600;
+}
+.kaspi-category-communication {
+  background-color: rgba(56, 189, 248, 0.20) !important;
+  color: #0d6687 !important;
+  font-weight: 600;
+}
+.kaspi-category-other {
+  background-color: rgba(239, 120, 120, 0.18) !important;
+  color: #8a3030 !important;
+  font-weight: 600;
+}
+.finrep-theme-dark .kaspi-category-income { color: #b8f4c6 !important; }
+.finrep-theme-dark .kaspi-category-saving { color: #b9ddff !important; }
+.finrep-theme-dark .kaspi-category-internal { color: #d0d0d0 !important; }
+.finrep-theme-dark .kaspi-category-food { color: #ffdca3 !important; }
+.finrep-theme-dark .kaspi-category-transport { color: #d1c8ff !important; }
+.finrep-theme-dark .kaspi-category-communication { color: #b9ecff !important; }
+.finrep-theme-dark .kaspi-category-other { color: #ffc4c4 !important; }
+
+.finrep-theme-dark .finrep-native-input,
+.finrep-theme-dark .finrep-native-input.form-control,
+.finrep-theme-dark input.form-control,
+.finrep-theme-dark textarea.form-control {
+  background-color: #2b2b2b !important;
+  border-color: #646464 !important;
+  color: #dcdcdc !important;
+  -webkit-text-fill-color: #dcdcdc !important;
+  caret-color: #dcdcdc !important;
+}
+.finrep-theme-dark .finrep-native-input::placeholder,
+.finrep-theme-dark .form-control.finrep-native-input::placeholder,
+.finrep-theme-dark input.form-control::placeholder,
+.finrep-theme-dark textarea.form-control::placeholder,
+.finrep-theme-dark .finrep-native-input::-webkit-input-placeholder,
+.finrep-theme-dark .form-control.finrep-native-input::-webkit-input-placeholder,
+.finrep-theme-dark input.form-control::-webkit-input-placeholder,
+.finrep-theme-dark textarea.form-control::-webkit-input-placeholder {
+  color: #dcdcdc !important;
+  -webkit-text-fill-color: #dcdcdc !important;
+  opacity: 1 !important;
+}
+.finrep-theme-dark input[type="date"]::-webkit-calendar-picker-indicator {
+  filter: invert(0.75);
+  opacity: 0.9;
+}
+.finrep-theme-dark input[type="number"]::-webkit-inner-spin-button,
+.finrep-theme-dark input[type="number"]::-webkit-outer-spin-button {
+  opacity: 0.7;
+}
+
+.finrep-theme-dark .dash-dropdown,
+.finrep-theme-dark .dash-dropdown * {
+  color: #dcdcdc !important;
+}
+.finrep-theme-dark .dash-dropdown .Select-placeholder,
+.finrep-theme-dark .dash-dropdown .Select-value-label,
+.finrep-theme-dark .dash-dropdown .Select__placeholder,
+.finrep-theme-dark .dash-dropdown .Select__single-value,
+.finrep-theme-dark .dash-dropdown .Select__input-container,
+.finrep-theme-dark .dash-dropdown .Select__input,
+.finrep-theme-dark .dash-dropdown input {
+  color: #dcdcdc !important;
+}
+.finrep-theme-dark .dash-dropdown .Select-arrow,
+.finrep-theme-dark .dash-dropdown .Select-clear,
+.finrep-theme-dark .dash-dropdown .Select-clear-zone,
+.finrep-theme-dark .dash-dropdown .Select-arrow-zone,
+.finrep-theme-dark .dash-dropdown .Select__dropdown-indicator,
+.finrep-theme-dark .dash-dropdown .Select__clear-indicator,
+.finrep-theme-dark .dash-dropdown .Select__indicator,
+.finrep-theme-dark .dash-dropdown .Select__indicator svg {
+  color: #dcdcdc !important;
+  fill: #dcdcdc !important;
+  border-top-color: #dcdcdc !important;
+}
+.finrep-theme-dark .dash-dropdown .Select-option,
+.finrep-theme-dark .dash-dropdown .Select__option {
+  color: #dcdcdc !important;
+}
+
+.finrep-theme-dark .form-control.finrep-native-input,
+.finrep-theme-dark input.form-control.finrep-native-input,
+.finrep-theme-dark textarea.form-control.finrep-native-input {
+  color: #dcdcdc !important;
+  -webkit-text-fill-color: #dcdcdc !important;
+}
+.finrep-theme-dark .form-control.finrep-native-input::placeholder,
+.finrep-theme-dark input.form-control.finrep-native-input::placeholder,
+.finrep-theme-dark textarea.form-control.finrep-native-input::placeholder,
+.finrep-theme-dark .form-control.finrep-native-input::-webkit-input-placeholder,
+.finrep-theme-dark input.form-control.finrep-native-input::-webkit-input-placeholder,
+.finrep-theme-dark textarea.form-control.finrep-native-input::-webkit-input-placeholder {
+  color: #dcdcdc !important;
+  -webkit-text-fill-color: #dcdcdc !important;
+  opacity: 1 !important;
+}
+
+.finrep-theme-dark #transaction-input-date,
+.finrep-theme-dark #transaction-input-amount,
+.finrep-theme-dark #transaction-input-comment {
+  color: #dcdcdc !important;
+  -webkit-text-fill-color: #dcdcdc !important;
+  background-color: #2b2b2b !important;
+  border-color: #646464 !important;
+  caret-color: #dcdcdc !important;
+}
+.finrep-theme-dark #transaction-input-date::placeholder,
+.finrep-theme-dark #transaction-input-amount::placeholder,
+.finrep-theme-dark #transaction-input-comment::placeholder {
+  color: #dcdcdc !important;
+  -webkit-text-fill-color: #dcdcdc !important;
+  opacity: 1 !important;
+}
+.finrep-theme-dark #transaction-input-date::-webkit-input-placeholder,
+.finrep-theme-dark #transaction-input-amount::-webkit-input-placeholder,
+.finrep-theme-dark #transaction-input-comment::-webkit-input-placeholder {
+  color: #dcdcdc !important;
+  -webkit-text-fill-color: #dcdcdc !important;
+  opacity: 1 !important;
+}
+.finrep-theme-dark #transaction-input-date::-moz-placeholder,
+.finrep-theme-dark #transaction-input-amount::-moz-placeholder,
+.finrep-theme-dark #transaction-input-comment::-moz-placeholder {
+  color: #dcdcdc !important;
+  opacity: 1 !important;
+}
+.finrep-theme-dark #transaction-input-date::-webkit-calendar-picker-indicator {
+  filter: invert(0.85) brightness(1.4) !important;
+  opacity: 1 !important;
+}
+
+.finrep-theme-dark #transaction-input-category .Select-control,
+.finrep-theme-dark #transaction-input-currency .Select-control,
+.finrep-theme-dark #transaction-filter-month .Select-control,
+.finrep-theme-dark #transaction-filter-category .Select-control,
+.finrep-theme-dark #transaction-filter-status .Select-control,
+.finrep-theme-dark #transaction-filter-source .Select-control,
+.finrep-theme-dark #transaction-input-category .Select__control,
+.finrep-theme-dark #transaction-input-currency .Select__control,
+.finrep-theme-dark #transaction-filter-month .Select__control,
+.finrep-theme-dark #transaction-filter-category .Select__control,
+.finrep-theme-dark #transaction-filter-status .Select__control,
+.finrep-theme-dark #transaction-filter-source .Select__control {
+    background-color: #2b2b2b !important;
+    border-color: #646464 !important;
+    color: #dcdcdc !important;
+}
+.finrep-theme-dark #transaction-input-category .Select-placeholder,
+.finrep-theme-dark #transaction-input-currency .Select-placeholder,
+.finrep-theme-dark #transaction-filter-month .Select-placeholder,
+.finrep-theme-dark #transaction-filter-category .Select-placeholder,
+.finrep-theme-dark #transaction-filter-status .Select-placeholder,
+.finrep-theme-dark #transaction-filter-source .Select-placeholder,
+.finrep-theme-dark #transaction-input-category .Select-value-label,
+.finrep-theme-dark #transaction-input-currency .Select-value-label,
+.finrep-theme-dark #transaction-filter-month .Select-value-label,
+.finrep-theme-dark #transaction-filter-category .Select-value-label,
+.finrep-theme-dark #transaction-filter-status .Select-value-label,
+.finrep-theme-dark #transaction-filter-source .Select-value-label,
+.finrep-theme-dark #transaction-input-category .Select-input > input,
+.finrep-theme-dark #transaction-input-currency .Select-input > input,
+.finrep-theme-dark #transaction-filter-month .Select-input > input,
+.finrep-theme-dark #transaction-filter-category .Select-input > input,
+.finrep-theme-dark #transaction-filter-status .Select-input > input,
+.finrep-theme-dark #transaction-filter-source .Select-input > input,
+.finrep-theme-dark #transaction-input-category .Select__placeholder,
+.finrep-theme-dark #transaction-input-currency .Select__placeholder,
+.finrep-theme-dark #transaction-filter-month .Select__placeholder,
+.finrep-theme-dark #transaction-filter-category .Select__placeholder,
+.finrep-theme-dark #transaction-filter-status .Select__placeholder,
+.finrep-theme-dark #transaction-filter-source .Select__placeholder,
+.finrep-theme-dark #transaction-input-category .Select__single-value,
+.finrep-theme-dark #transaction-input-currency .Select__single-value,
+.finrep-theme-dark #transaction-filter-month .Select__single-value,
+.finrep-theme-dark #transaction-filter-category .Select__single-value,
+.finrep-theme-dark #transaction-filter-status .Select__single-value,
+.finrep-theme-dark #transaction-filter-source .Select__single-value,
+.finrep-theme-dark #transaction-input-category .Select__input,
+.finrep-theme-dark #transaction-input-currency .Select__input,
+.finrep-theme-dark #transaction-filter-month .Select__input,
+.finrep-theme-dark #transaction-filter-category .Select__input,
+.finrep-theme-dark #transaction-filter-status .Select__input,
+.finrep-theme-dark #transaction-filter-source .Select__input {
+    color: #dcdcdc !important;
+    -webkit-text-fill-color: #dcdcdc !important;
+}
+.finrep-theme-dark #transaction-input-category .Select-arrow,
+.finrep-theme-dark #transaction-input-currency .Select-arrow,
+.finrep-theme-dark #transaction-filter-month .Select-arrow,
+.finrep-theme-dark #transaction-filter-category .Select-arrow,
+.finrep-theme-dark #transaction-filter-status .Select-arrow,
+.finrep-theme-dark #transaction-filter-source .Select-arrow,
+.finrep-theme-dark #transaction-input-category .Select-clear,
+.finrep-theme-dark #transaction-input-currency .Select-clear,
+.finrep-theme-dark #transaction-filter-month .Select-clear,
+.finrep-theme-dark #transaction-filter-category .Select-clear,
+.finrep-theme-dark #transaction-filter-status .Select-clear,
+.finrep-theme-dark #transaction-filter-source .Select-clear,
+.finrep-theme-dark #transaction-input-category .Select__indicator,
+.finrep-theme-dark #transaction-input-currency .Select__indicator,
+.finrep-theme-dark #transaction-filter-month .Select__indicator,
+.finrep-theme-dark #transaction-filter-category .Select__indicator,
+.finrep-theme-dark #transaction-filter-status .Select__indicator,
+.finrep-theme-dark #transaction-filter-source .Select__indicator {
+    color: #dcdcdc !important;
+    fill: #dcdcdc !important;
+    border-top-color: #dcdcdc !important;
+}

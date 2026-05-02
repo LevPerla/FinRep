@@ -142,62 +142,93 @@ def _get_balance_by_month_cached(currency: str) -> pd.DataFrame:
     return all_stats_df
 
 
-def get_act_receivables():
-    return _get_act_receivables_cached().copy(deep=True)
+def get_act_receivables(currency: str | None = None):
+    return _get_act_receivables_cached(_normalize_currency_arg(currency)).copy(deep=True)
 
 
-@lru_cache(maxsize=1)
-def _get_act_receivables_cached():
+@lru_cache(maxsize=None)
+def _get_act_receivables_cached(currency: str | None):
+    return _get_active_debt_balance(
+        debt_category='Дебиторская задолженность',
+        payment_category='Погашение деб. зад.',
+        result_column='Дебиторская задолженность',
+        payment_column='Погашение деб. зад.',
+        currency=currency,
+    )
+
+
+def get_act_liabilities(currency: str | None = None):
+    return _get_act_liabilities_cached(_normalize_currency_arg(currency)).copy(deep=True)
+
+
+@lru_cache(maxsize=None)
+def _get_act_liabilities_cached(currency: str | None):
+    return _get_active_debt_balance(
+        debt_category='Кредиторская задолженность',
+        payment_category='Погашение кред. зад.',
+        result_column='Кредиторская задолженность',
+        payment_column='Погашение кред. зад.',
+        currency=currency,
+    )
+
+
+def _normalize_currency_arg(currency: str | None) -> str | None:
+    if currency is None:
+        return None
+    currency = str(currency).upper()
+    if currency not in config.UNIQUE_TICKERS:
+        raise ValueError(f"currency must be one of {tuple(config.UNIQUE_TICKERS)}")
+    return currency
+
+
+def _get_active_debt_balance(
+    debt_category: str,
+    payment_category: str,
+    result_column: str,
+    payment_column: str,
+    currency: str | None,
+) -> pd.DataFrame:
     transactions_df = get_transactions()
-    
-    receivable_df = transactions_df[(transactions_df['Категория'] == 'Дебиторская задолженность') &
-                                    (transactions_df['Значение'] != 0)][
-        ['Дата', 'Значение', 'Комментарий']].sort_values('Дата')
-    
-    paid_receivable_df = (transactions_df[(transactions_df['Категория'] == 'Погашение деб. зад.') &
-                                          (transactions_df['Значение'] != 0)]
-                          [['Дата', 'Значение', 'Комментарий']]
-                          .sort_values('Дата')
-                          )
-    
-    receivable_df = pd.concat(
-        [receivable_df.groupby('Комментарий')['Значение'].sum().rename('Дебиторская задолженность'),
-         paid_receivable_df.groupby('Комментарий')['Значение'].sum().rename('Погашение деб. зад.')
-         ], axis=1)
-    receivable_df['Погашение деб. зад.'] = receivable_df['Погашение деб. зад.'].fillna(0)
-    receivable_df['Дебиторская задолженность'] = receivable_df['Дебиторская задолженность'] - receivable_df[
-        'Погашение деб. зад.']
-    receivable_df = receivable_df[receivable_df['Дебиторская задолженность'] != 0]['Дебиторская задолженность']
-    return receivable_df.reset_index()
+    columns = ['Дата', 'Значение', 'Валюта', 'Комментарий']
+
+    debt_df = (transactions_df[(transactions_df['Категория'] == debt_category) &
+                               (transactions_df['Значение'] != 0)]
+               [columns]
+               .sort_values('Дата'))
+    payment_df = (transactions_df[(transactions_df['Категория'] == payment_category) &
+                                  (transactions_df['Значение'] != 0)]
+                  [columns]
+                  .sort_values('Дата'))
+
+    if currency is not None:
+        debt_df = _convert_debt_transactions(debt_df, currency)
+        payment_df = _convert_debt_transactions(payment_df, currency)
+
+    result = pd.concat(
+        [
+            debt_df.groupby('Комментарий')['Значение'].sum().rename(result_column),
+            payment_df.groupby('Комментарий')['Значение'].sum().rename(payment_column),
+        ],
+        axis=1,
+    )
+    if result.empty:
+        return pd.DataFrame(columns=['Комментарий', result_column])
+
+    result[payment_column] = result[payment_column].fillna(0)
+    result[result_column] = result[result_column].fillna(0) - result[payment_column]
+    result = result[result[result_column] != 0][result_column]
+    return result.reset_index()
 
 
-def get_act_liabilities():
-    return _get_act_liabilities_cached().copy(deep=True)
-
-
-@lru_cache(maxsize=1)
-def _get_act_liabilities_cached():
-    transactions_df = get_transactions()
-    liabilities_df = (transactions_df[(transactions_df['Категория'] == 'Кредиторская задолженность') &
-                                      (transactions_df['Значение'] != 0)]
-                      [['Дата', 'Значение', 'Комментарий']]
-                      .sort_values('Дата')
-                      )
-
-    paid_liabilities_df = (transactions_df[(transactions_df['Категория'] == 'Погашение кред. зад.') &
-                                           (transactions_df['Значение'] != 0)]
-                           [['Дата', 'Значение', 'Комментарий']]
-                           .sort_values('Дата')
-                           )
-    liabilities_df = pd.concat(
-        [liabilities_df.groupby('Комментарий')['Значение'].sum().rename('Кредиторская задолженность'),
-         paid_liabilities_df.groupby('Комментарий')['Значение'].sum().rename('Погашение кред. зад.')
-         ], axis=1)
-    liabilities_df['Погашение кред. зад.'] = liabilities_df['Погашение кред. зад.'].fillna(0)
-    liabilities_df['Кредиторская задолженность'] = liabilities_df['Кредиторская задолженность'] - liabilities_df[
-        'Погашение кред. зад.']
-    liabilities_df = liabilities_df[liabilities_df['Кредиторская задолженность'] != 0]['Кредиторская задолженность']
-    return liabilities_df.reset_index()
+def _convert_debt_transactions(data: pd.DataFrame, currency: str) -> pd.DataFrame:
+    if data.empty:
+        return data.copy(deep=True)
+    return convert_transaction(
+        df_to_convert=data.copy(deep=True),
+        to_curr=currency,
+        target_col='Значение',
+        use_current_rate=True,
+    )
 
 
 def get_cost_distribution(currency, year, month=None):

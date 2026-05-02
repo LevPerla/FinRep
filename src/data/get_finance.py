@@ -17,7 +17,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 FX_CACHE_COLUMNS = ['date', 'currency', 'usd_rate', 'source', 'fetched_at']
-_FX_NETWORK_ENABLED = True
+_FX_NETWORK_ENABLED = False
 _FX_CACHE_DF = None
 _CBR_SERIES_CACHE = {}
 _CBR_VALUTE_IDS = {
@@ -129,18 +129,7 @@ def get_fx_rate_info(from_curr, to_curr, as_of_date=None, lookback_days=7) -> di
     from_curr = str(from_curr).upper()
     to_curr = str(to_curr).upper()
 
-    initial_legs = [
-        _usd_rate_metadata(from_curr, as_of),
-        _usd_rate_metadata(to_curr, as_of),
-    ]
-    quote_dates = [
-        leg['rate_date']
-        for leg in initial_legs
-        if leg.get('source') not in {'base', 'missing'} and leg.get('rate_date') is not None
-    ]
-    effective_date = min(quote_dates) if quote_dates else as_of
-
-    rates = get_fx_rates(from_curr, to_curr, start, effective_date)
+    rates = get_fx_rates(from_curr, to_curr, start, as_of)
     rate_series = pd.to_numeric(rates.iloc[:, 0], errors='coerce').dropna() if not rates.empty else pd.Series(dtype=float)
     if rate_series.empty:
         return {
@@ -345,22 +334,26 @@ def _ensure_currency_cached(currency: str, min_date: pd.Timestamp, max_date: pd.
     if not missing_dates:
         return
 
-    if _FX_NETWORK_ENABLED:
-        fetched = _fetch_missing_usd_rates(currency, min(missing_dates), max(missing_dates))
+    fetch_dates = _fetchable_missing_dates(currency, missing_dates)
+    if _FX_NETWORK_ENABLED and fetch_dates:
+        fetched = _fetch_missing_usd_rates(currency, min(fetch_dates), max(fetch_dates))
         if not fetched.empty:
             fetched = fetched.loc[(fetched.index >= min_date) & (fetched.index <= max_date)]
             if not fetched.empty:
                 _append_cache_rows(currency, fetched, fetched.name or 'provider')
                 missing_dates = _missing_dates(currency, min_date, max_date)
-                if not missing_dates:
+                fetch_dates = _fetchable_missing_dates(currency, missing_dates)
+                if not fetch_dates:
                     return
 
-    if missing_dates:
+    if _FX_NETWORK_ENABLED and fetch_dates:
+        preview_dates = ", ".join(date.date().isoformat() for date in fetch_dates[:5])
+        suffix = "..." if len(fetch_dates) > 5 else ""
         logger.warning(
-            "No FX cache/provider data for %s/USD from %s to %s",
+            "No exact FX cache/provider rows for %s/USD on fetchable dates %s%s; calculations will use nearest cached values where possible",
             currency,
-            min_date.date().isoformat(),
-            max_date.date().isoformat(),
+            preview_dates,
+            suffix,
         )
 
 
@@ -578,8 +571,43 @@ def _series_from_cache(currency: str, min_date: pd.Timestamp, max_date: pd.Times
 
 
 def _missing_dates(currency: str, min_date: pd.Timestamp, max_date: pd.Timestamp) -> list[pd.Timestamp]:
-    series = _series_from_cache(currency, min_date, max_date)
-    return list(series[series.isna()].index)
+    currency = str(currency).upper()
+    if currency == config.FX_BASE_CURRENCY:
+        return []
+
+    full_index = pd.date_range(min_date.normalize(), max_date.normalize(), freq='D')
+    cache = _read_cache()
+    if cache.empty:
+        return list(full_index)
+
+    currency_cache = cache[cache['currency'] == currency]
+    if currency_cache.empty:
+        return list(full_index)
+
+    cached_dates = set(pd.to_datetime(currency_cache['date'], errors='coerce').dropna().dt.normalize())
+    return [date for date in full_index if date.normalize() not in cached_dates]
+
+
+def _fetchable_missing_dates(currency: str, missing_dates: list[pd.Timestamp]) -> list[pd.Timestamp]:
+    return [date for date in missing_dates if _is_fx_fetchable_date(currency, date)]
+
+
+def _is_fx_fetchable_date(currency: str, date: pd.Timestamp) -> bool:
+    date = pd.Timestamp(date).normalize()
+    if date.weekday() >= 5:
+        return False
+    return date.strftime('%m-%d') not in _fx_holiday_mmdd(str(currency).upper())
+
+
+def _fx_holiday_mmdd(currency: str) -> set[str]:
+    common = {'01-01', '01-02', '12-25'}
+    if currency == 'RUB':
+        return common | {'01-03', '01-04', '01-05', '01-06', '01-07', '01-08', '02-23', '03-08', '05-01', '05-09', '06-12', '11-04'}
+    if currency == 'KZT':
+        return common | {'03-08', '03-21', '03-22', '03-23', '05-01', '05-07', '05-09', '07-06', '08-30', '10-25', '12-16'}
+    if currency in {'EUR', 'GBP'}:
+        return common | {'12-26'}
+    return common
 
 
 def _latest_cached_usd_rate(currency: str):

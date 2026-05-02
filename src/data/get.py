@@ -21,7 +21,7 @@ def _get_transactions_cached():
             continue
         for file_name in os.listdir(os.path.join(config.TRANSACTIONS_INFO_PATH, folder_name)):
             # print(file_name)
-            if file_name == '.DS_Store':
+            if file_name == '.DS_Store' or '.backup_' in file_name:
                 continue
             month_df = pd.read_csv(os.path.join(config.TRANSACTIONS_INFO_PATH, folder_name, file_name), sep=';',
                                    decimal=',',

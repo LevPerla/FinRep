@@ -5,9 +5,10 @@ from src import config, utils
 from src.dashboard.main_data import DashboardDataset, _apply_dashboard_chart_layout
 from src.dashboard.year_data import _format_cost_distribution
 from src.data.exchange_rates_info import get_exchange_rates_info
-from src.data.get import get_transactions
+from src.data.get import clear_data_cache, get_transactions
 from src.data.get_finance import set_fx_network_enabled
 from src.data.proccess import convert_transaction
+from src.data.staging import ensure_monthly_transaction_csv
 from src.model.create_tables import (
     get_act_liabilities,
     get_act_receivables,
@@ -30,12 +31,15 @@ def build_month_dashboard_data(
         raise ValueError(f"currency must be one of {tuple(config.UNIQUE_TICKERS)}")
 
     set_fx_network_enabled(fx_network_enabled)
+    created_info = ensure_monthly_transaction_csv(year, month)
+    if created_info["created"]:
+        clear_data_cache()
 
     transactions = get_month_transactions(currency, year, month)
     fx_info = get_exchange_rates_info(currency)
     summary = _prepare_summary(get_balance_by_month(currency).loc[f"{year}-{month}"].reset_index())
-    receivables = get_act_receivables()
-    liabilities = get_act_liabilities()
+    receivables = get_act_receivables(currency)
+    liabilities = get_act_liabilities(currency)
     cost_distribution = _cost_distribution(year, month, currency)
     assets = _prepare_assets(get_assets_by_currencies(year, month))
 
@@ -62,13 +66,13 @@ def build_month_dashboard_data(
             id="month_receivables",
             title="Дебиторская задолженность",
             dataframe=receivables,
-            display_dataframe=utils.fill_if_empty(receivables.copy(deep=True)),
+            display_dataframe=utils.fill_if_empty(_format_money_columns(receivables.copy(deep=True), currency, ["Комментарий"])),
         ),
         "month_liabilities": DashboardDataset(
             id="month_liabilities",
             title="Кредиторская задолженность",
             dataframe=liabilities,
-            display_dataframe=utils.fill_if_empty(liabilities.copy(deep=True)),
+            display_dataframe=utils.fill_if_empty(_format_money_columns(liabilities.copy(deep=True), currency, ["Комментарий"])),
         ),
         "month_cost_distribution": DashboardDataset(
             id="month_cost_distribution",

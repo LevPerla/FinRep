@@ -140,14 +140,30 @@ FINREP_DASH_DEBUG=0 uv run python -m src.dashboard.app
 FINREP_DASH_HOT_RELOAD=0 uv run python -m src.dashboard.app
 ```
 
+Dash uses cached FX rates by default. Normal tab/filter changes read `data/rates/fx_rates.csv` and fill weekends/known FX holidays from the nearest cached value. Press `Обновить курс` in the dashboard toolbar when you want the FX layer to try configured providers for missing fetchable dates and append only provider-returned rows to the long cache.
+
 The Dash app currently supports:
 
 - main report tab;
 - yearly report tab;
 - monthly report tab;
+- planning and forecast tab;
+- manual transaction input tab backed by staging drafts;
 - currency, year, and month selectors;
 - per-widget XLSX downloads;
 - PNG/PDF export through Playwright.
+
+Manual transaction drafts live in:
+
+```text
+data/staging/transaction_drafts.csv
+```
+
+The `Ввод данных` tab writes new rows to staging drafts first. It can also import Kaspi Gold PDF statements into the same staging flow. The importer parses dates, amounts, currencies, operation text, applies merchant/category rules from `data/import_rules/categories.csv`, and shows a preview before saving. Internal account transfers such as `To Kaspi Deposit` are marked as `skip` and do not enter staging. Duplicate control happens twice: during preview and again during save, using `source="kaspi_pdf"`, a stable `source_id`, and date/currency/amount comparison against already loaded source transactions.
+
+The export block can preview the final monthly source CSV, then write it to `data/transactions_info` only after explicit confirmation and after creating a timestamped backup of the previous month file under `data/backups/transactions_info/<year>/`. Backups are intentionally kept outside `data/transactions_info` so reports do not read them as duplicate source data. When a selected monthly transaction CSV does not exist yet, Dash creates an empty month file from the previous month columns and fills all days with zeroes.
+
+The `Ввод данных` tab also has an `Активы` sub-tab for monthly asset snapshots. It edits the file selected by the dashboard year/month filters under `data/assets_info/<year>/<year>_<month>.csv`. If that file does not exist yet, it is created as a copy of the latest previous month snapshot so the account list does not need to be re-entered. Saving writes the edited table directly to CSV and creates a backup under `data/backups/assets_info/<year>/`.
 
 Dashboard exports are saved under:
 

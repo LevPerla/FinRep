@@ -12,6 +12,11 @@ TRANSACTIONS_INFO_PATH = os.path.join(DATA_PATH, 'transactions_info')
 ASSETS_INFO_PATH = os.path.join(DATA_PATH, 'assets_info')
 INVESTMENTS_PATH = os.path.join(DATA_PATH, 'investments.csv')
 FX_CACHE_PATH = os.path.join(DATA_PATH, 'rates', 'fx_rates.csv')
+STAGING_PATH = os.path.join(DATA_PATH, 'staging')
+BACKUPS_PATH = os.path.join(DATA_PATH, 'backups')
+TRANSACTION_BACKUPS_PATH = os.path.join(BACKUPS_PATH, 'transactions_info')
+ASSET_BACKUPS_PATH = os.path.join(BACKUPS_PATH, 'assets_info')
+TRANSACTION_DRAFTS_PATH = os.path.join(STAGING_PATH, 'transaction_drafts.csv')
 
 STOCK_API = 'yf'  # yf, td
 FX_BASE_CURRENCY = 'USD'

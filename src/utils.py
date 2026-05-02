@@ -40,6 +40,7 @@ def process_num_cols(df, not_num_cols, currency):
         if col_name not in not_num_cols:
             df.loc[:, col_name] = (df[col_name].astype(float)
                                    .map('{:,.2f}'.format)
+                                   .astype(str)
                                    .str.replace(',', ' ') +
                                    config.UNIQUE_TICKERS[currency])
     return df

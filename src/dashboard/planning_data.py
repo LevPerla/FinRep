@@ -1,4 +1,5 @@
 from pathlib import Path
+import re
 
 import pandas as pd
 import plotly.graph_objects as go
@@ -21,6 +22,11 @@ GOALS_COLUMNS = [
 LEGACY_GOALS_COLUMNS = {
     "target_income": "target_monthly_income",
     "target_expense": "target_monthly_expense",
+}
+GOAL_LABEL_TO_COLUMN = {
+    "Капитал": "target_capital",
+    "Средний доход/мес": "target_monthly_income",
+    "Средний расход/мес": "target_monthly_expense",
 }
 FX_SHOCKS = [-20, -10, 0, 10, 20]
 
@@ -91,6 +97,50 @@ def _load_goals() -> pd.DataFrame:
     for column in ["target_capital", "target_monthly_income", "target_monthly_expense"]:
         goals[column] = pd.to_numeric(goals[column], errors="coerce")
     return goals
+
+
+def save_goal_targets(year: str, currency: str, rows: list[dict]) -> None:
+    year = str(year)
+    currency = str(currency).upper()
+    goals = _load_goals()
+    mask = (goals["year"] == year) & (goals["currency"] == currency)
+    if mask.any():
+        row_index = goals[mask].index[-1]
+    else:
+        row_index = len(goals)
+        goals.loc[row_index, GOALS_COLUMNS] = [year, currency, pd.NA, pd.NA, pd.NA, ""]
+
+    for row in rows:
+        target_column = GOAL_LABEL_TO_COLUMN.get(str(row.get("Показатель", "")))
+        if not target_column:
+            continue
+        goals.loc[row_index, target_column] = _parse_goal_value(row.get("Цель"))
+
+    goals = goals[GOALS_COLUMNS].copy(deep=True)
+    goals["year"] = goals["year"].astype(str)
+    goals["currency"] = goals["currency"].astype(str).str.upper()
+    GOALS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    goals.to_csv(GOALS_PATH, sep=";", index=False, encoding="utf-8-sig")
+
+
+def _parse_goal_value(value):
+    if value is None or pd.isna(value):
+        return pd.NA
+    text = str(value).strip()
+    if not text:
+        return pd.NA
+    normalized = re.sub(r"[^0-9,.-]", "", text.replace(" ", " "))
+    if not normalized or normalized in {"-", ".", ","}:
+        return pd.NA
+    if "," in normalized and "." in normalized:
+        if normalized.rfind(",") > normalized.rfind("."):
+            normalized = normalized.replace(".", "").replace(",", ".")
+        else:
+            normalized = normalized.replace(",", "")
+    else:
+        normalized = normalized.replace(",", ".")
+    parsed = pd.to_numeric(normalized, errors="coerce")
+    return pd.NA if pd.isna(parsed) else float(parsed)
 
 
 def _goal_for_year_currency(goals: pd.DataFrame, year: str, currency: str) -> pd.Series:
