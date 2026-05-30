@@ -15,12 +15,72 @@ Important data areas:
 
 - `data/transactions_info/`: protected source transaction CSV files.
 - `data/assets_info/`: protected source asset CSV files.
-- `data/investments.csv`: investment transactions.
+- `data/investments/investments.csv`: investment transactions.
 - `data/rates/fx_rates.csv`: long-format FX cache.
 
 Do not delete, move, or auto-clean anything inside `data/transactions_info/` or `data/assets_info/`. Treat these as source-of-truth folders.
 
 Generated outputs live under `reports/`.
+
+## Investment Data
+
+The legacy investment source remains:
+
+```text
+data/investments/investments.csv
+```
+
+The normalized investment layer lives in `src/data/investments.py`. It can read the legacy CSV in memory and migrate it into three v1 tables:
+
+```text
+data/investments/transactions.csv
+data/investments/instruments.csv
+data/investments/price_cache.csv
+```
+
+Schemas:
+
+```text
+transactions.csv: date;operation;asset_type;ticker;quantity;price;currency;fee;account;comment
+instruments.csv: ticker;name;asset_type;currency;provider;exchange
+price_cache.csv: date;ticker;price;currency;source;fetched_at
+```
+
+Supported v1 asset types are `stocks`, `funds`, and `crypto`; bonds are intentionally left for a later dedicated model. The migration/export helper is explicit, so normal report runs keep using `data/investments/investments.csv` until the investment calculations phase switches over.
+
+Investment calculations live in:
+
+```text
+src/data/investment_calculations.py
+src/dashboard/investment_data.py
+```
+
+Dash has an `Инвестиции` tab with portfolio value, realized/unrealized PnL, allocation by asset type/currency, and a positions table. PnL uses FIFO. Prices are read from `data/investments/price_cache.csv`; when the cache has no row for a known ticker, FinRep seeds a reproducible baseline from the latest transaction price with `source=latest_transaction`. Provider refresh is available through `update_price_cache_from_providers(...)` and writes provider prices into the same cache before reports use them.
+
+Crypto wallets are part of the investment layer:
+
+```text
+data/investments/crypto_wallets.csv
+data/investments/crypto_balances.csv
+data/investments/crypto_transactions.csv
+```
+
+Wallet config schema:
+
+```text
+account;chain;asset;address;token_contract;enabled;label
+```
+
+Use `account` for wallet names such as `ledger`, `tangem`, or `base wallet`. Supported v1 assets are `BTC`, `ETH`, `TON`, `SOL`, `LINK`, `KAS`, and `USDT`; supported chains are `bitcoin`, `ethereum`, `base`, `ton`, `solana`, and `kaspa`. For EVM tokens such as `LINK` or `USDT`, set `token_contract` unless FinRep has a default contract for that chain/asset.
+
+Crypto balances are loaded into the same `Инвестиции` portfolio table as `asset_type=crypto`. Balance and price refreshes are explicit:
+
+```python
+from src.data.crypto import refresh_crypto_balances, refresh_crypto_price_cache
+
+refresh_crypto_balances()
+refresh_crypto_price_cache(["BTC", "ETH", "TON", "SOL", "LINK", "KAS", "USDT"])
+```
 
 ## Main Plotly Flow
 

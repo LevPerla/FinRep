@@ -130,45 +130,73 @@ Verification note: `data/bank_data/Kaspi/gold_statement.pdf` parses into 121 row
 
 Purpose: replace the old partial investment attempt with a durable model.
 
-- [ ] Define transaction schema for investments:
+- [x] Define transaction schema for investments:
   date, operation, asset_type, ticker, quantity, price, currency, fee, account, comment.
-- [ ] Define instrument registry:
+- [x] Define instrument registry:
   ticker, name, asset_type, currency, provider, exchange.
-- [ ] Define price cache:
+- [x] Define price cache:
   date, ticker, price, currency, source, fetched_at.
-- [ ] Keep a reader for current `data/investments.csv`.
-- [ ] Add migration/export helper from the old investments CSV into the new model.
-- [ ] Support asset types in v1: stocks, funds, crypto.
-- [ ] Leave bonds for a later dedicated phase.
+- [x] Keep a reader for current `data/investments/investments.csv`.
+- [x] Add migration/export helper from the old investments CSV into the new model.
+- [x] Support asset types in v1: stocks, funds, crypto.
+- [x] Leave bonds for a later dedicated phase.
 
 Done when:
 
-- [ ] Current `data/investments.csv` can be loaded through the new investment layer.
-- [ ] New schema can represent existing buys and sells without data loss.
-- [ ] Investment validation reports missing tickers, bad dates, bad quantities, and unsupported currencies.
+- [x] Current `data/investments/investments.csv` can be loaded through the new investment layer.
+- [x] New schema can represent existing buys and sells without data loss.
+- [x] Investment validation reports missing tickers, bad dates, bad quantities, and unsupported currencies.
+
+Verification note: `data/investments/investments.csv` migrates in memory into 18 normalized investment transactions and 9 instruments. Export helper was tested against `/private/tmp/finrep_investments_phase6` and created `transactions.csv`, `instruments.csv`, and `price_cache.csv` without touching source data. `validate_all_data(False)` and AST syntax checks pass.
 
 ## Phase 7: Investment calculations and reports
 
 Purpose: make investments useful in analysis, not just stored.
 
-- [ ] Calculate current positions by ticker.
-- [ ] Calculate average cost.
-- [ ] Calculate realized PnL using FIFO.
-- [ ] Calculate unrealized PnL from latest cached prices.
-- [ ] Calculate current market value in selected report currency.
-- [ ] Add price providers for stocks/funds and crypto with provider fallback.
-- [ ] Cache prices before using them in reports.
-- [ ] Add an `Инвестиции` Dash tab.
-- [ ] Show portfolio value, PnL, allocation by asset type, allocation by currency, and positions table.
-- [ ] Add investment value into capital as a separate account/line.
+- [x] Calculate current positions by ticker.
+- [x] Calculate average cost.
+- [x] Calculate realized PnL using FIFO.
+- [x] Calculate unrealized PnL from latest cached prices.
+- [x] Calculate current market value in selected report currency.
+- [x] Add price providers for stocks/funds and crypto with provider fallback.
+- [x] Cache prices before using them in reports.
+- [x] Add an `Инвестиции` Dash tab.
+- [x] Show portfolio value, PnL, allocation by asset type, allocation by currency, and positions table.
+- [x] Add investment value into capital as a separate account/line.
 
 Done when:
 
-- [ ] Portfolio value can be shown in `RUB`, `KZT`, `USD`, and `EUR`.
-- [ ] PnL numbers are reproducible from cached prices.
-- [ ] Total capital includes investments without double-counting cash assets.
+- [x] Portfolio value can be shown in `RUB`, `KZT`, `USD`, and `EUR`.
+- [x] PnL numbers are reproducible from cached prices.
+- [x] Total capital includes investments without double-counting cash assets.
 
-## Phase 8: Private Docker deployment
+Verification note: investment calculations produce 5 open positions from current legacy data, FIFO realized PnL includes closed tickers, and baseline price cache is seeded from latest transactions under `data/investments/price_cache.csv`. Dash `Инвестиции` data builds in `RUB`, and monthly assets include `Инвестиции RUB` as a separate line. `validate_all_data(False)`, Dash layout import, and `compileall` pass.
+
+## Phase 8: Crypto wallet module
+
+Purpose: make self-custody crypto visible inside the investment portfolio.
+
+- [x] Add a crypto wallet config under `data/investments/`.
+- [x] Support wallet assets in v1: Bitcoin, Ethereum, Toncoin, Solana, Chainlink, Kaspa, Tether.
+- [x] Treat Ledger as an account/wallet label, not as an asset ticker.
+- [x] Add balance cache and transaction cache for crypto wallets.
+- [x] Add provider adapters for public balance fetching where no API key is required.
+- [x] Add provider hook for crypto price refresh into investment price cache.
+- [x] Include crypto balances in the common investment portfolio analytics.
+- [x] Show crypto rows in the existing `Инвестиции` positions table.
+- [ ] Add indexed transaction-history providers for EVM/Base, TON, Solana, and Kaspa.
+- [ ] Add Dash controls to refresh crypto balances, prices, and transactions from the UI.
+
+Done when:
+
+- [x] `data/investments/crypto_wallets.csv` can describe wallet addresses without changing source transaction CSVs.
+- [x] Cached crypto balances become `asset_type="crypto"` positions in portfolio calculations.
+- [x] The investment dashboard can display crypto positions together with stocks/funds.
+- [ ] Transaction history from configured wallets is visible in investment analytics.
+
+Verification note: crypto wallet config, balance cache, transaction cache, balance refresh adapters, price refresh hook, and portfolio integration are implemented. Empty wallet config is valid, `validate_all_data(False)` passes, and Dash investment data still builds without configured wallets. Network refresh functions are explicit and do not run during normal dashboard loading.
+
+## Phase 9: Private Docker deployment
 
 Purpose: run Dash on a private server without exposing sensitive data publicly.
 
@@ -213,7 +241,7 @@ uv run python main.py
 - [ ] Phase 3: Dash manual transaction input.
 - [ ] Phase 4: Export staging into monthly CSV.
 - [ ] Phase 5: Kaspi PDF import.
-- [ ] Phase 6: Investment data model.
-- [ ] Phase 7: Investment calculations and reports.
-- [ ] Phase 8: Private Docker deployment.
-
+- [x] Phase 6: Investment data model.
+- [x] Phase 7: Investment calculations and reports.
+- [ ] Phase 8: Crypto wallet module.
+- [ ] Phase 9: Private Docker deployment.

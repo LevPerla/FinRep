@@ -5,6 +5,8 @@ from pathlib import Path
 import pandas as pd
 
 from src import config
+from src.data.crypto import validate_crypto_wallets
+from src.data.investments import validate_legacy_investments
 from src.data.staging import validate_transaction_drafts as validate_transaction_draft_rows
 
 
@@ -39,6 +41,7 @@ def validate_all_data(raise_on_error: bool = True) -> list[ValidationIssue]:
     issues.extend(validate_transactions())
     issues.extend(validate_assets())
     issues.extend(validate_investments())
+    issues.extend(validate_crypto_wallet_config())
     issues.extend(validate_transaction_draft_staging())
 
     if issues and raise_on_error:
@@ -75,39 +78,7 @@ def validate_assets() -> list[ValidationIssue]:
 
 def validate_investments() -> list[ValidationIssue]:
     csv_path = Path(config.INVESTMENTS_PATH)
-    if not csv_path.exists():
-        return [ValidationIssue(csv_path, "investments file does not exist")]
-
-    issues = []
-    try:
-        data = pd.read_csv(csv_path, sep=";", dtype=str, encoding="utf-8-sig").fillna("")
-    except Exception as exc:
-        return [ValidationIssue(csv_path, f"cannot read investments CSV: {exc}")]
-
-    required_columns = {"Тип_транзакции", "Актив", "Тикер", "Количество", "Дата", "Цена"}
-    issues.extend(_missing_columns(csv_path, data, required_columns))
-    if issues:
-        return issues
-
-    dates = pd.to_datetime(data["Дата"], dayfirst=True, errors="coerce")
-    for row_number, is_bad in enumerate(dates.isna(), start=2):
-        if is_bad:
-            issues.append(ValidationIssue(csv_path, f"row {row_number}: invalid investment date"))
-
-    for row_number, value in enumerate(data["Количество"], start=2):
-        if not _is_number(value):
-            issues.append(ValidationIssue(csv_path, f"row {row_number}: invalid investment quantity {value!r}"))
-
-    for row_number, value in enumerate(data["Цена"], start=2):
-        parsed = _parse_money_cell(value, expected_parts=2)
-        if parsed is None:
-            issues.append(ValidationIssue(csv_path, f"row {row_number}: invalid investment price {value!r}"))
-            continue
-        _, currency = parsed
-        if currency not in config.UNIQUE_TICKERS:
-            issues.append(ValidationIssue(csv_path, f"row {row_number}: unsupported currency {currency!r}"))
-
-    return issues
+    return [ValidationIssue(csv_path, str(issue)) for issue in validate_legacy_investments(csv_path)]
 
 
 def validate_transaction_draft_staging() -> list[ValidationIssue]:
@@ -119,6 +90,13 @@ def validate_transaction_draft_staging() -> list[ValidationIssue]:
     for issue in validate_transaction_draft_rows(path=csv_path):
         issues.append(ValidationIssue(csv_path, str(issue)))
     return issues
+
+
+def validate_crypto_wallet_config() -> list[ValidationIssue]:
+    csv_path = Path(config.CRYPTO_WALLETS_PATH)
+    if not csv_path.exists():
+        return []
+    return [ValidationIssue(csv_path, str(issue)) for issue in validate_crypto_wallets(path=csv_path)]
 
 
 def _validate_transaction_file(csv_path: Path) -> list[ValidationIssue]:

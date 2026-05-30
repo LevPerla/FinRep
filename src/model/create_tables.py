@@ -4,6 +4,7 @@ from functools import lru_cache
 
 from src import config
 from src.data.get import get_investments, get_transactions, get_assets
+from src.data.investment_calculations import current_investment_value
 from src.data.get_finance import get_actual_fx_rate, get_actual_rates, get_act_moex
 from src.data.proccess import convert_transaction
 
@@ -295,12 +296,10 @@ def get_assets_by_currencies(year, month) -> pd.DataFrame:
                           ].reset_index(drop=True)
     assets_df.drop(['Год', 'Месяц', 'Квартал'], axis=1, inplace=True)
 
-    # Add actual investments value
-    # buy_df, _ = create_invest_tbl()
-    # investments = ((buy_df.set_index('Дата')['Актуальная цена'] * buy_df.set_index('Дата')['Количество']).sum())
-    # inv_df = pd.DataFrame([{'Счет': 'Инвестиции', 'Валюта': 'RUB', 'Значение': investments}])
-    # assets_df = assets_df.append(inv_df)
-
+    investment_value = current_investment_value('RUB')
+    if investment_value:
+        inv_df = pd.DataFrame([{'Счет': 'Инвестиции', 'Валюта': 'RUB', 'Значение': investment_value}])
+        assets_df = pd.concat([assets_df, inv_df], ignore_index=True)
 
     # Pivot data to currency in cols and accounts in rows
     gr_asset_df = assets_df.pivot_table(index=['Счет', 'Валюта'], columns='Валюта',

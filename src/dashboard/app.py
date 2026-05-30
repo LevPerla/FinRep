@@ -12,6 +12,7 @@ from dash.exceptions import PreventUpdate
 from src import config
 from src.data.get import clear_data_cache, get_transactions
 from src.data.assets_editor import read_asset_snapshot, write_asset_snapshot
+from src.data.crypto import read_crypto_wallets, refresh_crypto_balances, refresh_crypto_price_cache
 from src.data.importers.kaspi_pdf import parse_kaspi_upload_contents, save_kaspi_import_to_staging
 from src.data.staging import (
     DRAFT_COLUMNS,
@@ -25,6 +26,7 @@ from src.data.staging import (
     read_transaction_drafts,
 )
 from src.dashboard.export import export_dashboard_page
+from src.dashboard.investment_data import build_investment_dashboard_data
 from src.dashboard.main_data import DashboardDataset, build_main_dashboard_data
 from src.dashboard.month_data import build_month_dashboard_data
 from src.dashboard.planning_data import build_planning_dashboard_data, save_goal_targets
@@ -356,6 +358,13 @@ def create_layout():
             dcc.Location(id="dashboard-location"),
             dcc.Store(id="dashboard-theme", data="dark"),
             dcc.Store(id="dashboard-refresh-token", data=0),
+            dcc.Store(
+                id="crypto-refresh-status",
+                data={
+                    "message": "Crypto refresh отправляет включенные wallet addresses в публичные blockchain API и обновляет локальный cache.",
+                    "color": "secondary",
+                },
+            ),
             dbc.Row(
                 [
                     dbc.Col(
@@ -413,6 +422,7 @@ def create_layout():
                     dbc.Tab(label="Годовой отчет", tab_id="year"),
                     dbc.Tab(label="Месячный отчет", tab_id="month"),
                     dbc.Tab(label="План и прогноз", tab_id="planning"),
+                    dbc.Tab(label="Инвестиции", tab_id="investments"),
                     dbc.Tab(label="Ввод данных", tab_id="input"),
                 ],
                 id="dashboard-tabs",
@@ -443,6 +453,45 @@ def register_callbacks(app: Dash) -> None:
         clear_data_cache()
         clear_table_cache()
         return int(current_token or 0) + 1
+
+    @app.callback(
+        Output("dashboard-refresh-token", "data", allow_duplicate=True),
+        Output("crypto-refresh-status", "data"),
+        Input("crypto-refresh-button", "n_clicks"),
+        State("dashboard-refresh-token", "data"),
+        prevent_initial_call=True,
+    )
+    def refresh_crypto_data(n_clicks: int | None, current_token: int | None):
+        if not n_clicks:
+            raise PreventUpdate
+        try:
+            wallets = read_crypto_wallets()
+            enabled_assets = sorted(
+                {
+                    str(row["asset"]).upper()
+                    for _, row in wallets.iterrows()
+                    if str(row.get("enabled", "1")).strip().lower() not in {"0", "false", "no", "off"}
+                }
+            )
+            balances = refresh_crypto_balances()
+            if enabled_assets:
+                refresh_crypto_price_cache(enabled_assets)
+            clear_data_cache()
+            clear_table_cache()
+            errors = balances.attrs.get("errors", [])
+            statuses = balances.attrs.get("statuses", [])
+            message = f"Crypto обновлено: {len(balances)} balance row(s), assets: {', '.join(enabled_assets) or 'нет включенных кошельков'}."
+            if statuses:
+                message += " Успешно: " + " | ".join(statuses[:6])
+                if len(statuses) > 6:
+                    message += f" | еще {len(statuses) - 6}"
+            if errors:
+                message += " Ошибки: " + " | ".join(errors[:8])
+                if len(errors) > 8:
+                    message += f" | еще {len(errors) - 8}"
+            return int(current_token or 0) + 1, {"message": message, "color": "warning" if errors else "success"}
+        except Exception as exc:
+            return int(current_token or 0), {"message": f"Crypto refresh не удался: {exc}", "color": "danger"}
 
     @app.callback(
         Output("dashboard-refresh-token", "data", allow_duplicate=True),
@@ -497,7 +546,7 @@ def register_callbacks(app: Dash) -> None:
             year = DEFAULT_YEAR
         if month not in {f"{value:02d}" for value in range(1, 13)}:
             month = DEFAULT_MONTH
-        if tab not in {"main", "year", "month", "planning", "input"}:
+        if tab not in {"main", "year", "month", "planning", "investments", "input"}:
             tab = "main"
         return currency, year, month, tab
 
@@ -510,8 +559,9 @@ def register_callbacks(app: Dash) -> None:
         Input("dashboard-theme", "data"),
         Input("dashboard-refresh-token", "data"),
         Input("refresh-fx-rates", "n_clicks"),
+        State("crypto-refresh-status", "data"),
     )
-    def render_dashboard_content(currency: str, year: str, month: str, active_tab: str, theme: str, refresh_token: int, fx_refresh_clicks: int | None):
+    def render_dashboard_content(currency: str, year: str, month: str, active_tab: str, theme: str, refresh_token: int, fx_refresh_clicks: int | None, crypto_status: dict | None):
         fx_network_enabled = ctx.triggered_id == "refresh-fx-rates"
         if fx_network_enabled:
             clear_table_cache()
@@ -555,6 +605,18 @@ def register_callbacks(app: Dash) -> None:
 
             _apply_theme_to_datasets(datasets, theme)
             return _month_report_layout(datasets, theme)
+
+        if active_tab == "investments":
+            try:
+                datasets = build_investment_dashboard_data(
+                    currency,
+                    fx_network_enabled=fx_network_enabled,
+                )
+            except Exception as exc:
+                return _error_state("Не удалось загрузить инвестиционный отчет.", exc)
+
+            _apply_theme_to_datasets(datasets, theme)
+            return _investment_report_layout(datasets, theme, crypto_status)
 
         if active_tab == "input":
             return _input_report_layout(currency, year, month, theme)
@@ -1038,6 +1100,51 @@ def _month_report_layout(datasets: dict[str, DashboardDataset], theme: str | Non
             _graph_section(datasets["month_cost_distribution_chart"], theme=theme),
             _grid_section(datasets["month_cost_distribution"], height="520px", theme=theme),
             _grid_section(datasets["month_assets"], height="1120px", theme=theme),
+        ],
+        className="d-grid gap-4",
+    )
+
+
+def _investment_report_layout(datasets: dict[str, DashboardDataset], theme: str | None, crypto_status: dict | None = None):
+    crypto_status = crypto_status or {}
+    return html.Div(
+        [
+            html.Section(
+                [
+                    html.Div(
+                        [
+                            html.H2("Инвестиции", className="h5 mb-0"),
+                            dbc.Button("Обновить crypto", id="crypto-refresh-button", color="warning", outline=True, size="sm"),
+                        ],
+                        className="d-flex justify-content-between align-items-center mb-3",
+                    ),
+                    dbc.Alert(
+                        id="crypto-refresh-message",
+                        children=crypto_status.get("message", "Crypto refresh отправляет включенные wallet addresses в публичные blockchain API и обновляет локальный cache."),
+                        color=crypto_status.get("color", "secondary"),
+                        is_open=True,
+                        className="mb-0 py-2",
+                    ),
+                ],
+                style=_section_style(theme),
+            ),
+            _grid_section(datasets["crypto_wallets"], height="320px", theme=theme),
+            _grid_section(datasets["investment_summary"], height="220px", theme=theme),
+            dbc.Row(
+                [
+                    dbc.Col(_graph_section(datasets["investment_allocation_type"], height="420px", theme=theme), xs=12, lg=6),
+                    dbc.Col(_graph_section(datasets["investment_allocation_currency"], height="420px", theme=theme), xs=12, lg=6),
+                ],
+                className="g-4",
+            ),
+            dbc.Row(
+                [
+                    dbc.Col(_grid_section(datasets["investment_allocation_type"], height="280px", theme=theme), xs=12, lg=6),
+                    dbc.Col(_grid_section(datasets["investment_allocation_currency"], height="280px", theme=theme), xs=12, lg=6),
+                ],
+                className="g-4",
+            ),
+            _grid_section(datasets["investment_positions"], height="560px", theme=theme),
         ],
         className="d-grid gap-4",
     )
@@ -1546,6 +1653,26 @@ def _grid_row_data(dataset: DashboardDataset, data: pd.DataFrame) -> list[dict]:
                 record["__planning_fx_delta_sign"] = _value_sign(raw.iloc[index].get("Изменение капитала"))
         return records
 
+    if dataset.id == "investment_summary":
+        for index, record in enumerate(records):
+            if index < len(raw):
+                record["__investment_summary_sign"] = _value_sign(raw.iloc[index].get("value"))
+        return records
+
+    if dataset.id == "investment_positions":
+        _add_level_metadata(records, raw, {"market_value": "__investment_value_level", "allocation": "__investment_allocation_level"})
+        for index, record in enumerate(records):
+            if index < len(raw):
+                row = raw.iloc[index]
+                record["__investment_unrealized_sign"] = _value_sign(row.get("unrealized_pnl"))
+                record["__investment_realized_sign"] = _value_sign(row.get("realized_pnl"))
+                record["__investment_total_sign"] = _value_sign(row.get("total_pnl"))
+        return records
+
+    if dataset.id in {"investment_allocation_type", "investment_allocation_currency"}:
+        _add_level_metadata(records, raw, {"market_value": "__investment_alloc_value_level", "allocation": "__investment_alloc_pct_level"})
+        return records
+
     simple_level_tables = {
         "year_income_by_month": {"Доход": ("__monthly_income_level", "green")},
         "year_cost_by_month": {"Расход": ("__monthly_cost_level", "red")},
@@ -1632,6 +1759,24 @@ def _grid_column_defs(dataset: DashboardDataset, data: pd.DataFrame, theme: str 
         "planning_fx_scenarios": {
             "Капитал": _level_style("__planning_fx_capital_level", "blue", theme),
             "Изменение капитала": _sign_style("__planning_fx_delta_sign", theme),
+        },
+        "investment_summary": {
+            "Значение": _sign_style("__investment_summary_sign", theme),
+        },
+        "investment_positions": {
+            "Стоимость": _level_style("__investment_value_level", "green", theme),
+            "Нереализованный PnL": _sign_style("__investment_unrealized_sign", theme),
+            "Реализованный PnL": _sign_style("__investment_realized_sign", theme),
+            "Итого PnL": _sign_style("__investment_total_sign", theme),
+            "Доля (%)": _level_style("__investment_allocation_level", "blue", theme),
+        },
+        "investment_allocation_type": {
+            "Стоимость": _level_style("__investment_alloc_value_level", "green", theme),
+            "Доля (%)": _level_style("__investment_alloc_pct_level", "blue", theme),
+        },
+        "investment_allocation_currency": {
+            "Стоимость": _level_style("__investment_alloc_value_level", "green", theme),
+            "Доля (%)": _level_style("__investment_alloc_pct_level", "blue", theme),
         },
     }
     column_styles = style_by_dataset.get(dataset.id, {})
@@ -1975,6 +2120,11 @@ def _datasets_for_tab(
             currency,
             fx_network_enabled=DEFAULT_FX_NETWORK_ENABLED,
         )
+    if active_tab == "investments":
+        return build_investment_dashboard_data(
+            currency,
+            fx_network_enabled=DEFAULT_FX_NETWORK_ENABLED,
+        )
     if active_tab == "month":
         return build_month_dashboard_data(
             year,
@@ -2002,6 +2152,8 @@ def _download_filename(
         return f"month_report_{year}_{month}_{dataset.id}_{currency}_{timestamp}.xlsx"
     if active_tab == "planning":
         return f"planning_{year}_{dataset.id}_{currency}_{timestamp}.xlsx"
+    if active_tab == "investments":
+        return f"investments_{dataset.id}_{currency}_{timestamp}.xlsx"
     return f"main_report_{dataset.id}_{currency}_{timestamp}.xlsx"
 
 
