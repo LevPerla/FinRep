@@ -4,8 +4,21 @@ from pathlib import Path
 UNIQUE_TICKERS = {'RUB': '₽', 'USD': '$', 'EUR': '€', 'KZT': '₸', 'GBP': '£'}
 
 PROJECT_PATH = Path(__file__).parent.parent
-DATA_PATH = os.path.join(PROJECT_PATH, 'data')
-REPORTS_PATH = os.path.join(PROJECT_PATH, 'reports')
+
+
+def _project_path_from_env(env_name: str, default_folder: str) -> str:
+    value = os.environ.get(env_name)
+    if not value:
+        return os.path.join(PROJECT_PATH, default_folder)
+
+    path = Path(value).expanduser()
+    if not path.is_absolute():
+        path = PROJECT_PATH / path
+    return str(path)
+
+
+DATA_PATH = _project_path_from_env('FINREP_DATA_DIR', 'data')
+REPORTS_PATH = _project_path_from_env('FINREP_REPORTS_DIR', 'reports')
 SECRETS_PATH = os.path.join(PROJECT_PATH, 'src', 'secrets.json')
 
 TRANSACTIONS_INFO_PATH = os.path.join(DATA_PATH, 'transactions_info')

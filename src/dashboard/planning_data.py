@@ -10,7 +10,7 @@ from src.data.get import get_assets
 from src.data.get_finance import get_actual_fx_rate, set_fx_network_enabled
 from src.model.create_tables import get_balance_by_month
 
-GOALS_PATH = Path("data/plans/goals.csv")
+GOALS_PATH = Path(config.DATA_PATH) / "plans" / "goals.csv"
 GOALS_COLUMNS = [
     "year",
     "currency",

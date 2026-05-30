@@ -1,0 +1,9 @@
+date;operation;asset_type;ticker;quantity;price;currency;fee;account;comment
+2025-01-10;buy;stocks;DEMO;4;82;USD;1;Demo broker;Fictional early stock purchase
+2025-04-12;buy;funds;WORLD;3;125;USD;1;Demo broker;Fictional fund purchase
+2025-07-08;buy;crypto;BTC;0.01;57000;USD;0;Demo wallet;Fictional crypto purchase
+2025-10-21;buy;stocks;DEMO;3;90;USD;1;Demo broker;Fictional autumn stock purchase
+2026-04-04;buy;stocks;DEMO;8;95;USD;1;Demo broker;Fictional stock purchase
+2026-04-16;buy;funds;WORLD;5;140;USD;1;Demo broker;Fictional fund purchase
+2026-05-03;buy;crypto;BTC;0.015;61000;USD;0;Demo wallet;Fictional crypto position
+2026-05-20;sell;stocks;DEMO;2;108;USD;1;Demo broker;Fictional partial sale

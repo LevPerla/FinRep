@@ -1,0 +1,4 @@
+ticker;name;asset_type;currency;provider;exchange
+BTC;Bitcoin demo;crypto;USD;manual;demo
+DEMO;Demo Holdings Inc.;stocks;USD;manual;demo
+WORLD;World Index Demo Fund;funds;USD;manual;demo

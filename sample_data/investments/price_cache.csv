@@ -1,0 +1,4 @@
+date;ticker;price;currency;source;fetched_at
+2026-05-31;BTC;68000;USD;sample;2026-05-31T00:00:00
+2026-05-31;DEMO;110;USD;sample;2026-05-31T00:00:00
+2026-05-31;WORLD;146;USD;sample;2026-05-31T00:00:00
