@@ -6,6 +6,13 @@ FinRep is a local-first personal finance dashboard and report generator. It read
 
 ## Quick Start
 
+Clone the repository and enter the project folder:
+
+```bash
+git clone https://github.com/LevPerla/FinRep.git
+cd FinRep
+```
+
 Install dependencies with [uv](https://docs.astral.sh/uv/):
 
 ```bash
