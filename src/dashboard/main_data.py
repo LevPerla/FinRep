@@ -5,7 +5,7 @@ import plotly.graph_objects as go
 
 from src import config, utils
 from src.data.exchange_rates_info import get_exchange_rates_info
-from src.data.get_finance import set_fx_network_enabled
+from src.data.get_finance import get_fx_rates, set_fx_network_enabled
 from src.model.create_tables import get_balance_by_month
 
 
@@ -38,8 +38,14 @@ def build_main_dashboard_data(
     yearly_stats = _create_yearly_stats(balance)
     income_expense = balance[["Доход", "Расход"]].reset_index()
     delta = balance[["Дельта"]].reset_index()
-    capital = balance[["Капитал"]].reset_index()
+    capital_columns = [
+        column
+        for column in ["Капитал", "Капитал по активам", "Валютная переоценка", "Расхождение с активами"]
+        if column in balance.columns
+    ]
+    capital = balance[capital_columns].reset_index()
     fx_info = get_exchange_rates_info(currency)
+    fx_changes = _fx_changes_data(balance, currency)
 
     return {
         "yearly_stats": DashboardDataset(
@@ -77,14 +83,27 @@ def build_main_dashboard_data(
             dataframe=capital,
             figure=_capital_figure(capital, currency),
         ),
+        "fx_changes": DashboardDataset(
+            id="fx_changes",
+            title="FX Changes",
+            dataframe=fx_changes,
+            figure=_fx_changes_figure(fx_changes, currency),
+        ),
     }
 
 
 def _create_yearly_stats(balance: pd.DataFrame) -> pd.DataFrame:
     yearly_stats = balance[["Доход", "Расход"]].resample("Y").sum()
-    yearly_stats.index = yearly_stats.index.strftime("%Y")
     yearly_stats["Сальдо"] = yearly_stats["Доход"] - yearly_stats["Расход"]
+    if "Валютная переоценка" in balance.columns:
+        yearly_stats["Валютная переоценка"] = balance["Валютная переоценка"].resample("Y").sum(min_count=1)
+    if "Расхождение с активами" in balance.columns:
+        yearly_stats["Расхождение с активами"] = balance["Расхождение с активами"].resample("Y").last()
+    yearly_stats.index = yearly_stats.index.strftime("%Y")
     yearly_stats.loc["Всего"] = yearly_stats.sum(axis=0)
+    if "Расхождение с активами" in yearly_stats.columns:
+        latest_gap = balance["Расхождение с активами"].dropna()
+        yearly_stats.loc["Всего", "Расхождение с активами"] = latest_gap.iloc[-1] if not latest_gap.empty else None
     yearly_stats["Процент дохода"] = (
         yearly_stats["Доход"] / yearly_stats["Расход"] * 100
     ).round(2)
@@ -148,24 +167,104 @@ def _delta_figure(data: pd.DataFrame, currency: str) -> go.Figure:
 
 
 def _capital_figure(data: pd.DataFrame, currency: str) -> go.Figure:
-    fig = go.Figure(
+    fig = go.Figure()
+    x_dates = _month_start_dates(data)
+    fig.add_trace(
         go.Scatter(
-            x=_month_start_dates(data),
+            x=x_dates,
             y=data["Капитал"],
             mode="lines+markers+text",
-            name="Капитал",
+            name="Капитал cash-flow",
             text=_sparse_money_labels(data["Капитал"], currency, max_labels=7),
             textposition="top center",
             line=dict(color="green", width=2),
         )
     )
+    if "Капитал по активам" in data.columns:
+        fig.add_trace(
+            go.Scatter(
+                x=x_dates,
+                y=data["Капитал по активам"],
+                mode="lines+markers",
+                name="Капитал по активам",
+                line=dict(color="royalblue", width=2),
+                connectgaps=False,
+            )
+        )
+    if "Валютная переоценка" in data.columns:
+        fig.add_trace(
+            go.Bar(
+                x=x_dates,
+                y=data["Валютная переоценка"],
+                name="Валютная переоценка",
+                marker_color="rgba(120, 120, 120, 0.45)",
+                yaxis="y2",
+                hovertemplate="%{x|%Y-%m}<br>%{y:,.0f}<extra></extra>",
+            )
+        )
+        fig.update_layout(
+            yaxis2=dict(
+                title="Переоценка",
+                overlaying="y",
+                side="right",
+                showgrid=False,
+                tickfont=dict(size=CHART_LABEL_SIZE),
+            )
+        )
     _apply_dashboard_chart_layout(fig, "Динамика капитала", range_slider=True)
-    max_value = pd.to_numeric(data["Капитал"], errors="coerce").max()
+    max_value = pd.to_numeric(data[["Капитал", "Капитал по активам"]].stack(), errors="coerce").max() if "Капитал по активам" in data.columns else pd.to_numeric(data["Капитал"], errors="coerce").max()
     if pd.notna(max_value) and max_value > 0:
         fig.update_layout(
             margin=dict(l=70, r=30, t=105, b=55),
             yaxis=dict(range=[0, max_value * 1.18], tickfont=dict(size=CHART_FONT_SIZE)),
         )
+    return fig
+
+
+def _fx_changes_data(balance: pd.DataFrame, currency: str) -> pd.DataFrame:
+    if balance.empty:
+        return pd.DataFrame(columns=["Дата"])
+
+    start = pd.Timestamp(balance.index.min()).normalize()
+    end = pd.Timestamp(balance.index.max()).normalize()
+    result = pd.DataFrame({"Дата": pd.date_range(start, end, freq="M")})
+
+    for from_currency in config.UNIQUE_TICKERS:
+        if from_currency == currency:
+            continue
+        rates = get_fx_rates(from_currency, currency, start, end)
+        if rates.empty:
+            result[from_currency] = pd.NA
+            continue
+        values = pd.to_numeric(rates.iloc[:, 0], errors="coerce").resample("M").last()
+        result = result.merge(
+            values.rename(from_currency).reset_index().rename(columns={"index": "Дата"}),
+            on="Дата",
+            how="left",
+        )
+    return result
+
+
+def _fx_changes_figure(data: pd.DataFrame, currency: str) -> go.Figure:
+    fig = go.Figure()
+    if data.empty or "Дата" not in data.columns:
+        _apply_dashboard_chart_layout(fig, "Динамика курсов валют", range_slider=True)
+        return fig
+
+    x_dates = _month_start_dates(data)
+    for from_currency in [column for column in data.columns if column != "Дата"]:
+        fig.add_trace(
+            go.Scatter(
+                x=x_dates,
+                y=data[from_currency],
+                mode="lines",
+                name=f"{from_currency}/{currency}",
+                hovertemplate=f"{from_currency}/{currency}<br>%{{x|%Y-%m}}<br>%{{y:,.4f}}<extra></extra>",
+            )
+        )
+
+    _apply_dashboard_chart_layout(fig, "Динамика курсов валют", range_slider=True)
+    fig.update_layout(yaxis_title=f"1 валюта в {currency}")
     return fig
 
 

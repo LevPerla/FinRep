@@ -5,7 +5,7 @@ from functools import lru_cache
 from src import config
 from src.data.get import get_investments, get_transactions, get_assets
 from src.data.investment_calculations import current_investment_value
-from src.data.get_finance import get_actual_fx_rate, get_actual_rates, get_act_moex
+from src.data.get_finance import get_actual_rates, get_act_moex, get_fallback_rate, get_fx_rates
 from src.data.proccess import convert_transaction
 
 
@@ -104,18 +104,15 @@ def _get_balance_by_month_cached(currency: str) -> pd.DataFrame:
     transactions_df = get_transactions()
     # buy_df, sell_df = create_invest_tbl()и
 
-    # Convert currencies
+    # Convert every transaction at its own historical date. This keeps past reports
+    # stable when current FX rates move.
     if not config.DEBUG:
-        INCOME_COLS = ['Доход', 'Сбережения']
-        income_df = convert_transaction(df_to_convert=transactions_df[transactions_df.Категория.isin(INCOME_COLS)],
-                                        to_curr=currency,
-                                        target_col='Значение',
-                                        use_current_rate=True)
-        not_income_df = convert_transaction(df_to_convert=transactions_df[~transactions_df.Категория.isin(INCOME_COLS)],
-                                        to_curr=currency,
-                                        target_col='Значение',
-                                        use_current_rate=False)
-        transactions_df = pd.concat([income_df, not_income_df])
+        transactions_df = convert_transaction(
+            df_to_convert=transactions_df,
+            to_curr=currency,
+            target_col='Значение',
+            use_current_rate=False,
+        )
         # buy_df = convert_transaction(buy_df, to_curr=currency, target_col='Сумма')
         # sell_df = convert_transaction(sell_df, to_curr=currency, target_col='Прибыль/убыток')
 
@@ -140,6 +137,22 @@ def _get_balance_by_month_cached(currency: str) -> pd.DataFrame:
                               )
     all_stats_df['Капитал'] = all_stats_df['Баланс'].cumsum()
     all_stats_df['Дельта'] = all_stats_df['Доход'] - all_stats_df['Расход']
+    asset_capital = _get_asset_capital_by_month_cached(currency)
+    if not asset_capital.empty:
+        all_stats_df = all_stats_df.join(asset_capital, how='left')
+        asset_delta = all_stats_df['Капитал по активам'].diff()
+        first_asset_index = all_stats_df['Капитал по активам'].first_valid_index()
+        if first_asset_index is not None:
+            asset_delta.loc[first_asset_index] = (
+                all_stats_df.loc[first_asset_index, 'Капитал по активам']
+                - all_stats_df.loc[first_asset_index, 'Капитал']
+            )
+        all_stats_df['Валютная переоценка'] = asset_delta - all_stats_df['Баланс']
+        all_stats_df['Расхождение с активами'] = all_stats_df['Капитал по активам'] - all_stats_df['Капитал']
+    else:
+        all_stats_df['Капитал по активам'] = np.nan
+        all_stats_df['Валютная переоценка'] = np.nan
+        all_stats_df['Расхождение с активами'] = np.nan
     return all_stats_df
 
 
@@ -228,8 +241,36 @@ def _convert_debt_transactions(data: pd.DataFrame, currency: str) -> pd.DataFram
         df_to_convert=data.copy(deep=True),
         to_curr=currency,
         target_col='Значение',
-        use_current_rate=True,
+        use_current_rate=False,
     )
+
+
+def get_asset_capital_by_month(currency: str) -> pd.DataFrame:
+    return _get_asset_capital_by_month_cached(str(currency).upper()).copy(deep=True)
+
+
+@lru_cache(maxsize=None)
+def _get_asset_capital_by_month_cached(currency: str) -> pd.DataFrame:
+    assets_df = get_assets()
+    if assets_df.empty:
+        return pd.DataFrame(columns=['Капитал по активам'])
+
+    assets_df = assets_df.copy(deep=True)
+    assets_df['Дата'] = _asset_snapshot_dates(assets_df)
+    assets_df['Значение'] = _convert_asset_values_as_of_snapshot(assets_df, currency)
+    result = (
+        assets_df
+        .groupby('Дата', as_index=True)['Значение']
+        .sum()
+        .sort_index()
+        .rename('Капитал по активам')
+        .to_frame()
+    )
+    if not result.empty:
+        investment_value = current_investment_value(currency)
+        if investment_value:
+            result.loc[result.index.max(), 'Капитал по активам'] += investment_value
+    return result.round(2)
 
 
 def get_cost_distribution(currency, year, month=None):
@@ -294,9 +335,10 @@ def get_assets_by_currencies(year, month) -> pd.DataFrame:
     assets_df = assets_df[(assets_df['Год'].isin(list(np.array(year).flat))) &
                           (assets_df['Месяц'].isin(list(np.array(month).astype(int).astype(str).flat)))
                           ].reset_index(drop=True)
+    snapshot_date = _asset_snapshot_dates(assets_df).max() if not assets_df.empty else None
     assets_df.drop(['Год', 'Месяц', 'Квартал'], axis=1, inplace=True)
 
-    investment_value = current_investment_value('RUB')
+    investment_value = current_investment_value('RUB') if _is_latest_asset_snapshot(year, month) else 0
     if investment_value:
         inv_df = pd.DataFrame([{'Счет': 'Инвестиции', 'Валюта': 'RUB', 'Значение': investment_value}])
         assets_df = pd.concat([assets_df, inv_df], ignore_index=True)
@@ -322,9 +364,9 @@ def get_assets_by_currencies(year, month) -> pd.DataFrame:
 
         # Go by another cols
         for curr_to in [curr_2 for curr_2 in sml_df.columns if curr_2 not in ['Счет', curr_from]]:
-            rate = get_actual_fx_rate(curr_from, curr_to)
+            rate = _get_fx_rate_as_of(curr_from, curr_to, snapshot_date)
             if rate is None:
-                print(f"Warning: No rate available for {curr_from}/{curr_to}, skipping conversion")
+                print(f"Warning: No rate available for {curr_from}/{curr_to} as of {snapshot_date}, skipping conversion")
                 continue
             sml_df[curr_to] = sml_df[curr_from] * rate
         gr_asset_df_.update(sml_df)
@@ -332,8 +374,10 @@ def get_assets_by_currencies(year, month) -> pd.DataFrame:
     # Calculate sum of all money by col
     gr_asset_df_ = gr_asset_df_.set_index('Счет')
     if not gr_asset_df.empty:
-        gr_asset_df_.loc['Всего в валюте,%'] = (gr_asset_df_.loc['Всего в валюте'] / gr_asset_df_[gr_asset_df_.index != 'Всего в валюте'].sum(axis=0, min_count=1)) * 100
-        gr_asset_df_.loc['Всего'] = gr_asset_df_[gr_asset_df_.index != 'Всего в валюте'].sum(axis=0, min_count=1)
+        account_rows = gr_asset_df_.index != 'Всего в валюте'
+        gr_asset_df_.loc['Всего в валюте,%'] = (gr_asset_df_.loc['Всего в валюте'] / gr_asset_df_[account_rows].sum(axis=0, min_count=1)) * 100
+        total_rows = ~gr_asset_df_.index.isin(['Всего в валюте', 'Всего в валюте,%'])
+        gr_asset_df_.loc['Всего'] = gr_asset_df_[total_rows].sum(axis=0, min_count=1)
     gr_asset_df_ = gr_asset_df_
 
     # Format table
@@ -363,18 +407,14 @@ def _get_month_transactions_cached(currency, year, month):
                                  (transactions_df['Месяц'].isin(list(np.array(month).astype(int).astype(str).flat)))
                                  ].reset_index(drop=True)
 
-    # Приводим валюты
+    # Приводим валюты по историческому курсу даты операции.
     if not config.DEBUG:
-        INCOME_COLS = ['Доход', 'Сбережения']
-        income_df = convert_transaction(df_to_convert=smpl_tr_df[smpl_tr_df.Категория.isin(INCOME_COLS)],
-                                        to_curr=currency,
-                                        target_col='Значение',
-                                        use_current_rate=True)
-        not_income_df = convert_transaction(df_to_convert=smpl_tr_df[~smpl_tr_df.Категория.isin(INCOME_COLS)],
-                                        to_curr=currency,
-                                        target_col='Значение',
-                                        use_current_rate=False)
-        smpl_tr_df = pd.concat([income_df, not_income_df])
+        smpl_tr_df = convert_transaction(
+            df_to_convert=smpl_tr_df,
+            to_curr=currency,
+            target_col='Значение',
+            use_current_rate=False,
+        )
     
 
     month_tr_df = (smpl_tr_df
@@ -404,6 +444,7 @@ def _get_month_transactions_cached(currency, year, month):
 
 def clear_table_cache():
     _get_balance_by_month_cached.cache_clear()
+    _get_asset_capital_by_month_cached.cache_clear()
     _get_act_receivables_cached.cache_clear()
     _get_act_liabilities_cached.cache_clear()
     _get_cost_distribution_cached.cache_clear()
@@ -416,6 +457,70 @@ def _as_tuple(value):
 
 def _as_month_tuple(value):
     return tuple(np.array(value).astype(int).astype(str).flat)
+
+
+def _asset_snapshot_dates(assets_df: pd.DataFrame) -> pd.Series:
+    periods = pd.PeriodIndex(
+        year=assets_df['Год'].astype(int),
+        month=assets_df['Месяц'].astype(int),
+        freq='M',
+    )
+    return periods.to_timestamp(how='end').normalize()
+
+
+def _convert_asset_values_as_of_snapshot(assets_df: pd.DataFrame, currency: str) -> pd.Series:
+    values = pd.to_numeric(assets_df['Значение'], errors='coerce').copy()
+    for (from_curr, snapshot_date), index in assets_df.groupby(['Валюта', 'Дата']).groups.items():
+        from_curr = str(from_curr).upper()
+        if from_curr == currency:
+            continue
+        rate = _get_fx_rate_as_of(from_curr, currency, snapshot_date)
+        if rate is None:
+            print(f"Warning: No rate available for {from_curr}/{currency} as of {snapshot_date}, leaving asset value unconverted")
+            continue
+        values.loc[index] = values.loc[index] * rate
+    return values
+
+
+def _get_fx_rate_as_of(from_curr: str, to_curr: str, as_of_date) -> float | None:
+    from_curr = str(from_curr).upper()
+    to_curr = str(to_curr).upper()
+    if from_curr == to_curr:
+        return 1.0
+    if as_of_date is None or pd.isna(as_of_date):
+        return None
+
+    as_of = pd.Timestamp(as_of_date).normalize()
+    lookback_start = as_of - pd.Timedelta(days=7)
+    rates = get_fx_rates(from_curr, to_curr, lookback_start, as_of)
+    if rates.empty:
+        return get_fallback_rate(from_curr, to_curr)
+    values = pd.to_numeric(rates.iloc[:, 0], errors='coerce').dropna()
+    if values.empty:
+        return get_fallback_rate(from_curr, to_curr)
+    values = values[values.index <= as_of]
+    if values.empty:
+        return get_fallback_rate(from_curr, to_curr)
+    return float(values.iloc[-1])
+
+
+def _is_latest_asset_snapshot(year, month) -> bool:
+    assets_df = get_assets()
+    if assets_df.empty:
+        return False
+    latest = pd.PeriodIndex(
+        year=assets_df['Год'].astype(int),
+        month=assets_df['Месяц'].astype(int),
+        freq='M',
+    ).max()
+    years = list(np.array(year).astype(int).flat)
+    months = list(np.array(month).astype(int).flat)
+    requested_periods = {
+        pd.Period(year=year_value, month=month_value, freq='M')
+        for year_value in years
+        for month_value in months
+    }
+    return latest in set(requested_periods)
 
 if __name__ == '__main__':
     pd.options.display.max_columns = 40

@@ -1,0 +1,22 @@
+services:
+  dash:
+    build:
+      context: .
+    image: finrep-dash:local
+    restart: unless-stopped
+    environment:
+      FINREP_DASH_HOST: 0.0.0.0
+      FINREP_DASH_PORT: 8050
+      FINREP_DASH_DEBUG: 0
+      FINREP_DASH_HOT_RELOAD: 0
+    ports:
+      - "${FINREP_BIND_ADDRESS:-127.0.0.1}:${FINREP_DASH_PORT:-8050}:8050"
+    volumes:
+      - "${FINREP_DATA_DIR:-./data}:/app/data"
+      - "${FINREP_REPORTS_DIR:-./reports}:/app/reports"
+    healthcheck:
+      test: ["CMD", "python", "-c", "from urllib.request import urlopen; urlopen('http://127.0.0.1:8050/healthz', timeout=3).read()"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3

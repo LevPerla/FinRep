@@ -107,6 +107,9 @@ def _prepare_summary(data: pd.DataFrame) -> pd.DataFrame:
         "Расход",
         "Баланс",
         "Капитал",
+        "Капитал по активам",
+        "Валютная переоценка",
+        "Расхождение с активами",
         "Дельта",
     ]
     display = data.drop(columns=["Дата"], errors="ignore").copy(deep=True)

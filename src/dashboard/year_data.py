@@ -30,7 +30,12 @@ def build_year_dashboard_data(
     income_by_month = year_balance[["Доход"]].reset_index()
     cost_by_month = year_balance[["Расход"]].reset_index()
     income_cost_stats = _income_cost_stats(year_balance)
-    capital_by_month = year_balance[["Капитал"]].reset_index()
+    capital_columns = [
+        column
+        for column in ["Капитал", "Капитал по активам", "Валютная переоценка", "Расхождение с активами"]
+        if column in year_balance.columns
+    ]
+    capital_by_month = year_balance[capital_columns].reset_index()
     fx_info = get_exchange_rates_info(currency)
 
     return {
@@ -96,10 +101,7 @@ def build_year_dashboard_data(
             id="year_capital_by_month",
             title="Капитал по месяцам",
             dataframe=capital_by_month,
-            display_dataframe=_format_date_columns(
-                _format_money_columns(capital_by_month, currency, ["Дата"]),
-                ["Дата"],
-            ),
+            display_dataframe=_format_date_columns(_format_money_columns(capital_by_month, currency, ["Дата"]), ["Дата"]),
         ),
         "year_capital_chart": DashboardDataset(
             id="year_capital_chart",
@@ -261,14 +263,38 @@ def _income_expense_figure(income: pd.DataFrame, cost: pd.DataFrame) -> go.Figur
 
 
 def _capital_figure(data: pd.DataFrame) -> go.Figure:
-    fig = go.Figure(
+    fig = go.Figure()
+    x_dates = _month_start_dates(data)
+    fig.add_trace(
         go.Scatter(
-            x=_month_start_dates(data),
+            x=x_dates,
             y=data["Капитал"],
             mode="lines+markers",
-            name="Капитал",
+            name="Капитал cash-flow",
             line=dict(color="green", width=2),
         )
     )
+    if "Капитал по активам" in data.columns:
+        fig.add_trace(
+            go.Scatter(
+                x=x_dates,
+                y=data["Капитал по активам"],
+                mode="lines+markers",
+                name="Капитал по активам",
+                line=dict(color="royalblue", width=2),
+                connectgaps=False,
+            )
+        )
+    if "Валютная переоценка" in data.columns:
+        fig.add_trace(
+            go.Bar(
+                x=x_dates,
+                y=data["Валютная переоценка"],
+                name="Валютная переоценка",
+                marker_color="rgba(120, 120, 120, 0.45)",
+                yaxis="y2",
+            )
+        )
+        fig.update_layout(yaxis2=dict(title="Переоценка", overlaying="y", side="right", showgrid=False))
     _apply_dashboard_chart_layout(fig, "Динамика капитала")
     return fig

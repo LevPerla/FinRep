@@ -340,9 +340,14 @@ def create_app() -> Dash:
         suppress_callback_exceptions=True,
     )
     app.index_string = _app_index_string()
+    app.server.add_url_rule("/healthz", "healthz", _healthcheck)
     app.layout = create_layout()
     register_callbacks(app)
     return app
+
+
+def _healthcheck():
+    return {"status": "ok"}, 200
 
 
 def create_layout():
@@ -637,6 +642,7 @@ def register_callbacks(app: Dash) -> None:
                 _graph_section(datasets["income_expense"], theme=theme),
                 _graph_section(datasets["delta"], theme=theme),
                 _graph_section(datasets["capital"], height="640px", theme=theme),
+                _graph_section(datasets["fx_changes"], theme=theme),
             ],
             className="d-grid gap-4",
         )
@@ -1001,13 +1007,8 @@ def _year_report_layout(datasets: dict[str, DashboardDataset], theme: str | None
                 className="g-4",
             ),
             _grid_section(datasets["year_income_cost_stats"], height="360px", theme=theme),
-            dbc.Row(
-                [
-                    dbc.Col(_grid_section(datasets["year_capital_by_month"], height="560px", theme=theme), xs=12, lg=4),
-                    dbc.Col(_graph_section(datasets["year_capital_chart"], height="560px", theme=theme), xs=12, lg=8),
-                ],
-                className="g-4",
-            ),
+            _grid_section(datasets["year_capital_by_month"], height="560px", theme=theme),
+            _graph_section(datasets["year_capital_chart"], height="560px", theme=theme),
         ],
         className="d-grid gap-4",
     )
@@ -1024,13 +1025,8 @@ def _planning_report_layout(datasets: dict[str, DashboardDataset], theme: str | 
                 ],
                 className="g-4",
             ),
-            dbc.Row(
-                [
-                    dbc.Col(_grid_section(datasets["planning_fx_scenarios"], height="320px", theme=theme), xs=12, lg=5),
-                    dbc.Col(_graph_section(datasets["planning_fx_scenarios"], height="360px", theme=theme), xs=12, lg=7),
-                ],
-                className="g-4",
-            ),
+            _grid_section(datasets["planning_fx_scenarios"], height="320px", theme=theme),
+            _graph_section(datasets["planning_fx_scenarios"], height="360px", theme=theme),
         ],
         className="d-grid gap-4",
     )
@@ -1631,6 +1627,14 @@ def _grid_row_data(dataset: DashboardDataset, data: pd.DataFrame) -> list[dict]:
     if dataset.id == "month_summary":
         _add_level_metadata(records, raw, {"Доход": "__month_summary_income_level", "Сбережения": "__month_summary_savings_level"})
         _add_level_metadata(records, raw, {"Расход": "__month_summary_expense_level"})
+        _add_sign_metadata(
+            records,
+            raw,
+            {
+                "Валютная переоценка": "__month_summary_fx_sign",
+                "Расхождение с активами": "__month_summary_asset_gap_sign",
+            },
+        )
         return records
 
     if dataset.id == "month_assets":
@@ -1676,7 +1680,10 @@ def _grid_row_data(dataset: DashboardDataset, data: pd.DataFrame) -> list[dict]:
     simple_level_tables = {
         "year_income_by_month": {"Доход": ("__monthly_income_level", "green")},
         "year_cost_by_month": {"Расход": ("__monthly_cost_level", "red")},
-        "year_capital_by_month": {"Капитал": ("__monthly_capital_level", "green")},
+        "year_capital_by_month": {
+            "Капитал": ("__monthly_capital_level", "green"),
+            "Капитал по активам": ("__monthly_asset_capital_level", "blue"),
+        },
     }
     if dataset.id in simple_level_tables:
         _add_level_metadata(
@@ -1684,6 +1691,15 @@ def _grid_row_data(dataset: DashboardDataset, data: pd.DataFrame) -> list[dict]:
             raw,
             {column: field for column, (field, _palette) in simple_level_tables[dataset.id].items()},
         )
+        if dataset.id == "year_capital_by_month":
+            _add_sign_metadata(
+                records,
+                raw,
+                {
+                    "Валютная переоценка": "__monthly_fx_revaluation_sign",
+                    "Расхождение с активами": "__monthly_asset_gap_sign",
+                },
+            )
     return records
 
 
@@ -1746,11 +1762,18 @@ def _grid_column_defs(dataset: DashboardDataset, data: pd.DataFrame, theme: str 
             "Доход": _level_style("__month_summary_income_level", "green", theme),
             "Сбережения": _level_style("__month_summary_savings_level", "green", theme),
             "Расход": _level_style("__month_summary_expense_level", "red", theme),
+            "Валютная переоценка": _sign_style("__month_summary_fx_sign", theme),
+            "Расхождение с активами": _sign_style("__month_summary_asset_gap_sign", theme),
         },
         "month_assets": _month_asset_column_styles(data, theme),
         "year_income_by_month": {"Доход": _level_style("__monthly_income_level", "green", theme)},
         "year_cost_by_month": {"Расход": _level_style("__monthly_cost_level", "red", theme)},
-        "year_capital_by_month": {"Капитал": _level_style("__monthly_capital_level", "green", theme)},
+        "year_capital_by_month": {
+            "Капитал": _level_style("__monthly_capital_level", "green", theme),
+            "Капитал по активам": _level_style("__monthly_asset_capital_level", "blue", theme),
+            "Валютная переоценка": _sign_style("__monthly_fx_revaluation_sign", theme),
+            "Расхождение с активами": _sign_style("__monthly_asset_gap_sign", theme),
+        },
         "planning_goals": {
             "Цель": _editable_cell_style(theme),
             "Отклонение": _sign_style("__planning_delta_sign", theme),

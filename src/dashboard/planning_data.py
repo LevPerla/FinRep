@@ -260,7 +260,7 @@ def _runway(balance: pd.DataFrame) -> pd.DataFrame:
 def _fx_scenarios(target_currency: str) -> pd.DataFrame:
     assets = get_assets()
     if assets.empty:
-        return pd.DataFrame(columns=["Сценарий", "Шок (%)", "Капитал"])
+        return pd.DataFrame(columns=["Сценарий", "Пара курса", "Курс сценария", "Шок выбранной валюты (%)", "Капитал"])
 
     latest_year = assets["Год"].astype(int).max()
     latest_month = assets[assets["Год"].astype(int) == latest_year]["Месяц"].astype(int).max()
@@ -270,6 +270,7 @@ def _fx_scenarios(target_currency: str) -> pd.DataFrame:
     ].copy(deep=True)
 
     rows = []
+    rate_pair, base_rate = _scenario_reference_rate(target_currency)
     for shock in FX_SHOCKS:
         total = 0.0
         for _, asset in latest_assets.iterrows():
@@ -286,6 +287,8 @@ def _fx_scenarios(target_currency: str) -> pd.DataFrame:
             {
                 "Сценарий": _shock_label(shock, target_currency),
                 "Что меняется": _shock_description(shock, target_currency),
+                "Пара курса": rate_pair,
+                "Курс сценария": _apply_reference_rate_shock(base_rate, shock),
                 "Шок выбранной валюты (%)": shock,
                 "Капитал": total,
                 "Год": str(latest_year),
@@ -336,10 +339,11 @@ def _fx_scenarios_figure(data: pd.DataFrame, currency: str) -> go.Figure:
         go.Bar(
             x=data["Сценарий"] if not data.empty else [],
             y=data["Капитал"] if not data.empty else [],
-            customdata=data[["Что меняется", "Изменение капитала"]] if not data.empty else [],
+            customdata=data[["Что меняется", "Изменение капитала", "Пара курса", "Курс сценария"]] if not data.empty else [],
             marker=dict(color="#6897bb"),
             hovertemplate=(
                 "%{x}<br>%{customdata[0]}<br>"
+                "%{customdata[2]}: %{customdata[3]:,.4f}<br>"
                 "Капитал: %{y:,.0f}" + config.UNIQUE_TICKERS[currency] + "<br>"
                 "Изменение: %{customdata[1]:,.0f}" + config.UNIQUE_TICKERS[currency] + "<extra></extra>"
             ),
@@ -378,6 +382,7 @@ def _format_runway(data: pd.DataFrame, currency: str) -> pd.DataFrame:
 def _format_fx_scenarios(data: pd.DataFrame, currency: str) -> pd.DataFrame:
     display = data.copy(deep=True)
     if not display.empty:
+        display["Курс сценария"] = display["Курс сценария"].map(lambda value: "" if pd.isna(value) else f"{float(value):,.4f}".replace(",", " "))
         display["Капитал"] = display["Капитал"].map(lambda value: _format_money(value, currency))
         display["Изменение капитала"] = display["Изменение капитала"].map(lambda value: _format_money(value, currency))
     return display
@@ -419,6 +424,21 @@ def _target_currency_shock_multiplier(shock: int) -> float:
     if denominator <= 0:
         return pd.NA
     return 1 / denominator
+
+
+def _scenario_reference_rate(target_currency: str) -> tuple[str, float | None]:
+    reference_currency = "RUB" if target_currency == "USD" else "USD"
+    rate = get_actual_fx_rate(reference_currency, target_currency)
+    return f"{reference_currency}/{target_currency}", rate
+
+
+def _apply_reference_rate_shock(base_rate: float | None, shock: int):
+    if base_rate is None or pd.isna(base_rate):
+        return pd.NA
+    multiplier = _target_currency_shock_multiplier(shock)
+    if pd.isna(multiplier):
+        return pd.NA
+    return float(base_rate) * float(multiplier)
 
 
 def _shock_label(shock: int, currency: str) -> str:

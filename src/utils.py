@@ -38,9 +38,8 @@ def fill_if_empty(df: pd.DataFrame) -> pd.DataFrame:
 def process_num_cols(df, not_num_cols, currency):
     for col_name in df:
         if col_name not in not_num_cols:
-            df.loc[:, col_name] = (df[col_name].astype(float)
-                                   .map('{:,.2f}'.format)
-                                   .astype(str)
-                                   .str.replace(',', ' ') +
-                                   config.UNIQUE_TICKERS[currency])
+            df.loc[:, col_name] = (
+                pd.to_numeric(df[col_name], errors='coerce')
+                .map(lambda value: '' if pd.isna(value) else f'{value:,.2f}'.replace(',', ' ') + config.UNIQUE_TICKERS[currency])
+            )
     return df

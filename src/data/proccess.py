@@ -91,7 +91,7 @@ if __name__ == '__main__':
     
     print(sell_df[sell_df['Дата'] == '2016-10-24'])
     
-    test = convert_transaction(sell_df, to_curr='USD', target_col='Значение', use_current_rate=True)
+    test = convert_transaction(sell_df, to_curr='USD', target_col='Значение', use_current_rate=False)
     # print(test[test['Значение'] != 0])
     
     print(test[test['Дата'] == '2016-10-24'])
