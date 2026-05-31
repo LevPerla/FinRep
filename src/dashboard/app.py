@@ -60,6 +60,15 @@ MAIN_DASHBOARD_TABS: list[DashboardTab] = [
     ("input", "Ввод данных", "Ввод"),
 ]
 MAIN_DASHBOARD_TAB_IDS = {tab_id for tab_id, _desktop_label, _mobile_label in MAIN_DASHBOARD_TABS}
+MOBILE_TAB_ICONS = {
+    "main": "⌂",
+    "year": "Y",
+    "month": "M",
+    "debts": "₽",
+    "planning": "↗",
+    "investments": "%",
+    "input": "+",
+}
 
 
 def _app_index_string() -> str:
@@ -390,7 +399,16 @@ def _mobile_bottom_nav() -> html.Nav:
         dcc.RadioItems(
             id="mobile-dashboard-tabs",
             options=[
-                {"label": mobile_label, "value": tab_id}
+                {
+                    "label": html.Span(
+                        [
+                            html.Span(MOBILE_TAB_ICONS[tab_id], className="mobile-dashboard-tab-icon", **{"aria-hidden": "true"}),
+                            html.Span(mobile_label, className="mobile-dashboard-tab-label"),
+                        ],
+                        className="mobile-dashboard-tab-content",
+                    ),
+                    "value": tab_id,
+                }
                 for tab_id, _desktop_label, mobile_label in MAIN_DASHBOARD_TABS
             ],
             value="main",
@@ -1944,10 +1962,12 @@ def _graph_section(dataset: DashboardDataset, height: str = "520px", theme: str 
                 id=f"{dataset.id}-graph",
                 figure=dataset.figure,
                 responsive=True,
-                style={"height": height},
+                className="finrep-graph",
+                style={"height": height, "width": "100%"},
                 config=graph_config,
             ),
         ],
+        className="finrep-chart-section",
         style=_section_style(theme),
     )
 
