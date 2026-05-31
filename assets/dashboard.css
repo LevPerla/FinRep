@@ -1,5 +1,12 @@
+html,
 body {
-  background: #dcdcdc;
+  width: 100%;
+  min-height: 100%;
+  margin: 0;
+}
+
+body {
+  background: #2b2b2b;
 }
 
 .finrep-shell {
@@ -518,8 +525,18 @@ body {
 }
 
 @media (max-width: 768px) {
+  html,
+  body {
+    overflow-x: hidden;
+  }
+
   .finrep-shell {
-    padding-bottom: calc(84px + env(safe-area-inset-bottom));
+    width: 100%;
+    max-width: 100%;
+    padding-right: 14px;
+    padding-bottom: calc(104px + env(safe-area-inset-bottom));
+    padding-left: 14px;
+    overflow-x: hidden;
   }
 
   .dashboard-tabs {
@@ -527,7 +544,7 @@ body {
   }
 
   #dashboard-content {
-    padding-bottom: calc(96px + env(safe-area-inset-bottom)) !important;
+    padding-bottom: calc(116px + env(safe-area-inset-bottom)) !important;
   }
 
   .dashboard-toolbar {
@@ -550,7 +567,7 @@ body {
     bottom: 0;
     left: 0;
     z-index: 1040;
-    padding: 8px 8px calc(8px + env(safe-area-inset-bottom));
+    padding: 10px 10px calc(12px + env(safe-area-inset-bottom));
     background: rgba(255, 255, 255, 0.96);
     border-top: 1px solid #d7dce2;
     box-shadow: 0 -10px 24px rgba(15, 23, 42, 0.12);
@@ -566,7 +583,7 @@ body {
   .mobile-dashboard-tabs-control {
     display: grid;
     grid-template-columns: repeat(7, minmax(0, 1fr));
-    gap: 4px;
+    gap: 5px;
     margin: 0;
   }
 
@@ -575,12 +592,12 @@ body {
     align-items: center;
     justify-content: center;
     min-width: 0;
-    min-height: 44px;
+    min-height: 58px;
     margin: 0;
-    padding: 6px 2px;
+    padding: 8px 2px;
     border-radius: 8px;
     color: #495057;
-    font-size: 11px;
+    font-size: 12px;
     font-weight: 700;
     line-height: 1.1;
     text-align: center;
@@ -634,5 +651,22 @@ body {
   .finrep-grid-scroll .ag-header-cell {
     padding-right: 8px;
     padding-left: 8px;
+  }
+
+  .dash-graph,
+  .js-plotly-plot,
+  .plot-container,
+  .svg-container {
+    touch-action: pan-y !important;
+  }
+
+  .js-plotly-plot .draglayer,
+  .js-plotly-plot .nsewdrag,
+  .js-plotly-plot .modebar {
+    pointer-events: none !important;
+  }
+
+  .js-plotly-plot .modebar {
+    display: none !important;
   }
 }

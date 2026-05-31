@@ -358,6 +358,7 @@ def create_app() -> Dash:
         __name__,
         assets_folder=str(ASSETS_FOLDER),
         external_stylesheets=[dbc.themes.BOOTSTRAP],
+        meta_tags=[{"name": "viewport", "content": "width=device-width, initial-scale=1, viewport-fit=cover"}],
         title="FinRep Dashboard",
         suppress_callback_exceptions=True,
     )
