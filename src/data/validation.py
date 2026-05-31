@@ -6,6 +6,7 @@ import pandas as pd
 
 from src import config
 from src.data.crypto import validate_crypto_wallets
+from src.data.debts import validate_debt_files
 from src.data.investments import validate_legacy_investments
 from src.data.staging import validate_transaction_drafts as validate_transaction_draft_rows
 
@@ -43,6 +44,7 @@ def validate_all_data(raise_on_error: bool = True) -> list[ValidationIssue]:
     issues.extend(validate_investments())
     issues.extend(validate_crypto_wallet_config())
     issues.extend(validate_transaction_draft_staging())
+    issues.extend(validate_debts())
 
     if issues and raise_on_error:
         raise DataValidationError(issues)
@@ -89,6 +91,14 @@ def validate_transaction_draft_staging() -> list[ValidationIssue]:
     issues = []
     for issue in validate_transaction_draft_rows(path=csv_path):
         issues.append(ValidationIssue(csv_path, str(issue)))
+    return issues
+
+
+def validate_debts() -> list[ValidationIssue]:
+    debt_issues = validate_debt_files()
+    issues = []
+    for issue in debt_issues:
+        issues.append(ValidationIssue(issue.path, str(issue)))
     return issues
 
 

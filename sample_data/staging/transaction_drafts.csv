@@ -1,1 +1,5 @@
 date;category;currency;amount;comment;source;source_id;status
+2026-05-31;Погашение кред. зад.;RUB;100;demo-liability-kzt | Dana;debt;demo-liability-kzt:payment-3aff1815dd7b;ready
+2026-05-31;Погашение кред. зад.;RUB;7000.0;demo-liability-kzt | Dana;debt;demo-liability-kzt:payment-4984e5494bd7;ready
+2026-05-31;Дебиторская задолженность;USD;238;debt-55fd7dcc0b3e | Tim;debt;debt-55fd7dcc0b3e:open;ready
+2026-05-31;Дебиторская задолженность;RUB;1000000;debt-3eb85f4e4380 | Test;debt;debt-3eb85f4e4380:open;ready

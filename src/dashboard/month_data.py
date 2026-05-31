@@ -66,13 +66,13 @@ def build_month_dashboard_data(
             id="month_receivables",
             title="Дебиторская задолженность",
             dataframe=receivables,
-            display_dataframe=utils.fill_if_empty(_format_money_columns(receivables.copy(deep=True), currency, ["Комментарий"])),
+            display_dataframe=utils.fill_if_empty(_format_money_columns(receivables.copy(deep=True), currency, _debt_text_columns())),
         ),
         "month_liabilities": DashboardDataset(
             id="month_liabilities",
             title="Кредиторская задолженность",
             dataframe=liabilities,
-            display_dataframe=utils.fill_if_empty(_format_money_columns(liabilities.copy(deep=True), currency, ["Комментарий"])),
+            display_dataframe=utils.fill_if_empty(_format_money_columns(liabilities.copy(deep=True), currency, _debt_text_columns())),
         ),
         "month_cost_distribution": DashboardDataset(
             id="month_cost_distribution",
@@ -178,6 +178,10 @@ def _format_money_columns(
 ) -> pd.DataFrame:
     display = data.copy(deep=True)
     return utils.process_num_cols(display, not_num_cols=not_money_cols, currency=currency)
+
+
+def _debt_text_columns() -> list[str]:
+    return ["ID", "Контрагент", "Дата", "Комментарий", "Валюта долга", "Статус"]
 
 
 def _format_integer_table(data: pd.DataFrame, not_num_cols: list[str]) -> pd.DataFrame:

@@ -13,6 +13,13 @@ from src import config
 from src.data.get import clear_data_cache, get_transactions
 from src.data.assets_editor import read_asset_snapshot, write_asset_snapshot
 from src.data.crypto import read_crypto_wallets, refresh_crypto_balances, refresh_crypto_price_cache
+from src.data.debts import (
+    DEBT_TYPES,
+    active_debt_balances,
+    create_debt,
+    create_debt_payment_from_cash,
+    migrate_legacy_debts,
+)
 from src.data.importers.kaspi_pdf import parse_kaspi_upload_contents, save_kaspi_import_to_staging
 from src.data.staging import (
     DRAFT_COLUMNS,
@@ -426,6 +433,7 @@ def create_layout():
                     dbc.Tab(label="Основной отчет", tab_id="main"),
                     dbc.Tab(label="Годовой отчет", tab_id="year"),
                     dbc.Tab(label="Месячный отчет", tab_id="month"),
+                    dbc.Tab(label="Долги", tab_id="debts"),
                     dbc.Tab(label="План и прогноз", tab_id="planning"),
                     dbc.Tab(label="Инвестиции", tab_id="investments"),
                     dbc.Tab(label="Ввод данных", tab_id="input"),
@@ -551,7 +559,7 @@ def register_callbacks(app: Dash) -> None:
             year = DEFAULT_YEAR
         if month not in {f"{value:02d}" for value in range(1, 13)}:
             month = DEFAULT_MONTH
-        if tab not in {"main", "year", "month", "planning", "investments", "input"}:
+        if tab not in {"main", "year", "month", "debts", "planning", "investments", "input"}:
             tab = "main"
         return currency, year, month, tab
 
@@ -622,6 +630,9 @@ def register_callbacks(app: Dash) -> None:
 
             _apply_theme_to_datasets(datasets, theme)
             return _investment_report_layout(datasets, theme, crypto_status)
+
+        if active_tab == "debts":
+            return _debt_report_layout(currency, theme)
 
         if active_tab == "input":
             return _input_report_layout(currency, year, month, theme)
@@ -881,6 +892,123 @@ def register_callbacks(app: Dash) -> None:
         return dcc.send_data_frame(data.to_csv, filename, sep=";", index=False)
 
     @app.callback(
+        Output("active-receivable-debts-grid", "rowData"),
+        Output("active-liability-debts-grid", "rowData"),
+        Output("debt-transaction-drafts-grid", "rowData"),
+        Output("debt-payment-id", "options"),
+        Output("debt-payment-id", "value"),
+        Output("debt-input-message", "children"),
+        Output("debt-input-message", "color"),
+        Output("dashboard-refresh-token", "data", allow_duplicate=True),
+        Input("debt-add-button", "n_clicks"),
+        Input("debt-payment-button", "n_clicks"),
+        Input("debt-migrate-button", "n_clicks"),
+        Input("dashboard-currency", "value"),
+        State("debt-opened-date", "value"),
+        State("debt-type", "value"),
+        State("debt-counterparty", "value"),
+        State("debt-principal-amount", "value"),
+        State("debt-principal-currency", "value"),
+        State("debt-cash-amount", "value"),
+        State("debt-cash-currency", "value"),
+        State("debt-comment", "value"),
+        State("debt-payment-id", "value"),
+        State("debt-payment-date", "value"),
+        State("debt-payment-amount", "value"),
+        State("debt-payment-cash-currency", "value"),
+        State("debt-payment-comment", "value"),
+        State("dashboard-refresh-token", "data"),
+        prevent_initial_call=True,
+    )
+    def sync_debts(
+        add_clicks,
+        payment_clicks,
+        migrate_clicks,
+        currency,
+        opened_date,
+        debt_type,
+        counterparty,
+        principal_amount,
+        principal_currency,
+        cash_amount,
+        cash_currency,
+        comment,
+        selected_debt_id,
+        payment_date,
+        payment_amount,
+        payment_cash_currency,
+        payment_comment,
+        current_token,
+    ):
+        trigger = ctx.triggered_id
+        message = ""
+        color = "secondary"
+        token = int(current_token or 0)
+
+        try:
+            if trigger == "debt-add-button":
+                if not opened_date or not debt_type or not counterparty or principal_amount in {None, ""} or not principal_currency:
+                    raise ValueError("Заполни дату, тип, контрагента, сумму и валюту долга.")
+                result = create_debt(
+                    debt_type=debt_type,
+                    counterparty=counterparty,
+                    opened_date=opened_date,
+                    principal_amount=principal_amount,
+                    principal_currency=principal_currency,
+                    cash_amount=cash_amount,
+                    cash_currency=cash_currency,
+                    comment=comment or "",
+                )
+                clear_data_cache()
+                clear_table_cache()
+                token += 1
+                message = f"Долг создан: {result['debt_id']}. Черновик транзакции добавлен."
+                color = "success"
+            elif trigger == "debt-payment-button":
+                debt_id = str(selected_debt_id or "")
+                if not debt_id or not payment_date or payment_amount in {None, ""}:
+                    raise ValueError("Выбери долг в поле выбора и заполни дату/сумму погашения.")
+                result = create_debt_payment_from_cash(
+                    debt_id=debt_id,
+                    date=payment_date,
+                    cash_amount=payment_amount,
+                    cash_currency=payment_cash_currency,
+                    comment=payment_comment or "",
+                )
+                clear_data_cache()
+                clear_table_cache()
+                token += 1
+                message = f"Погашение создано: {result['payment_id']}. Черновик транзакции добавлен во вкладку Ввод данных."
+                color = "success"
+            elif trigger == "debt-migrate-button":
+                result = migrate_legacy_debts()
+                clear_table_cache()
+                token += 1
+                if result.get("skipped"):
+                    message = f"Миграция пропущена: {result['skipped']}."
+                    color = "warning"
+                else:
+                    message = f"Миграция завершена: долгов {result['created_debts']}, погашений {result['created_payments']}."
+                    color = "success"
+        except Exception as exc:
+            message = str(exc)
+            color = "danger"
+
+        options = _debt_select_options(currency)
+        option_values = {option["value"] for option in options}
+        selected_value = selected_debt_id if selected_debt_id in option_values else ""
+        return (
+            _active_debt_records(currency, "receivable"),
+            _active_debt_records(currency, "liability"),
+            _debt_transaction_draft_records(),
+            options,
+            selected_value,
+            message,
+            color,
+            token,
+        )
+
+    @app.callback(
         Output("assets-input-grid", "rowData"),
         Output("assets-input-message", "children"),
         Output("assets-input-message", "color"),
@@ -1086,13 +1214,6 @@ def _month_report_layout(datasets: dict[str, DashboardDataset], theme: str | Non
             _grid_section(datasets["month_transactions"], height="1450px", theme=theme),
             _grid_section(datasets["month_fx_rates"], height="260px", theme=theme),
             _grid_section(datasets["month_summary"], height="180px", theme=theme),
-            dbc.Row(
-                [
-                    dbc.Col(_grid_section(datasets["month_receivables"], height="300px", theme=theme), xs=12, lg=6),
-                    dbc.Col(_grid_section(datasets["month_liabilities"], height="300px", theme=theme), xs=12, lg=6),
-                ],
-                className="g-4",
-            ),
             _graph_section(datasets["month_cost_distribution_chart"], theme=theme),
             _grid_section(datasets["month_cost_distribution"], height="520px", theme=theme),
             _grid_section(datasets["month_assets"], height="1120px", theme=theme),
@@ -1144,6 +1265,10 @@ def _investment_report_layout(datasets: dict[str, DashboardDataset], theme: str 
         ],
         className="d-grid gap-4",
     )
+
+
+def _debt_report_layout(currency: str, theme: str | None):
+    return _debt_input_layout(currency, theme, include_create=True)
 
 
 def _input_report_layout(currency: str, year: str, month: str, theme: str | None):
@@ -1223,7 +1348,7 @@ def _transaction_input_layout(currency: str, year: str, month: str, theme: str |
                         rowData=[],
                         columnDefs=_kaspi_import_column_defs(),
                         defaultColDef={"sortable": True, "filter": True, "resizable": True, "editable": False},
-                        dashGridOptions={"pagination": False, "stopEditingWhenCellsLoseFocus": True},
+                        dashGridOptions={"pagination": False, "suppressFieldDotNotation": True, "stopEditingWhenCellsLoseFocus": True},
                         className="ag-theme-alpine-dark" if theme == "dark" else "ag-theme-alpine",
                         style={"height": "420px", "width": "100%"},
                     ),
@@ -1261,7 +1386,7 @@ def _transaction_input_layout(currency: str, year: str, month: str, theme: str |
                         rowData=_transaction_draft_records(month_value, None, None, None),
                         columnDefs=_transaction_draft_column_defs(category_options, list(config.UNIQUE_TICKERS)),
                         defaultColDef={"sortable": True, "filter": True, "resizable": True, "editable": True},
-                        dashGridOptions={"pagination": False, "rowSelection": "multiple", "stopEditingWhenCellsLoseFocus": True},
+                        dashGridOptions={"pagination": False, "suppressFieldDotNotation": True, "rowSelection": "multiple", "stopEditingWhenCellsLoseFocus": True},
                         className="ag-theme-alpine-dark" if theme == "dark" else "ag-theme-alpine",
                         style={"height": "640px", "width": "100%"},
                     ),
@@ -1289,7 +1414,7 @@ def _transaction_input_layout(currency: str, year: str, month: str, theme: str |
                         rowData=[],
                         columnDefs=[],
                         defaultColDef={"sortable": True, "filter": True, "resizable": True, "editable": True},
-                        dashGridOptions={"pagination": False, "stopEditingWhenCellsLoseFocus": True, "undoRedoCellEditing": True},
+                        dashGridOptions={"pagination": False, "suppressFieldDotNotation": True, "stopEditingWhenCellsLoseFocus": True, "undoRedoCellEditing": True},
                         className="ag-theme-alpine-dark" if theme == "dark" else "ag-theme-alpine",
                         style={"height": "520px", "width": "100%"},
                     ),
@@ -1297,6 +1422,102 @@ def _transaction_input_layout(currency: str, year: str, month: str, theme: str |
                 style=_section_style(theme),
             ),
         ],
+        className="d-grid gap-4 pt-3",
+    )
+
+
+def _debt_input_layout(currency: str, theme: str | None, include_create: bool = True):
+    currency_options = _native_select_options([{"label": ticker, "value": ticker} for ticker in config.UNIQUE_TICKERS], "Валюта", include_empty=False)
+    debt_type_options = [
+        {"label": "Мне должны", "value": "receivable"},
+        {"label": "Я должен", "value": "liability"},
+    ]
+    sections = []
+
+    if include_create:
+        sections.append(
+            html.Section(
+                [
+                    html.H2("Новый долг", className="h5 mb-3"),
+                    dbc.Row(
+                        [
+                            dbc.Col(dbc.Input(id="debt-opened-date", type="date", value=datetime.now().date().isoformat(), className="finrep-native-input", style=_form_control_style(theme)), xs=12, md=2),
+                            dbc.Col(dbc.Select(id="debt-type", options=_native_select_options(debt_type_options, "Тип", include_empty=False), value="receivable", className="finrep-native-input", style=_form_control_style(theme)), xs=12, md=2),
+                            dbc.Col(dbc.Input(id="debt-counterparty", type="text", placeholder="Контрагент", className="finrep-native-input", style=_form_control_style(theme)), xs=12, md=2),
+                            dbc.Col(dbc.Input(id="debt-principal-amount", type="number", placeholder="Сумма долга", step="any", className="finrep-native-input", style=_form_control_style(theme)), xs=12, md=2),
+                            dbc.Col(dbc.Select(id="debt-principal-currency", options=currency_options, value=currency, className="finrep-native-input", style=_form_control_style(theme)), xs=12, md=1),
+                            dbc.Col(dbc.Input(id="debt-cash-amount", type="number", placeholder="Сумма проводки", step="any", className="finrep-native-input", style=_form_control_style(theme)), xs=12, md=2),
+                            dbc.Col(dbc.Select(id="debt-cash-currency", options=currency_options, value=currency, className="finrep-native-input", style=_form_control_style(theme)), xs=12, md=1),
+                        ],
+                        className="g-2",
+                    ),
+                    dbc.Row(
+                        [
+                            dbc.Col(dbc.Input(id="debt-comment", type="text", placeholder="Комментарий", className="finrep-native-input", style=_form_control_style(theme)), xs=12, md=10),
+                            dbc.Col(dbc.Button("Добавить", id="debt-add-button", color="primary", className="w-100"), xs=12, md=2),
+                        ],
+                        className="g-2 mt-2",
+                    ),
+                ],
+                style=_section_style(theme),
+            )
+        )
+
+    sections.extend(
+        [
+            html.Section(
+                [
+                    html.Div(
+                        [
+                            html.H2("Активные долги", className="h5 mb-0"),
+                            dbc.Button("Миграция legacy", id="debt-migrate-button", color="secondary", outline=True, size="sm"),
+                        ],
+                        className="d-flex justify-content-between align-items-center mb-3",
+                    ),
+                    dbc.Alert(id="debt-input-message", children="", color="secondary", is_open=True, className="mb-3 py-2"),
+                    _active_debts_grid(currency, theme, "receivable"),
+                    html.Div(className="my-4"),
+                    _active_debts_grid(currency, theme, "liability"),
+                ],
+                style=_section_style(theme),
+            ),
+            html.Section(
+                [
+                    html.H2("Погашение выбранного долга", className="h5 mb-3"),
+                    dbc.Row(
+                        [
+                            dbc.Col(dbc.Select(id="debt-payment-id", options=_debt_select_options(currency), value="", className="finrep-native-input", style=_form_control_style(theme)), xs=12, lg=5),
+                            dbc.Col(dbc.Input(id="debt-payment-date", type="date", value=datetime.now().date().isoformat(), className="finrep-native-input", style=_form_control_style(theme)), xs=12, md=2),
+                            dbc.Col(dbc.Input(id="debt-payment-amount", type="number", placeholder="Сумма платежа", step="any", className="finrep-native-input", style=_form_control_style(theme)), xs=12, md=2),
+                            dbc.Col(dbc.Select(id="debt-payment-cash-currency", options=currency_options, value=currency, className="finrep-native-input", style=_form_control_style(theme)), xs=12, md=2),
+                            dbc.Col(dbc.Button("Погасить", id="debt-payment-button", color="primary", outline=True, className="w-100"), xs=12, md=1),
+                        ],
+                        className="g-2",
+                    ),
+                    dbc.Input(id="debt-payment-comment", type="text", placeholder="Комментарий к погашению", className="finrep-native-input mt-2", style=_form_control_style(theme)),
+                ],
+                style=_section_style(theme),
+            ),
+            html.Section(
+                [
+                    html.H2("Черновики транзакций по долгам", className="h5 mb-3"),
+                    dag.AgGrid(
+                        id="debt-transaction-drafts-grid",
+                        rowData=_debt_transaction_draft_records(),
+                        columnDefs=_debt_transaction_draft_column_defs(),
+                        defaultColDef={"sortable": True, "filter": True, "resizable": True},
+                        dashGridOptions={"pagination": False, "suppressFieldDotNotation": True},
+                        className="ag-theme-alpine-dark" if theme == "dark" else "ag-theme-alpine",
+                        style={"height": "260px", "width": "100%"},
+                    ),
+                ],
+                style=_section_style(theme),
+            ),
+        ]
+    )
+
+    return html.Div(
+        sections,
         className="d-grid gap-4 pt-3",
     )
 
@@ -1333,7 +1554,7 @@ def _assets_input_layout(year: str, month: str, theme: str | None):
                         rowData=_asset_input_records(year, month),
                         columnDefs=_asset_input_column_defs(),
                         defaultColDef={"sortable": True, "filter": True, "resizable": True, "editable": True},
-                        dashGridOptions={"pagination": False, "rowSelection": "multiple", "stopEditingWhenCellsLoseFocus": True, "undoRedoCellEditing": True},
+                        dashGridOptions={"pagination": False, "suppressFieldDotNotation": True, "rowSelection": "multiple", "stopEditingWhenCellsLoseFocus": True, "undoRedoCellEditing": True},
                         className="ag-theme-alpine-dark" if theme == "dark" else "ag-theme-alpine",
                         style={"height": "920px", "width": "100%"},
                     ),
@@ -1435,6 +1656,113 @@ def _asset_input_records(year: str, month: str) -> list[dict]:
     data = data.sort_values("amount_sort", ascending=False, kind="mergesort")
     data["amount"] = data["amount"].map(_format_input_amount)
     return _dataframe_records(data)
+
+
+def _active_debts_grid(currency: str, theme: str | None, debt_type: str):
+    title = "Дебиторская задолженность" if debt_type == "receivable" else "Кредиторская задолженность"
+    grid_id = f"active-{debt_type}-debts-grid"
+    return html.Div(
+        [
+            html.H3(title, className="h6 mb-2"),
+            dag.AgGrid(
+                id=grid_id,
+                rowData=_active_debt_records(currency, debt_type),
+                columnDefs=_active_debt_column_defs(currency),
+                defaultColDef={"sortable": True, "filter": True, "resizable": True},
+                dashGridOptions={"pagination": False, "suppressFieldDotNotation": True},
+                className="ag-theme-alpine-dark" if theme == "dark" else "ag-theme-alpine",
+                style={"height": "320px", "width": "100%"},
+            ),
+        ]
+    )
+
+
+def _active_debt_records(currency: str, debt_type: str | None = None) -> list[dict]:
+    frames = []
+    debt_types = [debt_type] if debt_type else sorted(DEBT_TYPES)
+    for current_type in debt_types:
+        frame = active_debt_balances(current_type, currency).copy(deep=True)
+        if frame.empty:
+            continue
+        frame["Тип"] = frame["type"].map({"receivable": "Мне должны", "liability": "Я должен"})
+        frames.append(frame)
+    if not frames:
+        return []
+
+    data = pd.concat(frames, ignore_index=True)
+    converted_column = f"outstanding_{currency}"
+    display = pd.DataFrame(
+        {
+            "debt_id": data["debt_id"],
+            "Тип": data["Тип"],
+            "Контрагент": data["counterparty"],
+            "Дата": data["opened_date"],
+            "Валюта долга": data["principal_currency"],
+            "Сумма долга": data["principal_amount"].map(_format_input_amount),
+            "Погашено": data["paid_amount"].map(_format_input_amount),
+            "Остаток": data["outstanding_amount"].map(_format_input_amount),
+            f"Остаток {currency}": data[converted_column].map(_format_input_amount) if converted_column in data else data["outstanding_amount"].map(_format_input_amount),
+            "Комментарий": data["comment"],
+        }
+    )
+    return display.sort_values(["Тип", "Контрагент", "Дата"], kind="mergesort").to_dict("records")
+
+
+def _active_debt_column_defs(currency: str) -> list[dict]:
+    return [
+        {"field": "debt_id", "headerName": "ID", "width": 170},
+        {"field": "Тип", "width": 130},
+        {"field": "Контрагент", "flex": 1, "minWidth": 180},
+        {"field": "Дата", "width": 120},
+        {"field": "Валюта долга", "width": 120},
+        {"field": "Сумма долга", "width": 140},
+        {"field": "Погашено", "width": 130},
+        {"field": "Остаток", "width": 130},
+        {"field": f"Остаток {currency}", "width": 150},
+        {"field": "Комментарий", "flex": 1, "minWidth": 220},
+    ]
+
+
+def _debt_select_options(currency: str) -> list[dict]:
+    options = [{"label": "Выбери долг для погашения", "value": ""}]
+    frames = []
+    for debt_type in sorted(DEBT_TYPES):
+        frame = active_debt_balances(debt_type, currency).copy(deep=True)
+        if frame.empty:
+            continue
+        frame["Тип"] = frame["type"].map({"receivable": "Мне должны", "liability": "Я должен"})
+        frames.append(frame)
+    if not frames:
+        return options
+
+    data = pd.concat(frames, ignore_index=True).sort_values(["type", "counterparty", "opened_date"], kind="mergesort")
+    for _, row in data.iterrows():
+        label = (
+            f"{row['Тип']} | {row['counterparty']} | "
+            f"{_format_input_amount(row['outstanding_amount'])} {row['principal_currency']} | {row['debt_id']}"
+        )
+        options.append({"label": label, "value": str(row["debt_id"])})
+    return options
+
+
+def _debt_transaction_draft_records() -> list[dict]:
+    data = read_transaction_drafts()
+    data = data[data["source"].eq("debt")].copy(deep=True)
+    if data.empty:
+        return []
+    return data.sort_values(["date", "category", "comment"], ascending=[False, True, True], kind="mergesort").to_dict("records")
+
+
+def _debt_transaction_draft_column_defs() -> list[dict]:
+    return [
+        {"field": "date", "headerName": "Дата", "width": 120},
+        {"field": "category", "headerName": "Категория", "width": 180},
+        {"field": "amount", "headerName": "Сумма", "width": 120},
+        {"field": "currency", "headerName": "Валюта", "width": 100},
+        {"field": "comment", "headerName": "Комментарий", "flex": 1, "minWidth": 240},
+        {"field": "status", "headerName": "Статус", "width": 120},
+        {"field": "source_id", "headerName": "ID", "flex": 1, "minWidth": 220},
+    ]
 
 
 def _asset_input_column_defs() -> list[dict]:
@@ -1555,6 +1883,7 @@ def _grid_section(dataset: DashboardDataset, height: str = "360px", theme: str |
                 columnSize="autoSize" if dataset.id in {"fx_rates", "year_fx_rates", "month_fx_rates"} else "sizeToFit",
                 dashGridOptions={
                     "pagination": False,
+                    "suppressFieldDotNotation": True,
                 },
                 className="ag-theme-alpine-dark" if theme == "dark" else "ag-theme-alpine",
                 style={"height": height, "width": "100%"},
@@ -1565,7 +1894,8 @@ def _grid_section(dataset: DashboardDataset, height: str = "360px", theme: str |
 
 
 def _grid_row_data(dataset: DashboardDataset, data: pd.DataFrame) -> list[dict]:
-    records = data.to_dict("records")
+    display_data = _fill_zero_display_cells(data) if dataset.id in {"month_transactions", "month_summary"} else data
+    records = display_data.to_dict("records")
     raw = dataset.dataframe.reset_index(drop=True)
 
     if dataset.id == "yearly_stats":
@@ -1810,6 +2140,15 @@ def _grid_column_defs(dataset: DashboardDataset, data: pd.DataFrame, theme: str 
             column_def.update({"editable": True, "singleClickEdit": True})
         column_defs.append(column_def)
     return column_defs
+
+
+def _fill_zero_display_cells(data: pd.DataFrame) -> pd.DataFrame:
+    display = data.copy(deep=True)
+    for column in display.columns:
+        if column == "Дата":
+            continue
+        display[column] = display[column].replace("", "0").fillna("0")
+    return display
 
 
 def _plain_cell_style(theme: str | None = None) -> dict:

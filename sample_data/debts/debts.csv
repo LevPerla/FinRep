@@ -1,0 +1,5 @@
+﻿debt_id;type;counterparty;opened_date;principal_amount;principal_currency;cash_amount;cash_currency;comment;status
+demo-receivable-usd;receivable;Alex;2026-03-12;100;USD;100;USD;Demo loan to Alex;active
+demo-liability-kzt;liability;Dana;2026-04-08;50000;KZT;50000;KZT;Demo borrowed cash;active
+debt-55fd7dcc0b3e;receivable;Tim;2026-05-31;238;USD;238;USD;;active
+debt-3eb85f4e4380;receivable;Test;2026-05-31;1000000;RUB;1000000;RUB;;active
