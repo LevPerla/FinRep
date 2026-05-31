@@ -9,8 +9,8 @@ from src.data.get_finance import get_fx_rates, set_fx_network_enabled
 from src.model.create_tables import get_balance_by_month
 
 
-CHART_FONT_SIZE = 16
-CHART_TITLE_SIZE = 20
+CHART_FONT_SIZE = 13
+CHART_TITLE_SIZE = 18
 CHART_LABEL_SIZE = 9
 
 
@@ -367,9 +367,18 @@ def _apply_dashboard_chart_layout(fig: go.Figure, title: str, range_slider: bool
         autosize=True,
         dragmode="zoom",
         font=dict(size=CHART_FONT_SIZE),
-        margin=dict(l=70, r=30, t=70, b=55),
+        margin=dict(l=54, r=18, t=62, b=48),
         xaxis=xaxis,
         yaxis=dict(tickfont=dict(size=CHART_FONT_SIZE)),
-        legend=dict(font=dict(size=CHART_FONT_SIZE)),
+        legend=dict(
+            orientation="h",
+            yanchor="bottom",
+            y=1.02,
+            xanchor="left",
+            x=0,
+            font=dict(size=12),
+            itemclick="toggle",
+            itemdoubleclick="toggleothers",
+        ),
         uniformtext=dict(minsize=CHART_LABEL_SIZE, mode="show"),
     )
