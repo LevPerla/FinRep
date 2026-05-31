@@ -38,6 +38,9 @@ BACKUPS_PATH = os.path.join(DATA_PATH, 'backups')
 TRANSACTION_BACKUPS_PATH = os.path.join(BACKUPS_PATH, 'transactions_info')
 ASSET_BACKUPS_PATH = os.path.join(BACKUPS_PATH, 'assets_info')
 TRANSACTION_DRAFTS_PATH = os.path.join(STAGING_PATH, 'transaction_drafts.csv')
+DEBTS_PATH = os.path.join(DATA_PATH, 'debts')
+DEBTS_CSV_PATH = os.path.join(DEBTS_PATH, 'debts.csv')
+DEBT_PAYMENTS_CSV_PATH = os.path.join(DEBTS_PATH, 'debt_payments.csv')
 
 STOCK_API = 'yf'  # yf, td
 FX_BASE_CURRENCY = 'USD'

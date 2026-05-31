@@ -62,7 +62,7 @@ def build_planning_dashboard_data(
             id="planning_capital_forecast",
             title="Прогноз капитала на 12 месяцев",
             dataframe=forecast,
-            display_dataframe=_format_money_columns(forecast, currency, ["Дата", "Тип"]),
+            display_dataframe=_format_money_columns(forecast, currency, ["Дата", "Тип", "Источник"]),
             figure=_forecast_figure(forecast, currency),
         ),
         "planning_runway": DashboardDataset(
@@ -201,22 +201,29 @@ def _goals_progress(balance: pd.DataFrame, goal: pd.Series, year: str, currency:
 
 def _capital_forecast(balance: pd.DataFrame, year: str) -> pd.DataFrame:
     if balance.empty:
-        return pd.DataFrame(columns=["Дата", "Капитал", "Тип"])
+        return pd.DataFrame(columns=["Дата", "Капитал", "Тип", "Источник"])
 
     monthly = balance.sort_index().copy(deep=True)
-    monthly_dates = pd.to_datetime(monthly.index).to_period("M").to_timestamp()
-    last_date = pd.to_datetime(monthly.index.max()).to_period("M").to_timestamp()
+    source_column = _forecast_capital_source(monthly)
+    fact_values = pd.to_numeric(monthly[source_column], errors="coerce")
+    fact_monthly = monthly.loc[fact_values.notna()].copy(deep=True)
+    fact_values = fact_values.dropna()
+    if fact_monthly.empty:
+        return pd.DataFrame(columns=["Дата", "Капитал", "Тип", "Источник"])
+
+    monthly_dates = pd.to_datetime(fact_monthly.index).to_period("M").to_timestamp()
+    last_date = pd.to_datetime(fact_monthly.index.max()).to_period("M").to_timestamp()
     try:
         selected_year = int(year)
     except (TypeError, ValueError):
         selected_year = last_date.year
     start_date = pd.Timestamp(year=selected_year - 1, month=1, day=1)
-    last_capital = float(monthly["Капитал"].iloc[-1])
+    last_capital = float(fact_values.iloc[-1])
     avg_balance = float(pd.to_numeric(monthly["Баланс"].tail(12), errors="coerce").mean())
 
     rows = [
-        {"Дата": date, "Капитал": capital, "Тип": "Факт"}
-        for date, capital in zip(monthly_dates, monthly["Капитал"])
+        {"Дата": date, "Капитал": capital, "Тип": "Факт", "Источник": source_column}
+        for date, capital in zip(monthly_dates, fact_values)
         if date >= start_date
     ]
     for step in range(1, 13):
@@ -225,9 +232,16 @@ def _capital_forecast(balance: pd.DataFrame, year: str) -> pd.DataFrame:
                 "Дата": last_date + pd.DateOffset(months=step),
                 "Капитал": last_capital + avg_balance * step,
                 "Тип": "Прогноз",
+                "Источник": source_column,
             }
         )
     return pd.DataFrame(rows)
+
+
+def _forecast_capital_source(balance: pd.DataFrame) -> str:
+    if "Капитал по активам" in balance.columns and pd.to_numeric(balance["Капитал по активам"], errors="coerce").notna().any():
+        return "Капитал по активам"
+    return "Капитал"
 
 
 def _runway(balance: pd.DataFrame) -> pd.DataFrame:

@@ -1,0 +1,5 @@
+﻿payment_id;debt_id;date;amount;cash_amount;cash_currency;comment;status
+demo-payment-usd-1;demo-receivable-usd;2026-04-20;25.0;25.0;USD;Partial repayment;posted
+demo-payment-kzt-1;demo-liability-kzt;2026-05-18;10000.0;1850.0;RUB;Paid from RUB account;posted
+payment-3aff1815dd7b;demo-liability-kzt;2026-05-31;100.0;100.0;RUB;;posted
+payment-4984e5494bd7;demo-liability-kzt;2026-05-31;37000.0;7000.0;RUB;;posted

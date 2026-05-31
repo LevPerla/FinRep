@@ -4,6 +4,7 @@ from functools import lru_cache
 
 from src import config
 from src.data.get import get_investments, get_transactions, get_assets
+from src.data.debts import active_debt_balances
 from src.data.investment_calculations import current_investment_value
 from src.data.get_finance import get_actual_rates, get_act_moex, get_fallback_rate, get_fx_rates
 from src.data.proccess import convert_transaction
@@ -162,13 +163,7 @@ def get_act_receivables(currency: str | None = None):
 
 @lru_cache(maxsize=None)
 def _get_act_receivables_cached(currency: str | None):
-    return _get_active_debt_balance(
-        debt_category='Дебиторская задолженность',
-        payment_category='Погашение деб. зад.',
-        result_column='Дебиторская задолженность',
-        payment_column='Погашение деб. зад.',
-        currency=currency,
-    )
+    return _ledger_debt_balance("receivable", "Дебиторская задолженность", currency)
 
 
 def get_act_liabilities(currency: str | None = None):
@@ -177,13 +172,7 @@ def get_act_liabilities(currency: str | None = None):
 
 @lru_cache(maxsize=None)
 def _get_act_liabilities_cached(currency: str | None):
-    return _get_active_debt_balance(
-        debt_category='Кредиторская задолженность',
-        payment_category='Погашение кред. зад.',
-        result_column='Кредиторская задолженность',
-        payment_column='Погашение кред. зад.',
-        currency=currency,
-    )
+    return _ledger_debt_balance("liability", "Кредиторская задолженность", currency)
 
 
 def _normalize_currency_arg(currency: str | None) -> str | None:
@@ -193,6 +182,58 @@ def _normalize_currency_arg(currency: str | None) -> str | None:
     if currency not in config.UNIQUE_TICKERS:
         raise ValueError(f"currency must be one of {tuple(config.UNIQUE_TICKERS)}")
     return currency
+
+
+def _ledger_debt_balance(debt_type: str, result_column: str, currency: str | None) -> pd.DataFrame:
+    balances = active_debt_balances(debt_type, currency)
+    if balances.empty:
+        return pd.DataFrame(
+            columns=[
+                "ID",
+                "Контрагент",
+                "Дата",
+                "Комментарий",
+                "Валюта долга",
+                "Сумма долга",
+                "Погашено",
+                "Остаток",
+                result_column,
+                "Статус",
+            ]
+        )
+
+    result = balances.rename(
+        columns={
+            "debt_id": "ID",
+            "counterparty": "Контрагент",
+            "opened_date": "Дата",
+            "principal_currency": "Валюта долга",
+            "principal_amount": "Сумма долга",
+            "paid_amount": "Погашено",
+            "outstanding_amount": "Остаток",
+            "comment": "Комментарий",
+            "status": "Статус",
+        }
+    )
+    converted_column = f"outstanding_{currency}" if currency is not None else None
+    if converted_column and converted_column in balances.columns:
+        result[result_column] = balances[converted_column]
+    else:
+        result[result_column] = balances["outstanding_amount"]
+
+    columns = [
+        "ID",
+        "Контрагент",
+        "Дата",
+        "Комментарий",
+        "Валюта долга",
+        "Сумма долга",
+        "Погашено",
+        "Остаток",
+        result_column,
+        "Статус",
+    ]
+    return result[columns].sort_values(["Контрагент", "Дата"], kind="mergesort").reset_index(drop=True)
 
 
 def _get_active_debt_balance(
@@ -437,9 +478,12 @@ def _get_month_transactions_cached(currency, year, month):
     else:
         month_tr_df['Сбережения'] = 0
     for col in ['Дебиторская задолженность', 'Погашение деб. зад.', 'Кредиторская задолженность', 'Погашение кред. зад.']:
+        if col not in month_tr_df.columns:
+            month_tr_df[col] = 0
+    for col in ['Дебиторская задолженность', 'Погашение деб. зад.', 'Кредиторская задолженность', 'Погашение кред. зад.']:
         if col in month_tr_df.columns:
             month_tr_df.insert(num_of_cols - 1, col, month_tr_df.pop(col))
-    return month_tr_df
+    return month_tr_df.fillna(0)
 
 
 def clear_table_cache():
