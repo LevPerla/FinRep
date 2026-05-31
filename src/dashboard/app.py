@@ -1,6 +1,7 @@
 import os
 from datetime import datetime
 from io import BytesIO
+from pathlib import Path
 from urllib.parse import parse_qs
 
 from dash import Dash, Input, MATCH, Output, State, ctx, dcc, html
@@ -46,6 +47,19 @@ DEFAULT_CURRENCY = "RUB"
 DEFAULT_YEAR = datetime.now().strftime("%Y")
 DEFAULT_MONTH = datetime.now().strftime("%m")
 DEFAULT_FX_NETWORK_ENABLED = False
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+ASSETS_FOLDER = PROJECT_ROOT / "assets"
+DashboardTab = tuple[str, str, str]
+MAIN_DASHBOARD_TABS: list[DashboardTab] = [
+    ("main", "Основной отчет", "Главная"),
+    ("year", "Годовой отчет", "Год"),
+    ("month", "Месячный отчет", "Месяц"),
+    ("debts", "Долги", "Долги"),
+    ("planning", "План и прогноз", "План"),
+    ("investments", "Инвестиции", "Инвест"),
+    ("input", "Ввод данных", "Ввод"),
+]
+MAIN_DASHBOARD_TAB_IDS = {tab_id for tab_id, _desktop_label, _mobile_label in MAIN_DASHBOARD_TABS}
 
 
 def _app_index_string() -> str:
@@ -342,6 +356,7 @@ def _app_index_string() -> str:
 def create_app() -> Dash:
     app = Dash(
         __name__,
+        assets_folder=str(ASSETS_FOLDER),
         external_stylesheets=[dbc.themes.BOOTSTRAP],
         title="FinRep Dashboard",
         suppress_callback_exceptions=True,
@@ -355,6 +370,36 @@ def create_app() -> Dash:
 
 def _healthcheck():
     return {"status": "ok"}, 200
+
+
+def _dashboard_tabs() -> dbc.Tabs:
+    return dbc.Tabs(
+        [
+            dbc.Tab(label=desktop_label, tab_id=tab_id)
+            for tab_id, desktop_label, _mobile_label in MAIN_DASHBOARD_TABS
+        ],
+        id="dashboard-tabs",
+        active_tab="main",
+        className="dashboard-tabs",
+    )
+
+
+def _mobile_bottom_nav() -> html.Nav:
+    return html.Nav(
+        dcc.RadioItems(
+            id="mobile-dashboard-tabs",
+            options=[
+                {"label": mobile_label, "value": tab_id}
+                for tab_id, _desktop_label, mobile_label in MAIN_DASHBOARD_TABS
+            ],
+            value="main",
+            className="mobile-dashboard-tabs-control",
+            labelClassName="mobile-dashboard-tab",
+            inputClassName="mobile-dashboard-tab-input",
+        ),
+        className="mobile-bottom-tabs",
+        **{"aria-label": "Основные разделы dashboard"},
+    )
 
 
 def create_layout():
@@ -428,23 +473,12 @@ def create_layout():
                 align="center",
                 className="py-3",
             ),
-            dbc.Tabs(
-                [
-                    dbc.Tab(label="Основной отчет", tab_id="main"),
-                    dbc.Tab(label="Годовой отчет", tab_id="year"),
-                    dbc.Tab(label="Месячный отчет", tab_id="month"),
-                    dbc.Tab(label="Долги", tab_id="debts"),
-                    dbc.Tab(label="План и прогноз", tab_id="planning"),
-                    dbc.Tab(label="Инвестиции", tab_id="investments"),
-                    dbc.Tab(label="Ввод данных", tab_id="input"),
-                ],
-                id="dashboard-tabs",
-                active_tab="main",
-            ),
+            _dashboard_tabs(),
             dcc.Loading(
                 html.Div(id="dashboard-content", className="py-4"),
                 type="circle",
             ),
+            _mobile_bottom_nav(),
         ],
         id="dashboard-shell",
         className="finrep-shell finrep-theme-dark",
@@ -544,6 +578,7 @@ def register_callbacks(app: Dash) -> None:
         Output("dashboard-year", "value"),
         Output("dashboard-month", "value"),
         Output("dashboard-tabs", "active_tab"),
+        Output("mobile-dashboard-tabs", "value"),
         Input("dashboard-location", "search"),
     )
     def apply_url_state(search: str):
@@ -559,9 +594,31 @@ def register_callbacks(app: Dash) -> None:
             year = DEFAULT_YEAR
         if month not in {f"{value:02d}" for value in range(1, 13)}:
             month = DEFAULT_MONTH
-        if tab not in {"main", "year", "month", "debts", "planning", "investments", "input"}:
+        if tab not in MAIN_DASHBOARD_TAB_IDS:
             tab = "main"
-        return currency, year, month, tab
+        return currency, year, month, tab, tab
+
+    @app.callback(
+        Output("dashboard-tabs", "active_tab", allow_duplicate=True),
+        Input("mobile-dashboard-tabs", "value"),
+        State("dashboard-tabs", "active_tab"),
+        prevent_initial_call=True,
+    )
+    def apply_mobile_tab(active_mobile_tab: str | None, active_desktop_tab: str | None):
+        if not active_mobile_tab or active_mobile_tab == active_desktop_tab:
+            raise PreventUpdate
+        return active_mobile_tab
+
+    @app.callback(
+        Output("mobile-dashboard-tabs", "value", allow_duplicate=True),
+        Input("dashboard-tabs", "active_tab"),
+        State("mobile-dashboard-tabs", "value"),
+        prevent_initial_call=True,
+    )
+    def sync_mobile_tab(active_desktop_tab: str | None, active_mobile_tab: str | None):
+        if not active_desktop_tab or active_desktop_tab == active_mobile_tab:
+            raise PreventUpdate
+        return active_desktop_tab
 
     @app.callback(
         Output("dashboard-content", "children"),
@@ -1283,6 +1340,25 @@ def _input_report_layout(currency: str, year: str, month: str, theme: str | None
     )
 
 
+def _ag_grid_class_name(theme: str | None) -> str:
+    theme_class = "ag-theme-alpine-dark" if theme == "dark" else "ag-theme-alpine"
+    return f"{theme_class} finrep-ag-grid"
+
+
+def _ag_grid_style(height: str) -> dict:
+    return {"height": height, "width": "100%"}
+
+
+def _ag_grid_default_col_def(**overrides) -> dict:
+    defaults = {"sortable": True, "filter": True, "resizable": True, "minWidth": 112}
+    defaults.update(overrides)
+    return defaults
+
+
+def _ag_grid_scroll(grid):
+    return html.Div(grid, className="finrep-grid-scroll")
+
+
 def _transaction_input_layout(currency: str, year: str, month: str, theme: str | None):
     category_options = _transaction_category_options()
     currency_options = [{"label": ticker, "value": ticker} for ticker in config.UNIQUE_TICKERS]
@@ -1343,14 +1419,16 @@ def _transaction_input_layout(currency: str, year: str, month: str, theme: str |
                         },
                     ),
                     dbc.Alert(id="kaspi-import-message", children="PDF preview появится здесь. Дубли из staging/source CSV будут помечены как skip.", color="secondary", is_open=True, className="my-3 py-2"),
-                    dag.AgGrid(
-                        id="kaspi-import-grid",
-                        rowData=[],
-                        columnDefs=_kaspi_import_column_defs(),
-                        defaultColDef={"sortable": True, "filter": True, "resizable": True, "editable": False},
-                        dashGridOptions={"pagination": False, "suppressFieldDotNotation": True, "stopEditingWhenCellsLoseFocus": True},
-                        className="ag-theme-alpine-dark" if theme == "dark" else "ag-theme-alpine",
-                        style={"height": "420px", "width": "100%"},
+                    _ag_grid_scroll(
+                        dag.AgGrid(
+                            id="kaspi-import-grid",
+                            rowData=[],
+                            columnDefs=_kaspi_import_column_defs(),
+                            defaultColDef=_ag_grid_default_col_def(editable=False),
+                            dashGridOptions={"pagination": False, "suppressFieldDotNotation": True, "stopEditingWhenCellsLoseFocus": True},
+                            className=_ag_grid_class_name(theme),
+                            style=_ag_grid_style("420px"),
+                        )
                     ),
                 ],
                 style=_section_style(theme),
@@ -1381,14 +1459,16 @@ def _transaction_input_layout(currency: str, year: str, month: str, theme: str |
                         ],
                         className="g-2 mb-3",
                     ),
-                    dag.AgGrid(
-                        id="transaction-drafts-grid",
-                        rowData=_transaction_draft_records(month_value, None, None, None),
-                        columnDefs=_transaction_draft_column_defs(category_options, list(config.UNIQUE_TICKERS)),
-                        defaultColDef={"sortable": True, "filter": True, "resizable": True, "editable": True},
-                        dashGridOptions={"pagination": False, "suppressFieldDotNotation": True, "rowSelection": "multiple", "stopEditingWhenCellsLoseFocus": True},
-                        className="ag-theme-alpine-dark" if theme == "dark" else "ag-theme-alpine",
-                        style={"height": "640px", "width": "100%"},
+                    _ag_grid_scroll(
+                        dag.AgGrid(
+                            id="transaction-drafts-grid",
+                            rowData=_transaction_draft_records(month_value, None, None, None),
+                            columnDefs=_transaction_draft_column_defs(category_options, list(config.UNIQUE_TICKERS)),
+                            defaultColDef=_ag_grid_default_col_def(editable=True),
+                            dashGridOptions={"pagination": False, "suppressFieldDotNotation": True, "rowSelection": "multiple", "stopEditingWhenCellsLoseFocus": True},
+                            className=_ag_grid_class_name(theme),
+                            style=_ag_grid_style("640px"),
+                        )
                     ),
                 ],
                 style=_section_style(theme),
@@ -1409,14 +1489,16 @@ def _transaction_input_layout(currency: str, year: str, month: str, theme: str |
                         className="d-flex justify-content-between align-items-center mb-3",
                     ),
                     dbc.Alert(id="transaction-export-message", children="Preview покажет итоговый месячный CSV. Запись произойдет только после подтверждения.", color="secondary", is_open=True, className="mb-3 py-2"),
-                    dag.AgGrid(
-                        id="transaction-export-preview-grid",
-                        rowData=[],
-                        columnDefs=[],
-                        defaultColDef={"sortable": True, "filter": True, "resizable": True, "editable": True},
-                        dashGridOptions={"pagination": False, "suppressFieldDotNotation": True, "stopEditingWhenCellsLoseFocus": True, "undoRedoCellEditing": True},
-                        className="ag-theme-alpine-dark" if theme == "dark" else "ag-theme-alpine",
-                        style={"height": "520px", "width": "100%"},
+                    _ag_grid_scroll(
+                        dag.AgGrid(
+                            id="transaction-export-preview-grid",
+                            rowData=[],
+                            columnDefs=[],
+                            defaultColDef=_ag_grid_default_col_def(editable=True),
+                            dashGridOptions={"pagination": False, "suppressFieldDotNotation": True, "stopEditingWhenCellsLoseFocus": True, "undoRedoCellEditing": True},
+                            className=_ag_grid_class_name(theme),
+                            style=_ag_grid_style("520px"),
+                        )
                     ),
                 ],
                 style=_section_style(theme),
@@ -1501,14 +1583,16 @@ def _debt_input_layout(currency: str, theme: str | None, include_create: bool = 
             html.Section(
                 [
                     html.H2("Черновики транзакций по долгам", className="h5 mb-3"),
-                    dag.AgGrid(
-                        id="debt-transaction-drafts-grid",
-                        rowData=_debt_transaction_draft_records(),
-                        columnDefs=_debt_transaction_draft_column_defs(),
-                        defaultColDef={"sortable": True, "filter": True, "resizable": True},
-                        dashGridOptions={"pagination": False, "suppressFieldDotNotation": True},
-                        className="ag-theme-alpine-dark" if theme == "dark" else "ag-theme-alpine",
-                        style={"height": "260px", "width": "100%"},
+                    _ag_grid_scroll(
+                        dag.AgGrid(
+                            id="debt-transaction-drafts-grid",
+                            rowData=_debt_transaction_draft_records(),
+                            columnDefs=_debt_transaction_draft_column_defs(),
+                            defaultColDef=_ag_grid_default_col_def(),
+                            dashGridOptions={"pagination": False, "suppressFieldDotNotation": True},
+                            className=_ag_grid_class_name(theme),
+                            style=_ag_grid_style("260px"),
+                        )
                     ),
                 ],
                 style=_section_style(theme),
@@ -1549,14 +1633,16 @@ def _assets_input_layout(year: str, month: str, theme: str | None):
                         is_open=True,
                         className="mb-3 py-2",
                     ),
-                    dag.AgGrid(
-                        id="assets-input-grid",
-                        rowData=_asset_input_records(year, month),
-                        columnDefs=_asset_input_column_defs(),
-                        defaultColDef={"sortable": True, "filter": True, "resizable": True, "editable": True},
-                        dashGridOptions={"pagination": False, "suppressFieldDotNotation": True, "rowSelection": "multiple", "stopEditingWhenCellsLoseFocus": True, "undoRedoCellEditing": True},
-                        className="ag-theme-alpine-dark" if theme == "dark" else "ag-theme-alpine",
-                        style={"height": "920px", "width": "100%"},
+                    _ag_grid_scroll(
+                        dag.AgGrid(
+                            id="assets-input-grid",
+                            rowData=_asset_input_records(year, month),
+                            columnDefs=_asset_input_column_defs(),
+                            defaultColDef=_ag_grid_default_col_def(editable=True),
+                            dashGridOptions={"pagination": False, "suppressFieldDotNotation": True, "rowSelection": "multiple", "stopEditingWhenCellsLoseFocus": True, "undoRedoCellEditing": True},
+                            className=_ag_grid_class_name(theme),
+                            style=_ag_grid_style("920px"),
+                        )
                     ),
                 ],
                 style=_section_style(theme),
@@ -1664,14 +1750,16 @@ def _active_debts_grid(currency: str, theme: str | None, debt_type: str):
     return html.Div(
         [
             html.H3(title, className="h6 mb-2"),
-            dag.AgGrid(
-                id=grid_id,
-                rowData=_active_debt_records(currency, debt_type),
-                columnDefs=_active_debt_column_defs(currency),
-                defaultColDef={"sortable": True, "filter": True, "resizable": True},
-                dashGridOptions={"pagination": False, "suppressFieldDotNotation": True},
-                className="ag-theme-alpine-dark" if theme == "dark" else "ag-theme-alpine",
-                style={"height": "320px", "width": "100%"},
+            _ag_grid_scroll(
+                dag.AgGrid(
+                    id=grid_id,
+                    rowData=_active_debt_records(currency, debt_type),
+                    columnDefs=_active_debt_column_defs(currency),
+                    defaultColDef=_ag_grid_default_col_def(),
+                    dashGridOptions={"pagination": False, "suppressFieldDotNotation": True},
+                    className=_ag_grid_class_name(theme),
+                    style=_ag_grid_style("320px"),
+                )
             ),
         ]
     )
@@ -1871,22 +1959,20 @@ def _grid_section(dataset: DashboardDataset, height: str = "360px", theme: str |
     return html.Section(
         [
             _section_header(dataset),
-            dag.AgGrid(
-                id=f"{dataset.id}-grid",
-                rowData=_grid_row_data(dataset, data),
-                columnDefs=_grid_column_defs(dataset, data, theme),
-                defaultColDef={
-                    "sortable": True,
-                    "filter": True,
-                    "resizable": True,
-                },
-                columnSize="autoSize" if dataset.id in {"fx_rates", "year_fx_rates", "month_fx_rates"} else "sizeToFit",
-                dashGridOptions={
-                    "pagination": False,
-                    "suppressFieldDotNotation": True,
-                },
-                className="ag-theme-alpine-dark" if theme == "dark" else "ag-theme-alpine",
-                style={"height": height, "width": "100%"},
+            _ag_grid_scroll(
+                dag.AgGrid(
+                    id=f"{dataset.id}-grid",
+                    rowData=_grid_row_data(dataset, data),
+                    columnDefs=_grid_column_defs(dataset, data, theme),
+                    defaultColDef=_ag_grid_default_col_def(),
+                    columnSize="autoSize" if dataset.id in {"fx_rates", "year_fx_rates", "month_fx_rates"} else "sizeToFit",
+                    dashGridOptions={
+                        "pagination": False,
+                        "suppressFieldDotNotation": True,
+                    },
+                    className=_ag_grid_class_name(theme),
+                    style=_ag_grid_style(height),
+                )
             ),
         ],
         style=_section_style(theme),
