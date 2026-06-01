@@ -374,6 +374,7 @@ def create_app() -> Dash:
     app.index_string = _app_index_string()
     app.server.add_url_rule("/healthz", "healthz", _healthcheck)
     app.layout = create_layout()
+    app.validation_layout = _callback_validation_layout(app.layout)
     register_callbacks(app)
     return app
 
@@ -523,7 +524,7 @@ def register_callbacks(app: Dash) -> None:
     @app.callback(
         Output("dashboard-refresh-token", "data", allow_duplicate=True),
         Output("crypto-refresh-status", "data"),
-        Input("crypto-refresh-button", "n_clicks"),
+        Input("crypto-refresh-button", "n_clicks", allow_optional=True),
         State("dashboard-refresh-token", "data"),
         prevent_initial_call=True,
     )
@@ -561,8 +562,8 @@ def register_callbacks(app: Dash) -> None:
 
     @app.callback(
         Output("dashboard-refresh-token", "data", allow_duplicate=True),
-        Input("planning_goals-grid", "cellValueChanged"),
-        State("planning_goals-grid", "rowData"),
+        Input("planning_goals-grid", "cellValueChanged", allow_optional=True),
+        State("planning_goals-grid", "rowData", allow_optional=True),
         State("dashboard-year", "value"),
         State("dashboard-currency", "value"),
         State("dashboard-refresh-token", "data"),
@@ -729,6 +730,8 @@ def register_callbacks(app: Dash) -> None:
                 _graph_section(datasets["income_expense"], theme=theme),
                 _graph_section(datasets["delta"], theme=theme),
                 _graph_section(datasets["capital"], height="640px", theme=theme),
+                _graph_section(datasets["fx_revaluation"], height="420px", theme=theme),
+                _graph_section(datasets["asset_currency_allocation"], height="520px", theme=theme),
                 _graph_section(datasets["fx_changes"], theme=theme),
             ],
             className="d-grid gap-4",
@@ -803,8 +806,8 @@ def register_callbacks(app: Dash) -> None:
         Output("kaspi-import-grid", "columnDefs"),
         Output("kaspi-import-message", "children"),
         Output("kaspi-import-message", "color"),
-        Input("kaspi-upload", "contents"),
-        State("kaspi-upload", "filename"),
+        Input("kaspi-upload", "contents", allow_optional=True),
+        State("kaspi-upload", "filename", allow_optional=True),
         prevent_initial_call=True,
     )
     def preview_kaspi_pdf(contents, filename):
@@ -827,12 +830,12 @@ def register_callbacks(app: Dash) -> None:
         Output("kaspi-import-message", "children", allow_duplicate=True),
         Output("kaspi-import-message", "color", allow_duplicate=True),
         Output("transaction-drafts-grid", "rowData", allow_duplicate=True),
-        Input("kaspi-save-button", "n_clicks"),
-        State("kaspi-import-grid", "rowData"),
-        State("transaction-filter-month", "value"),
-        State("transaction-filter-category", "value"),
-        State("transaction-filter-status", "value"),
-        State("transaction-filter-source", "value"),
+        Input("kaspi-save-button", "n_clicks", allow_optional=True),
+        State("kaspi-import-grid", "rowData", allow_optional=True),
+        State("transaction-filter-month", "value", allow_optional=True),
+        State("transaction-filter-category", "value", allow_optional=True),
+        State("transaction-filter-status", "value", allow_optional=True),
+        State("transaction-filter-source", "value", allow_optional=True),
         prevent_initial_call=True,
     )
     def save_kaspi_import(n_clicks, row_data, month_filter, category_filter, status_filter, source_filter):
@@ -853,20 +856,20 @@ def register_callbacks(app: Dash) -> None:
         Output("transaction-input-message", "children"),
         Output("transaction-input-message", "color"),
         Output("transaction-filter-month", "value"),
-        Input("transaction-add-button", "n_clicks"),
-        Input("transaction-save-grid-button", "n_clicks"),
-        Input("transaction-delete-button", "n_clicks"),
-        Input("transaction-filter-month", "value"),
-        Input("transaction-filter-category", "value"),
-        Input("transaction-filter-status", "value"),
-        Input("transaction-filter-source", "value"),
-        State("transaction-input-date", "value"),
-        State("transaction-input-category", "value"),
-        State("transaction-input-currency", "value"),
-        State("transaction-input-amount", "value"),
-        State("transaction-input-comment", "value"),
-        State("transaction-drafts-grid", "rowData"),
-        State("transaction-drafts-grid", "selectedRows"),
+        Input("transaction-add-button", "n_clicks", allow_optional=True),
+        Input("transaction-save-grid-button", "n_clicks", allow_optional=True),
+        Input("transaction-delete-button", "n_clicks", allow_optional=True),
+        Input("transaction-filter-month", "value", allow_optional=True),
+        Input("transaction-filter-category", "value", allow_optional=True),
+        Input("transaction-filter-status", "value", allow_optional=True),
+        Input("transaction-filter-source", "value", allow_optional=True),
+        State("transaction-input-date", "value", allow_optional=True),
+        State("transaction-input-category", "value", allow_optional=True),
+        State("transaction-input-currency", "value", allow_optional=True),
+        State("transaction-input-amount", "value", allow_optional=True),
+        State("transaction-input-comment", "value", allow_optional=True),
+        State("transaction-drafts-grid", "rowData", allow_optional=True),
+        State("transaction-drafts-grid", "selectedRows", allow_optional=True),
     )
     def sync_transaction_drafts(
         add_clicks,
@@ -923,11 +926,11 @@ def register_callbacks(app: Dash) -> None:
         Output("transaction-export-preview-grid", "columnDefs"),
         Output("transaction-export-message", "children"),
         Output("transaction-export-message", "color"),
-        Input("transaction-preview-export-button", "n_clicks"),
-        Input("transaction-confirm-export-button", "n_clicks"),
+        Input("transaction-preview-export-button", "n_clicks", allow_optional=True),
+        Input("transaction-confirm-export-button", "n_clicks", allow_optional=True),
         State("dashboard-year", "value"),
         State("dashboard-month", "value"),
-        State("transaction-export-preview-grid", "rowData"),
+        State("transaction-export-preview-grid", "rowData", allow_optional=True),
         prevent_initial_call=True,
     )
     def preview_or_export_transaction_month(preview_clicks, export_clicks, year, month, preview_rows):
@@ -953,11 +956,11 @@ def register_callbacks(app: Dash) -> None:
 
     @app.callback(
         Output("transaction-drafts-download", "data"),
-        Input("transaction-export-csv-button", "n_clicks"),
-        State("transaction-filter-month", "value"),
-        State("transaction-filter-category", "value"),
-        State("transaction-filter-status", "value"),
-        State("transaction-filter-source", "value"),
+        Input("transaction-export-csv-button", "n_clicks", allow_optional=True),
+        State("transaction-filter-month", "value", allow_optional=True),
+        State("transaction-filter-category", "value", allow_optional=True),
+        State("transaction-filter-status", "value", allow_optional=True),
+        State("transaction-filter-source", "value", allow_optional=True),
         prevent_initial_call=True,
     )
     def export_transaction_drafts(n_clicks, month_filter, category_filter, status_filter, source_filter):
@@ -976,23 +979,23 @@ def register_callbacks(app: Dash) -> None:
         Output("debt-input-message", "children"),
         Output("debt-input-message", "color"),
         Output("dashboard-refresh-token", "data", allow_duplicate=True),
-        Input("debt-add-button", "n_clicks"),
-        Input("debt-payment-button", "n_clicks"),
-        Input("debt-migrate-button", "n_clicks"),
-        Input("dashboard-currency", "value"),
-        State("debt-opened-date", "value"),
-        State("debt-type", "value"),
-        State("debt-counterparty", "value"),
-        State("debt-principal-amount", "value"),
-        State("debt-principal-currency", "value"),
-        State("debt-cash-amount", "value"),
-        State("debt-cash-currency", "value"),
-        State("debt-comment", "value"),
-        State("debt-payment-id", "value"),
-        State("debt-payment-date", "value"),
-        State("debt-payment-amount", "value"),
-        State("debt-payment-cash-currency", "value"),
-        State("debt-payment-comment", "value"),
+        Input("debt-add-button", "n_clicks", allow_optional=True),
+        Input("debt-payment-button", "n_clicks", allow_optional=True),
+        Input("debt-migrate-button", "n_clicks", allow_optional=True),
+        State("dashboard-currency", "value"),
+        State("debt-opened-date", "value", allow_optional=True),
+        State("debt-type", "value", allow_optional=True),
+        State("debt-counterparty", "value", allow_optional=True),
+        State("debt-principal-amount", "value", allow_optional=True),
+        State("debt-principal-currency", "value", allow_optional=True),
+        State("debt-cash-amount", "value", allow_optional=True),
+        State("debt-cash-currency", "value", allow_optional=True),
+        State("debt-comment", "value", allow_optional=True),
+        State("debt-payment-id", "value", allow_optional=True),
+        State("debt-payment-date", "value", allow_optional=True),
+        State("debt-payment-amount", "value", allow_optional=True),
+        State("debt-payment-cash-currency", "value", allow_optional=True),
+        State("debt-payment-comment", "value", allow_optional=True),
         State("dashboard-refresh-token", "data"),
         prevent_initial_call=True,
     )
@@ -1088,14 +1091,14 @@ def register_callbacks(app: Dash) -> None:
         Output("assets-input-grid", "rowData"),
         Output("assets-input-message", "children"),
         Output("assets-input-message", "color"),
-        Input("assets-load-button", "n_clicks"),
-        Input("assets-add-row-button", "n_clicks"),
-        Input("assets-delete-row-button", "n_clicks"),
-        Input("assets-apply-button", "n_clicks"),
-        Input("dashboard-year", "value"),
-        Input("dashboard-month", "value"),
-        State("assets-input-grid", "rowData"),
-        State("assets-input-grid", "selectedRows"),
+        Input("assets-load-button", "n_clicks", allow_optional=True),
+        Input("assets-add-row-button", "n_clicks", allow_optional=True),
+        Input("assets-delete-row-button", "n_clicks", allow_optional=True),
+        Input("assets-apply-button", "n_clicks", allow_optional=True),
+        State("dashboard-year", "value"),
+        State("dashboard-month", "value"),
+        State("assets-input-grid", "rowData", allow_optional=True),
+        State("assets-input-grid", "selectedRows", allow_optional=True),
     )
     def sync_assets_snapshot(load_clicks, add_clicks, delete_clicks, apply_clicks, year, month, row_data, selected_rows):
         trigger = ctx.triggered_id
@@ -1213,6 +1216,7 @@ def _year_report_layout(datasets: dict[str, DashboardDataset], theme: str | None
             _grid_section(datasets["year_income_cost_stats"], height="360px", theme=theme),
             _grid_section(datasets["year_capital_by_month"], height="560px", theme=theme),
             _graph_section(datasets["year_capital_chart"], height="560px", theme=theme),
+            _graph_section(datasets["year_fx_revaluation"], height="420px", theme=theme),
         ],
         className="d-grid gap-4",
     )
@@ -1356,6 +1360,18 @@ def _input_report_layout(currency: str, year: str, month: str, theme: str | None
         id="input-inner-tabs",
         active_tab="input-transactions",
         className="mb-3",
+    )
+
+
+def _callback_validation_layout(layout):
+    return html.Div(
+        [
+            layout,
+            _debt_report_layout(DEFAULT_CURRENCY, "dark"),
+            _input_report_layout(DEFAULT_CURRENCY, DEFAULT_YEAR, DEFAULT_MONTH, "dark"),
+            dbc.Button("Обновить crypto", id="crypto-refresh-button"),
+            dag.AgGrid(id="planning_goals-grid"),
+        ]
     )
 
 

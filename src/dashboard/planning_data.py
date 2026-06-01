@@ -5,7 +5,7 @@ import pandas as pd
 import plotly.graph_objects as go
 
 from src import config, utils
-from src.dashboard.main_data import DashboardDataset, _apply_dashboard_chart_layout
+from src.dashboard.main_data import DashboardDataset, _apply_dashboard_chart_layout, _peak_money_labels
 from src.data.get import get_assets
 from src.data.get_finance import get_actual_fx_rate, set_fx_network_enabled
 from src.model.create_tables import get_balance_by_month
@@ -327,8 +327,10 @@ def _forecast_figure(data: pd.DataFrame, currency: str) -> go.Figure:
         go.Scatter(
             x=fact["Дата"],
             y=fact["Капитал"],
-            mode="lines+markers",
+            mode="lines+markers+text",
             name="Факт",
+            text=_peak_money_labels(fact["Капитал"], currency, max_labels=4),
+            textposition="top center",
             line=dict(color="#6897bb", width=2),
             hovertemplate="%{x|%Y-%m}<br>%{y:,.0f}" + config.UNIQUE_TICKERS[currency] + "<extra></extra>",
         )
@@ -338,8 +340,10 @@ def _forecast_figure(data: pd.DataFrame, currency: str) -> go.Figure:
         go.Scatter(
             x=pd.concat([connector["Дата"], forecast["Дата"]]),
             y=pd.concat([connector["Капитал"], forecast["Капитал"]]),
-            mode="lines+markers",
+            mode="lines+markers+text",
             name="Прогноз",
+            text=_peak_money_labels(pd.concat([connector["Капитал"], forecast["Капитал"]]), currency, max_labels=4),
+            textposition="bottom center",
             line=dict(color="#b6d7a8", width=2, dash="dash"),
             hovertemplate="%{x|%Y-%m}<br>%{y:,.0f}" + config.UNIQUE_TICKERS[currency] + "<extra></extra>",
         )

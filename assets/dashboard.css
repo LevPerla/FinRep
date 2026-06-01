@@ -180,8 +180,8 @@ body {
 .finrep-theme-dark .ag-theme-alpine-dark .ag-row,
 .finrep-theme-dark .ag-theme-alpine .ag-cell,
 .finrep-theme-dark .ag-theme-alpine-dark .ag-cell {
-  background-color: var(--ag-background-color) !important;
-  color: var(--ag-foreground-color) !important;
+  background-color: var(--ag-background-color);
+  color: var(--ag-foreground-color);
   border-color: #555555 !important;
 }
 
