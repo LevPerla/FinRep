@@ -32,10 +32,11 @@ def build_year_dashboard_data(
     income_cost_stats = _income_cost_stats(year_balance)
     capital_columns = [
         column
-        for column in ["Капитал", "Капитал по активам", "Валютная переоценка", "Расхождение с активами"]
+        for column in ["Капитал", "Капитал по активам", "Расхождение с активами"]
         if column in year_balance.columns
     ]
     capital_by_month = year_balance[capital_columns].reset_index()
+    fx_revaluation = _fx_revaluation_data(year_balance)
     fx_info = get_exchange_rates_info(currency)
 
     return {
@@ -108,6 +109,12 @@ def build_year_dashboard_data(
             title="Динамика капитала",
             dataframe=capital_by_month,
             figure=_capital_figure(capital_by_month),
+        ),
+        "year_fx_revaluation": DashboardDataset(
+            id="year_fx_revaluation",
+            title="Валютная переоценка",
+            dataframe=fx_revaluation,
+            figure=_fx_revaluation_figure(fx_revaluation, currency),
         ),
     }
 
@@ -285,16 +292,28 @@ def _capital_figure(data: pd.DataFrame) -> go.Figure:
                 connectgaps=False,
             )
         )
-    if "Валютная переоценка" in data.columns:
-        fig.add_trace(
-            go.Bar(
-                x=x_dates,
-                y=data["Валютная переоценка"],
-                name="Валютная переоценка",
-                marker_color="rgba(120, 120, 120, 0.45)",
-                yaxis="y2",
-            )
-        )
-        fig.update_layout(yaxis2=dict(title="Переоценка", overlaying="y", side="right", showgrid=False))
     _apply_dashboard_chart_layout(fig, "Динамика капитала")
+    return fig
+
+
+def _fx_revaluation_data(year_balance: pd.DataFrame) -> pd.DataFrame:
+    if "Валютная переоценка" not in year_balance.columns:
+        return pd.DataFrame(columns=["Дата", "Валютная переоценка"])
+    return year_balance[["Валютная переоценка"]].reset_index()
+
+
+def _fx_revaluation_figure(data: pd.DataFrame, currency: str) -> go.Figure:
+    values = pd.to_numeric(data.get("Валютная переоценка", pd.Series(dtype=float)), errors="coerce")
+    colors = ["#4f714b" if value >= 0 else "#704444" for value in values.fillna(0)]
+    fig = go.Figure(
+        go.Bar(
+            x=_month_start_dates(data) if "Дата" in data else [],
+            y=values,
+            name="Валютная переоценка",
+            marker_color=colors,
+            hovertemplate="%{x|%Y-%m}<br>%{y:,.0f}<extra></extra>",
+        )
+    )
+    _apply_dashboard_chart_layout(fig, "Валютная переоценка")
+    fig.update_layout(yaxis_title=config.UNIQUE_TICKERS[currency])
     return fig

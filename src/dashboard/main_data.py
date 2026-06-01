@@ -4,8 +4,9 @@ import pandas as pd
 import plotly.graph_objects as go
 
 from src import config, utils
+from src.data.get import get_assets
 from src.data.exchange_rates_info import get_exchange_rates_info
-from src.data.get_finance import get_fx_rates, set_fx_network_enabled
+from src.data.get_finance import get_fallback_rate, get_fx_rates, set_fx_network_enabled
 from src.model.create_tables import get_balance_by_month
 
 
@@ -40,10 +41,12 @@ def build_main_dashboard_data(
     delta = balance[["Дельта"]].reset_index()
     capital_columns = [
         column
-        for column in ["Капитал", "Капитал по активам", "Валютная переоценка", "Расхождение с активами"]
+        for column in ["Капитал", "Капитал по активам", "Расхождение с активами"]
         if column in balance.columns
     ]
     capital = balance[capital_columns].reset_index()
+    fx_revaluation = _fx_revaluation_data(balance)
+    asset_currency_allocation = _asset_currency_allocation_data(currency)
     fx_info = get_exchange_rates_info(currency)
     fx_changes = _fx_changes_data(balance, currency)
 
@@ -68,7 +71,7 @@ def build_main_dashboard_data(
             id="income_expense",
             title="Income and Expense",
             dataframe=income_expense,
-            figure=_income_expense_figure(income_expense),
+            figure=_income_expense_figure(income_expense, currency),
             graph_config={"scrollZoom": False},
         ),
         "delta": DashboardDataset(
@@ -82,6 +85,18 @@ def build_main_dashboard_data(
             title="Capital",
             dataframe=capital,
             figure=_capital_figure(capital, currency),
+        ),
+        "fx_revaluation": DashboardDataset(
+            id="fx_revaluation",
+            title="FX Revaluation",
+            dataframe=fx_revaluation,
+            figure=_fx_revaluation_figure(fx_revaluation, currency),
+        ),
+        "asset_currency_allocation": DashboardDataset(
+            id="asset_currency_allocation",
+            title="Asset Currency Allocation",
+            dataframe=asset_currency_allocation,
+            figure=_asset_currency_allocation_figure(asset_currency_allocation),
         ),
         "fx_changes": DashboardDataset(
             id="fx_changes",
@@ -127,15 +142,17 @@ def _month_start_dates(data: pd.DataFrame) -> pd.Series:
     return pd.to_datetime(data["Дата"]).dt.to_period("M").dt.to_timestamp()
 
 
-def _income_expense_figure(data: pd.DataFrame) -> go.Figure:
+def _income_expense_figure(data: pd.DataFrame, currency: str) -> go.Figure:
     fig = go.Figure()
     x_dates = _month_start_dates(data)
     fig.add_trace(
         go.Scatter(
             x=x_dates,
             y=data["Доход"],
-            mode="lines+markers",
+            mode="lines+markers+text",
             name="Доход",
+            text=_peak_money_labels(data["Доход"], currency, max_labels=6),
+            textposition="top center",
             line=dict(color="royalblue", width=2),
         )
     )
@@ -143,8 +160,10 @@ def _income_expense_figure(data: pd.DataFrame) -> go.Figure:
         go.Scatter(
             x=x_dates,
             y=data["Расход"],
-            mode="lines+markers",
+            mode="lines+markers+text",
             name="Расход",
+            text=_peak_money_labels(data["Расход"], currency, max_labels=6),
+            textposition="bottom center",
             line=dict(color="firebrick", width=2),
         )
     )
@@ -191,33 +210,36 @@ def _capital_figure(data: pd.DataFrame, currency: str) -> go.Figure:
                 connectgaps=False,
             )
         )
-    if "Валютная переоценка" in data.columns:
-        fig.add_trace(
-            go.Bar(
-                x=x_dates,
-                y=data["Валютная переоценка"],
-                name="Валютная переоценка",
-                marker_color="rgba(120, 120, 120, 0.45)",
-                yaxis="y2",
-                hovertemplate="%{x|%Y-%m}<br>%{y:,.0f}<extra></extra>",
-            )
-        )
-        fig.update_layout(
-            yaxis2=dict(
-                title="Переоценка",
-                overlaying="y",
-                side="right",
-                showgrid=False,
-                tickfont=dict(size=CHART_LABEL_SIZE),
-            )
-        )
     _apply_dashboard_chart_layout(fig, "Динамика капитала", range_slider=True)
     max_value = pd.to_numeric(data[["Капитал", "Капитал по активам"]].stack(), errors="coerce").max() if "Капитал по активам" in data.columns else pd.to_numeric(data["Капитал"], errors="coerce").max()
     if pd.notna(max_value) and max_value > 0:
         fig.update_layout(
-            margin=dict(l=70, r=30, t=105, b=55),
+            margin=dict(l=70, r=30, t=76, b=55),
             yaxis=dict(range=[0, max_value * 1.18], tickfont=dict(size=CHART_FONT_SIZE)),
         )
+    return fig
+
+
+def _fx_revaluation_data(balance: pd.DataFrame) -> pd.DataFrame:
+    if "Валютная переоценка" not in balance.columns:
+        return pd.DataFrame(columns=["Дата", "Валютная переоценка"])
+    return balance[["Валютная переоценка"]].reset_index()
+
+
+def _fx_revaluation_figure(data: pd.DataFrame, currency: str) -> go.Figure:
+    values = pd.to_numeric(data.get("Валютная переоценка", pd.Series(dtype=float)), errors="coerce")
+    colors = ["#4f714b" if value >= 0 else "#704444" for value in values.fillna(0)]
+    fig = go.Figure(
+        go.Bar(
+            x=_month_start_dates(data) if "Дата" in data else [],
+            y=values,
+            name="Валютная переоценка",
+            marker_color=colors,
+            hovertemplate="%{x|%Y-%m}<br>%{y:,.0f}<extra></extra>",
+        )
+    )
+    _apply_dashboard_chart_layout(fig, "Валютная переоценка", range_slider=True)
+    fig.update_layout(yaxis_title=config.UNIQUE_TICKERS[currency])
     return fig
 
 
@@ -245,20 +267,96 @@ def _fx_changes_data(balance: pd.DataFrame, currency: str) -> pd.DataFrame:
     return result
 
 
+def _asset_currency_allocation_data(currency: str) -> pd.DataFrame:
+    assets = get_assets()
+    if assets.empty:
+        return pd.DataFrame(columns=["Дата"])
+
+    assets = assets.copy(deep=True)
+    assets["Дата"] = pd.PeriodIndex(
+        year=assets["Год"].astype(int),
+        month=assets["Месяц"].astype(int),
+        freq="M",
+    ).to_timestamp(how="end").normalize()
+    assets["Значение"] = pd.to_numeric(assets["Значение"], errors="coerce").fillna(0.0)
+    assets["Валюта"] = assets["Валюта"].astype(str).str.upper()
+    assets["value_in_target"] = _convert_asset_allocation_values(assets, currency)
+
+    values = (
+        assets
+        .pivot_table(index="Дата", columns="Валюта", values="value_in_target", aggfunc="sum")
+        .sort_index()
+    )
+    if values.empty:
+        return pd.DataFrame(columns=["Дата"])
+
+    totals = values.sum(axis=1)
+    allocation = values.div(totals.where(totals.ne(0)), axis=0).mul(100).fillna(0.0)
+    allocation = allocation.loc[:, allocation.sum(axis=0).ne(0)]
+    return allocation.reset_index().round(2)
+
+
+def _convert_asset_allocation_values(assets: pd.DataFrame, currency: str) -> pd.Series:
+    values = assets["Значение"].copy()
+    for (from_currency, snapshot_date), index in assets.groupby(["Валюта", "Дата"]).groups.items():
+        from_currency = str(from_currency).upper()
+        if from_currency == currency:
+            continue
+        rate = _fx_rate_as_of(from_currency, currency, snapshot_date)
+        if rate is None:
+            continue
+        values.loc[index] = values.loc[index] * rate
+    return values
+
+
+def _fx_rate_as_of(from_currency: str, to_currency: str, as_of_date) -> float | None:
+    rates = get_fx_rates(from_currency, to_currency, as_of_date, as_of_date)
+    if rates.empty:
+        return get_fallback_rate(from_currency, to_currency)
+    values = pd.to_numeric(rates.iloc[:, 0], errors="coerce").dropna()
+    if values.empty:
+        return get_fallback_rate(from_currency, to_currency)
+    return float(values.iloc[-1])
+
+
+def _asset_currency_allocation_figure(data: pd.DataFrame) -> go.Figure:
+    fig = go.Figure()
+    if data.empty or "Дата" not in data.columns:
+        _apply_dashboard_chart_layout(fig, "Динамика аллокации активов по валютам", range_slider=True)
+        return fig
+
+    x_dates = pd.to_datetime(data["Дата"])
+    for asset_currency in [column for column in data.columns if column != "Дата"]:
+        fig.add_trace(
+            go.Bar(
+                x=x_dates,
+                y=data[asset_currency],
+                name=asset_currency,
+                hovertemplate=f"{asset_currency}<br>%{{x|%Y-%m}}<br>%{{y:,.2f}}%<extra></extra>",
+            )
+        )
+
+    _apply_dashboard_chart_layout(fig, "Динамика аллокации активов по валютам", range_slider=True)
+    fig.update_layout(barmode="stack", yaxis=dict(range=[0, 100], ticksuffix="%"))
+    return fig
+
+
 def _fx_changes_figure(data: pd.DataFrame, currency: str) -> go.Figure:
     fig = go.Figure()
     if data.empty or "Дата" not in data.columns:
         _apply_dashboard_chart_layout(fig, "Динамика курсов валют", range_slider=True)
         return fig
 
-    x_dates = _month_start_dates(data)
+    x_dates = pd.to_datetime(data["Дата"])
     for from_currency in [column for column in data.columns if column != "Дата"]:
         fig.add_trace(
             go.Scatter(
                 x=x_dates,
                 y=data[from_currency],
-                mode="lines",
+                mode="lines+markers+text",
                 name=f"{from_currency}/{currency}",
+                text=_peak_rate_labels(data[from_currency], max_labels=5),
+                textposition="top center",
                 hovertemplate=f"{from_currency}/{currency}<br>%{{x|%Y-%m}}<br>%{{y:,.4f}}<extra></extra>",
             )
         )
@@ -295,6 +393,67 @@ def _sparse_money_labels(values: pd.Series, currency: str, max_labels: int = 7) 
             continue
         labels.append(f"{value:,.0f}".replace(",", " ") + symbol)
     return labels
+
+
+def _sparse_rate_labels(values: pd.Series, max_labels: int = 5) -> list[str]:
+    if values.empty:
+        return []
+
+    numeric = pd.to_numeric(values, errors="coerce")
+    count = len(numeric)
+    label_count = min(max_labels, count)
+    if label_count <= 1:
+        label_indexes = {count - 1}
+    else:
+        label_indexes = {round(index * (count - 1) / (label_count - 1)) for index in range(label_count)}
+
+    labels = []
+    for index, value in enumerate(numeric):
+        if index not in label_indexes or pd.isna(value):
+            labels.append("")
+            continue
+        labels.append(f"{value:,.4f}".rstrip("0").rstrip("."))
+    return labels
+
+
+def _peak_money_labels(values: pd.Series, currency: str, max_labels: int = 6) -> list[str]:
+    numeric = pd.to_numeric(values, errors="coerce")
+    indexes = _peak_label_indexes(numeric, max_labels, min_distance=5)
+    symbol = config.UNIQUE_TICKERS[currency]
+    return [
+        f"{value:,.0f}".replace(",", " ") + symbol if index in indexes and pd.notna(value) else ""
+        for index, value in enumerate(numeric)
+    ]
+
+
+def _peak_rate_labels(values: pd.Series, max_labels: int = 5) -> list[str]:
+    numeric = pd.to_numeric(values, errors="coerce")
+    indexes = _peak_label_indexes(numeric, max_labels, min_distance=5)
+    return [
+        f"{value:,.2f}" if index in indexes and pd.notna(value) else ""
+        for index, value in enumerate(numeric)
+    ]
+
+
+def _peak_label_indexes(values: pd.Series, max_labels: int, min_distance: int = 5) -> set[int]:
+    if values.empty or max_labels <= 0:
+        return set()
+
+    non_zero = values.dropna()
+    non_zero = non_zero[non_zero.ne(0)]
+    if non_zero.empty:
+        return set()
+
+    selected_positions: list[int] = []
+    ranked = non_zero.abs().sort_values(ascending=False)
+    for index in ranked.index:
+        position = values.index.get_loc(index)
+        if any(abs(position - selected) <= min_distance for selected in selected_positions):
+            continue
+        selected_positions.append(position)
+        if len(selected_positions) >= max_labels:
+            break
+    return set(selected_positions)
 
 
 def _important_money_labels(values: pd.Series, currency: str, max_labels: int = 7) -> list[str]:
