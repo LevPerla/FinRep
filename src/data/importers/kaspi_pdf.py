@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import base64
-import hashlib
+import io
 import re
 from pathlib import Path
 
@@ -37,9 +37,17 @@ INTERNAL_TRANSFER_PATTERNS = (
 
 
 def parse_kaspi_pdf(path: str | Path) -> pd.DataFrame:
+    return _import_frame_from_rows(_extract_rows_from_pdf(Path(path)))
+
+
+def parse_kaspi_pdf_bytes(content: bytes) -> pd.DataFrame:
+    return _import_frame_from_rows(_extract_rows_from_pdf(io.BytesIO(content)))
+
+
+def _extract_rows_from_pdf(pdf_source) -> list[dict]:
     rows: list[dict] = []
     pending: dict | None = None
-    with pdfplumber.open(Path(path)) as pdf:
+    with pdfplumber.open(pdf_source) as pdf:
         for page in pdf.pages:
             text = page.extract_text(x_tolerance=1, y_tolerance=3) or ""
             for raw_line in text.splitlines():
@@ -55,7 +63,10 @@ def parse_kaspi_pdf(path: str | Path) -> pd.DataFrame:
                     pending["details"] = f"{pending['details']} {line}"
         if pending is not None:
             rows.append(pending)
+    return rows
 
+
+def _import_frame_from_rows(rows: list[dict]) -> pd.DataFrame:
     data = pd.DataFrame(rows)
     if data.empty:
         return _empty_import_frame()
@@ -69,15 +80,6 @@ def parse_kaspi_pdf(path: str | Path) -> pd.DataFrame:
     data = _add_duplicate_flags(data)
     data = _sort_import_preview(data)
     return data[_import_columns()]
-
-
-def parse_kaspi_pdf_bytes(content: bytes) -> pd.DataFrame:
-    temp_path = Path("/private/tmp") / f"kaspi_statement_{hashlib.sha1(content).hexdigest()}.pdf"
-    temp_path.write_bytes(content)
-    try:
-        return parse_kaspi_pdf(temp_path)
-    finally:
-        temp_path.unlink(missing_ok=True)
 
 
 def parse_kaspi_upload_contents(contents: str) -> pd.DataFrame:
