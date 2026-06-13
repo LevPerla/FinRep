@@ -28,6 +28,8 @@ class DashboardDataset:
 def build_main_dashboard_data(
     currency: str,
     fx_network_enabled: bool = True,
+    year: str | None = None,
+    month: str | None = None,
 ) -> dict[str, DashboardDataset]:
     currency = currency.upper()
     if currency not in config.UNIQUE_TICKERS:
@@ -36,6 +38,7 @@ def build_main_dashboard_data(
     set_fx_network_enabled(fx_network_enabled)
     balance = get_balance_by_month(currency)
 
+    cockpit_metrics = _cockpit_metrics(balance, currency, year, month)
     yearly_stats = _create_yearly_stats(balance)
     income_expense = balance[["Доход", "Расход"]].reset_index()
     delta = balance[["Дельта"]].reset_index()
@@ -51,6 +54,12 @@ def build_main_dashboard_data(
     fx_changes = _fx_changes_data(balance, currency)
 
     return {
+        "cockpit_metrics": DashboardDataset(
+            id="cockpit_metrics",
+            title="Ключевые метрики",
+            dataframe=cockpit_metrics,
+            display_dataframe=_format_cockpit_metrics(cockpit_metrics, currency),
+        ),
         "yearly_stats": DashboardDataset(
             id="yearly_stats",
             title="Yearly Stats",
@@ -105,6 +114,125 @@ def build_main_dashboard_data(
             figure=_fx_changes_figure(fx_changes, currency),
         ),
     }
+
+
+def _cockpit_metrics(
+    balance: pd.DataFrame,
+    currency: str,
+    year: str | None,
+    month: str | None,
+) -> pd.DataFrame:
+    columns = ["Показатель", "Значение", "Статус", "Детали", "Тип"]
+    if balance.empty:
+        return pd.DataFrame(columns=columns)
+
+    selected_row, selected_period, is_selected_month = _selected_balance_row(balance, year, month)
+    latest_row = balance.sort_index().tail(1).iloc[0]
+    current_capital = _latest_number(balance, "Капитал по активам")
+    capital_source = "assets"
+    if pd.isna(current_capital):
+        current_capital = _latest_number(balance, "Капитал")
+        capital_source = "cash-flow"
+
+    income = _row_number(selected_row, "Доход")
+    expense = _row_number(selected_row, "Расход")
+    delta = _row_number(selected_row, "Дельта")
+    avg_expense = float(pd.to_numeric(balance["Расход"].tail(12), errors="coerce").mean())
+    runway_months = current_capital / avg_expense if avg_expense > 0 else pd.NA
+    savings_rate = delta / income * 100 if income > 0 else pd.NA
+    asset_gap = _row_number(latest_row, "Расхождение с активами")
+    fx_impact = _row_number(selected_row, "Валютная переоценка")
+    period_label = str(selected_period)
+    period_detail = "выбранный месяц" if is_selected_month else "последний доступный месяц"
+
+    rows = [
+        ("Капитал", current_capital, capital_source, "Последний доступный капитал по assets или cash-flow", "money"),
+        ("Доход месяца", income, "ok" if income > 0 else "empty", f"{period_label}, {period_detail}", "money"),
+        ("Расход месяца", expense, "watch" if expense > avg_expense * 1.2 and avg_expense > 0 else "ok", f"{period_label}, средний расход 12м: {avg_expense:,.0f} {currency}", "money"),
+        ("Cash-flow месяца", delta, "positive" if delta >= 0 else "negative", f"{period_label}: доход минус расход", "money"),
+        ("Норма сбережений", savings_rate, _savings_rate_status(savings_rate), f"{period_label}: cash-flow / income", "percent"),
+        ("Runway", runway_months, _runway_status(runway_months), "Капитал / средний расход за последние 12 месяцев", "months"),
+        ("Расхождение с активами", asset_gap, _asset_gap_status(asset_gap, current_capital), "Последний assets snapshot минус cash-flow капитал", "money"),
+        ("FX impact месяца", fx_impact, "positive" if fx_impact >= 0 else "negative", f"{period_label}: валютная переоценка", "money"),
+    ]
+    return pd.DataFrame(rows, columns=columns)
+
+
+def _selected_balance_row(
+    balance: pd.DataFrame,
+    year: str | None,
+    month: str | None,
+) -> tuple[pd.Series, pd.Period, bool]:
+    monthly = balance.sort_index()
+    if year and month:
+        try:
+            selected_period = pd.Period(f"{int(year):04d}-{int(month):02d}", freq="M")
+            periods = pd.to_datetime(monthly.index, errors="coerce").to_period("M")
+            matches = monthly[periods == selected_period]
+            if not matches.empty:
+                return matches.iloc[-1], selected_period, True
+        except (TypeError, ValueError):
+            pass
+    latest_period = pd.to_datetime(monthly.index[-1]).to_period("M")
+    return monthly.iloc[-1], latest_period, False
+
+
+def _latest_number(data: pd.DataFrame, column: str):
+    if column not in data.columns:
+        return pd.NA
+    values = pd.to_numeric(data[column], errors="coerce").dropna()
+    return float(values.iloc[-1]) if not values.empty else pd.NA
+
+
+def _row_number(row: pd.Series, column: str) -> float:
+    value = row.get(column, 0.0) if not row.empty else 0.0
+    parsed = pd.to_numeric(value, errors="coerce")
+    return float(parsed) if pd.notna(parsed) else 0.0
+
+
+def _savings_rate_status(value) -> str:
+    if pd.isna(value):
+        return "empty"
+    if value >= 30:
+        return "strong"
+    if value >= 0:
+        return "ok"
+    return "negative"
+
+
+def _runway_status(value) -> str:
+    if pd.isna(value):
+        return "empty"
+    if value >= 12:
+        return "strong"
+    if value >= 6:
+        return "watch"
+    return "thin"
+
+
+def _asset_gap_status(asset_gap: float, capital) -> str:
+    if pd.isna(capital) or capital == 0:
+        return "empty"
+    return "ok" if abs(asset_gap) <= abs(float(capital)) * 0.03 else "review"
+
+
+def _format_cockpit_metrics(data: pd.DataFrame, currency: str) -> pd.DataFrame:
+    display = data.copy(deep=True)
+    for index, row in data.iterrows():
+        value = row["Значение"]
+        if row["Тип"] == "money":
+            display.loc[index, "Значение"] = _format_money_value(value, currency)
+        elif row["Тип"] == "percent":
+            display.loc[index, "Значение"] = "не рассчитано" if pd.isna(value) else f"{float(value):,.1f}%".replace(",", " ")
+        elif row["Тип"] == "months":
+            display.loc[index, "Значение"] = "не рассчитано" if pd.isna(value) else f"{float(value):,.1f} мес.".replace(",", " ")
+    return display.drop(columns=["Тип"])
+
+
+def _format_money_value(value, currency: str) -> str:
+    if pd.isna(value):
+        return "не рассчитано"
+    return f"{float(value):,.2f}".replace(",", " ") + config.UNIQUE_TICKERS[currency]
 
 
 def _create_yearly_stats(balance: pd.DataFrame) -> pd.DataFrame:

@@ -104,6 +104,64 @@ body {
   color: #fde68a;
 }
 
+.finrep-cockpit-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 12px;
+}
+
+.finrep-cockpit-card {
+  min-height: 128px;
+  padding: 14px;
+  border: 1px solid #dee2e6;
+  border-left: 4px solid #6897bb;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.finrep-theme-dark .finrep-cockpit-card {
+  border-color: #555555;
+  border-left-color: #6897bb;
+  background: #3c3f41;
+}
+
+.finrep-cockpit-card.finrep-cockpit-ok {
+  border-left-color: #4f714b;
+}
+
+.finrep-cockpit-card.finrep-cockpit-warn {
+  border-left-color: #a15c38;
+}
+
+.finrep-cockpit-card.finrep-cockpit-neutral {
+  border-left-color: #6897bb;
+}
+
+.finrep-cockpit-label,
+.finrep-cockpit-status,
+.finrep-cockpit-detail {
+  font-size: 0.78rem;
+  line-height: 1.25;
+  opacity: 0.72;
+}
+
+.finrep-cockpit-value {
+  margin: 8px 0 6px;
+  font-size: 1.42rem;
+  font-weight: 750;
+  line-height: 1.1;
+  overflow-wrap: anywhere;
+}
+
+.finrep-cockpit-status {
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.finrep-cockpit-detail {
+  margin-top: 6px;
+}
+
 
 .finrep-theme-dark .btn-outline-secondary,
 .finrep-theme-dark .btn-outline-primary {
@@ -564,6 +622,14 @@ body {
   .dashboard-toolbar .btn {
     flex: 1 1 108px;
     min-width: 0;
+  }
+
+  .finrep-cockpit-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .finrep-cockpit-card {
+    min-height: 116px;
   }
 
   .mobile-bottom-tabs {

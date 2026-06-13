@@ -718,6 +718,8 @@ def register_callbacks(app: Dash) -> None:
             datasets = build_main_dashboard_data(
                 currency,
                 fx_network_enabled=fx_network_enabled,
+                year=year,
+                month=month,
             )
         except Exception as exc:
             return _error_state("Не удалось загрузить данные основного отчета.", exc)
@@ -725,6 +727,7 @@ def register_callbacks(app: Dash) -> None:
         _apply_theme_to_datasets(datasets, theme)
         return html.Div(
             [
+                _cockpit_section(datasets["cockpit_metrics"], theme=theme),
                 _grid_section(datasets["yearly_stats"], height="300px", theme=theme),
                 _grid_section(datasets["fx_rates"], height="260px", theme=theme),
                 _graph_section(datasets["income_expense"], theme=theme),
@@ -1198,6 +1201,43 @@ def _placeholder_report(title: str):
     )
 
 
+def _cockpit_section(dataset: DashboardDataset, theme: str | None = None):
+    data = dataset.display_dataframe if dataset.display_dataframe is not None else dataset.dataframe
+    if data.empty:
+        return _empty_section(dataset)
+
+    return html.Section(
+        [
+            _section_header(dataset),
+            html.Div(
+                [
+                    html.Div(
+                        [
+                            html.Div(str(row.get("Показатель", "")), className="finrep-cockpit-label"),
+                            html.Div(str(row.get("Значение", "")), className="finrep-cockpit-value"),
+                            html.Div(str(row.get("Статус", "")), className="finrep-cockpit-status"),
+                            html.Div(str(row.get("Детали", "")), className="finrep-cockpit-detail"),
+                        ],
+                        className=f"finrep-cockpit-card finrep-cockpit-{_cockpit_status_class(row.get('Статус', ''))}",
+                    )
+                    for _, row in data.iterrows()
+                ],
+                className="finrep-cockpit-grid",
+            ),
+        ],
+        style=_section_style(theme),
+    )
+
+
+def _cockpit_status_class(status) -> str:
+    status = str(status).strip().lower()
+    if status in {"assets", "cash-flow", "positive", "strong", "ok"}:
+        return "ok"
+    if status in {"negative", "watch", "thin", "review"}:
+        return "warn"
+    return "neutral"
+
+
 def _year_report_layout(datasets: dict[str, DashboardDataset], theme: str | None):
     return html.Div(
         [
@@ -1351,11 +1391,11 @@ def _debt_report_layout(currency: str, theme: str | None):
     return _debt_input_layout(currency, theme, include_create=True)
 
 
-def _input_report_layout(currency: str, year: str, month: str, theme: str | None):
+def _input_report_layout(currency: str, year: str, month: str, theme: str | None, load_asset_records: bool = True):
     return dbc.Tabs(
         [
             dbc.Tab(_transaction_input_layout(currency, year, month, theme), label="Транзакции", tab_id="input-transactions"),
-            dbc.Tab(_assets_input_layout(year, month, theme), label="Активы", tab_id="input-assets"),
+            dbc.Tab(_assets_input_layout(year, month, theme, load_records=load_asset_records), label="Активы", tab_id="input-assets"),
         ],
         id="input-inner-tabs",
         active_tab="input-transactions",
@@ -1368,7 +1408,7 @@ def _callback_validation_layout(layout):
         [
             layout,
             _debt_report_layout(DEFAULT_CURRENCY, "dark"),
-            _input_report_layout(DEFAULT_CURRENCY, DEFAULT_YEAR, DEFAULT_MONTH, "dark"),
+            _input_report_layout(DEFAULT_CURRENCY, DEFAULT_YEAR, DEFAULT_MONTH, "dark", load_asset_records=False),
             dbc.Button("Обновить crypto", id="crypto-refresh-button"),
             dag.AgGrid(id="planning_goals-grid"),
         ]
@@ -1641,7 +1681,8 @@ def _debt_input_layout(currency: str, theme: str | None, include_create: bool = 
     )
 
 
-def _assets_input_layout(year: str, month: str, theme: str | None):
+def _assets_input_layout(year: str, month: str, theme: str | None, load_records: bool = True):
+    records = _asset_input_records(year, month) if load_records else []
     return html.Div(
         [
             html.Section(
@@ -1671,7 +1712,7 @@ def _assets_input_layout(year: str, month: str, theme: str | None):
                     _ag_grid_scroll(
                         dag.AgGrid(
                             id="assets-input-grid",
-                            rowData=_asset_input_records(year, month),
+                            rowData=records,
                             columnDefs=_asset_input_column_defs(),
                             defaultColDef=_ag_grid_default_col_def(editable=True),
                             dashGridOptions={"pagination": False, "suppressFieldDotNotation": True, "rowSelection": "multiple", "stopEditingWhenCellsLoseFocus": True, "undoRedoCellEditing": True},
@@ -2620,6 +2661,8 @@ def _datasets_for_tab(
     return build_main_dashboard_data(
         currency,
         fx_network_enabled=DEFAULT_FX_NETWORK_ENABLED,
+        year=year,
+        month=month,
     )
 
 
