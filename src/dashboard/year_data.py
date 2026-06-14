@@ -35,7 +35,13 @@ def build_year_dashboard_data(
         for column in ["Капитал", "Капитал по активам", "Расхождение с активами"]
         if column in year_balance.columns
     ]
-    capital_by_month = year_balance[capital_columns].reset_index()
+    capital_by_month = (
+        year_balance[capital_columns]
+        .reset_index()
+        .sort_values("Дата", ascending=False)
+        .reset_index(drop=True)
+    )
+    capital_chart = capital_by_month.sort_values("Дата").reset_index(drop=True)
     fx_revaluation = _fx_revaluation_data(year_balance)
     fx_info = get_exchange_rates_info(currency)
 
@@ -107,8 +113,8 @@ def build_year_dashboard_data(
         "year_capital_chart": DashboardDataset(
             id="year_capital_chart",
             title="Динамика капитала",
-            dataframe=capital_by_month,
-            figure=_capital_figure(capital_by_month),
+            dataframe=capital_chart,
+            figure=_capital_figure(capital_chart),
         ),
         "year_fx_revaluation": DashboardDataset(
             id="year_fx_revaluation",

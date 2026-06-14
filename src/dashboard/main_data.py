@@ -13,6 +13,16 @@ from src.model.create_tables import get_balance_by_month
 CHART_FONT_SIZE = 13
 CHART_TITLE_SIZE = 18
 CHART_LABEL_SIZE = 9
+ASSET_ALLOCATION_COLORS = [
+    "#6F8FB8",
+    "#7FAF91",
+    "#9B7AAE",
+    "#B08A6C",
+    "#6EA6A6",
+    "#A86F7A",
+    "#8D985F",
+    "#C4A35A",
+]
 
 
 @dataclass(frozen=True)
@@ -42,6 +52,7 @@ def build_main_dashboard_data(
     yearly_stats = _create_yearly_stats(balance)
     income_expense = balance[["Доход", "Расход"]].reset_index()
     delta = balance[["Дельта"]].reset_index()
+    savings_rate = _savings_rate_data(balance)
     capital_columns = [
         column
         for column in ["Капитал", "Капитал по активам", "Расхождение с активами"]
@@ -88,6 +99,12 @@ def build_main_dashboard_data(
             title="Delta",
             dataframe=delta,
             figure=_delta_figure(delta, currency),
+        ),
+        "savings_rate": DashboardDataset(
+            id="savings_rate",
+            title="Норма сбережений",
+            dataframe=savings_rate,
+            figure=_savings_rate_figure(savings_rate),
         ),
         "capital": DashboardDataset(
             id="capital",
@@ -139,7 +156,7 @@ def _cockpit_metrics(
     delta = _row_number(selected_row, "Дельта")
     avg_expense = float(pd.to_numeric(balance["Расход"].tail(12), errors="coerce").mean())
     runway_months = current_capital / avg_expense if avg_expense > 0 else pd.NA
-    savings_rate = delta / income * 100 if income > 0 else pd.NA
+    savings_rate = _bounded_percent(delta / income * 100) if income > 0 else pd.NA
     asset_gap = _row_number(latest_row, "Расхождение с активами")
     fx_impact = _row_number(selected_row, "Валютная переоценка")
     period_label = str(selected_period)
@@ -198,6 +215,12 @@ def _savings_rate_status(value) -> str:
     if value >= 0:
         return "ok"
     return "negative"
+
+
+def _bounded_percent(value):
+    if pd.isna(value):
+        return pd.NA
+    return min(max(float(value), 0.0), 100.0)
 
 
 def _runway_status(value) -> str:
@@ -310,6 +333,32 @@ def _delta_figure(data: pd.DataFrame, currency: str) -> go.Figure:
     )
     _apply_dashboard_chart_layout(fig, "Дельты", range_slider=True)
     fig.update_layout(annotations=_important_delta_annotations(data, currency, max_labels=6))
+    return fig
+
+
+def _savings_rate_data(balance: pd.DataFrame) -> pd.DataFrame:
+    data = balance[["Доход", "Дельта"]].reset_index()
+    income = pd.to_numeric(data["Доход"], errors="coerce")
+    delta = pd.to_numeric(data["Дельта"], errors="coerce")
+    data["Норма сбережений"] = (delta / income * 100).where(income > 0).clip(lower=0, upper=100)
+    return data[["Дата", "Норма сбережений"]]
+
+
+def _savings_rate_figure(data: pd.DataFrame) -> go.Figure:
+    fig = go.Figure(
+        go.Scatter(
+            x=_month_start_dates(data),
+            y=data["Норма сбережений"],
+            mode="lines+markers",
+            name="Норма сбережений",
+            hovertemplate="%{x|%Y-%m}<br>%{y:.1f}%<extra></extra>",
+            line=dict(color="seagreen", width=2),
+        )
+    )
+    fig.add_hline(y=0, line_dash="dot", line_color="rgba(120,120,120,0.7)")
+    fig.add_hline(y=30, line_dash="dash", line_color="rgba(46,139,87,0.55)")
+    _apply_dashboard_chart_layout(fig, "Динамика нормы сбережений", range_slider=True)
+    fig.update_yaxes(ticksuffix="%", range=[0, 100])
     return fig
 
 
@@ -454,12 +503,14 @@ def _asset_currency_allocation_figure(data: pd.DataFrame) -> go.Figure:
         return fig
 
     x_dates = pd.to_datetime(data["Дата"])
-    for asset_currency in [column for column in data.columns if column != "Дата"]:
+    for index, asset_currency in enumerate([column for column in data.columns if column != "Дата"]):
         fig.add_trace(
             go.Bar(
                 x=x_dates,
                 y=data[asset_currency],
                 name=asset_currency,
+                marker_color=ASSET_ALLOCATION_COLORS[index % len(ASSET_ALLOCATION_COLORS)],
+                marker_line=dict(color="rgba(220, 220, 220, 0.35)", width=0.7),
                 hovertemplate=f"{asset_currency}<br>%{{x|%Y-%m}}<br>%{{y:,.2f}}%<extra></extra>",
             )
         )

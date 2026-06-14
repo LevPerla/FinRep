@@ -60,7 +60,7 @@ def build_month_dashboard_data(
             id="month_summary",
             title="Суммарные показатели",
             dataframe=summary,
-            display_dataframe=_format_money_columns(summary, currency, ["Категория"]),
+            display_dataframe=_format_summary_metrics(summary, currency),
         ),
         "month_receivables": DashboardDataset(
             id="month_receivables",
@@ -113,7 +113,34 @@ def _prepare_summary(data: pd.DataFrame) -> pd.DataFrame:
         "Дельта",
     ]
     display = data.drop(columns=["Дата"], errors="ignore").copy(deep=True)
-    return display[[column for column in order if column in display.columns]]
+    values = display[[column for column in order if column in display.columns]].iloc[0]
+    rows = [
+        (column, values[column], _summary_metric_status(column, values[column]), "За выбранный месяц", "money")
+        for column in values.index
+    ]
+    return pd.DataFrame(rows, columns=["Показатель", "Значение", "Статус", "Детали", "Тип"])
+
+
+def _summary_metric_status(name: str, value) -> str:
+    number = pd.to_numeric(value, errors="coerce")
+    if pd.isna(number):
+        return "empty"
+    if name in {"Расход", "Кредиторская задолженность", "Расхождение с активами"}:
+        return "watch" if number > 0 else "ok"
+    if name in {"Дельта", "Баланс", "Валютная переоценка"}:
+        return "positive" if number >= 0 else "negative"
+    return "ok" if number >= 0 else "negative"
+
+
+def _format_summary_metrics(data: pd.DataFrame, currency: str) -> pd.DataFrame:
+    display = data.copy(deep=True)
+    for index, row in data.iterrows():
+        display.loc[index, "Значение"] = utils.process_num_cols(
+            pd.DataFrame([{"Значение": row["Значение"]}]),
+            not_num_cols=[],
+            currency=currency,
+        ).iloc[0]["Значение"]
+    return display.drop(columns=["Тип"])
 
 
 def _prepare_assets(data: pd.DataFrame) -> pd.DataFrame:

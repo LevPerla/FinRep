@@ -54,10 +54,10 @@ MAIN_DASHBOARD_TABS: list[DashboardTab] = [
     ("main", "Основной отчет", "Главная"),
     ("year", "Годовой отчет", "Год"),
     ("month", "Месячный отчет", "Месяц"),
-    ("debts", "Долги", "Долги"),
     ("planning", "План и прогноз", "План"),
-    ("investments", "Инвестиции", "Инвест"),
     ("input", "Ввод данных", "Ввод"),
+    ("debts", "Долги", "Долги"),
+    ("investments", "Инвестиции", "Инвест"),
 ]
 MAIN_DASHBOARD_TAB_IDS = {tab_id for tab_id, _desktop_label, _mobile_label in MAIN_DASHBOARD_TABS}
 MOBILE_TAB_ICONS = {
@@ -732,6 +732,7 @@ def register_callbacks(app: Dash) -> None:
                 _grid_section(datasets["fx_rates"], height="260px", theme=theme),
                 _graph_section(datasets["income_expense"], theme=theme),
                 _graph_section(datasets["delta"], theme=theme),
+                _graph_section(datasets["savings_rate"], theme=theme),
                 _graph_section(datasets["capital"], height="640px", theme=theme),
                 _graph_section(datasets["fx_revaluation"], height="420px", theme=theme),
                 _graph_section(datasets["asset_currency_allocation"], height="520px", theme=theme),
@@ -1319,7 +1320,6 @@ def _runway_section(dataset: DashboardDataset, theme: str | None = None):
                     card("Runway в годах", str(row.get("Runway, лет", "не рассчитано"))),
                     card("Капитал", str(row.get("Капитал", "не задано"))),
                     card("Средний расход/мес", str(row.get("Средний расход", "не задано"))),
-                    html.Div(str(row.get("Статус", "")), className="small", style={"opacity": 0.7}),
                 ],
                 className="d-grid gap-3",
             ),
@@ -1331,14 +1331,65 @@ def _runway_section(dataset: DashboardDataset, theme: str | None = None):
 def _month_report_layout(datasets: dict[str, DashboardDataset], theme: str | None):
     return html.Div(
         [
+            _cockpit_section(datasets["month_summary"], theme=theme),
             _grid_section(datasets["month_transactions"], height="1450px", theme=theme),
             _grid_section(datasets["month_fx_rates"], height="260px", theme=theme),
-            _grid_section(datasets["month_summary"], height="180px", theme=theme),
             _graph_section(datasets["month_cost_distribution_chart"], theme=theme),
             _grid_section(datasets["month_cost_distribution"], height="520px", theme=theme),
             _grid_section(datasets["month_assets"], height="1120px", theme=theme),
         ],
         className="d-grid gap-4",
+    )
+
+
+def _fx_dense_table_section(dataset: DashboardDataset, theme: str | None):
+    rows = _fx_display_rows(dataset)
+    if not rows:
+        return _empty_section(dataset)
+
+    return html.Section(
+        [
+            _section_header(dataset),
+            _fx_dense_table(rows),
+        ],
+        style=_section_style(theme),
+    )
+
+
+def _fx_display_rows(dataset: DashboardDataset) -> list[dict]:
+    data = dataset.display_dataframe if dataset.display_dataframe is not None else dataset.dataframe
+    return data.fillna("").to_dict("records")
+
+
+def _fx_change_class(value) -> str:
+    text = str(value).strip()
+    if text.startswith("-"):
+        return "is-negative"
+    if text.startswith("+") and text not in {"+0%", "+0.0%", "+0.00%"}:
+        return "is-positive"
+    return "is-flat"
+
+
+def _fx_dense_table(rows: list[dict]):
+    return html.Table(
+        [
+            html.Thead(html.Tr([html.Th(label) for label in ["Валюта", "Курс", "Обратный", "Изм.", "Источник"]])),
+            html.Tbody(
+                [
+                    html.Tr(
+                        [
+                            html.Td(row["Валюта"], className="fx-code"),
+                            html.Td(row["Курс"], className="fx-number"),
+                            html.Td(row["Обратный курс"], className="fx-number"),
+                            html.Td(row["Изменение (%)"], className=f"fx-change {_fx_change_class(row['Изменение (%)'])}"),
+                            html.Td(row["Источник"], className="fx-source"),
+                        ]
+                    )
+                    for row in rows
+                ]
+            ),
+        ],
+        className="finrep-fx-table fx-table-dense",
     )
 
 
@@ -1432,6 +1483,10 @@ def _ag_grid_default_col_def(**overrides) -> dict:
 
 def _ag_grid_scroll(grid):
     return html.Div(grid, className="finrep-grid-scroll")
+
+
+def _ag_grid_limited_scroll(grid, max_height: str):
+    return html.Div(grid, className="finrep-grid-scroll is-limited", style={"maxHeight": max_height})
 
 
 def _transaction_input_layout(currency: str, year: str, month: str, theme: str | None):
@@ -1540,7 +1595,13 @@ def _transaction_input_layout(currency: str, year: str, month: str, theme: str |
                             rowData=_transaction_draft_records(month_value, None, None, None),
                             columnDefs=_transaction_draft_column_defs(category_options, list(config.UNIQUE_TICKERS)),
                             defaultColDef=_ag_grid_default_col_def(editable=True),
-                            dashGridOptions={"pagination": False, "suppressFieldDotNotation": True, "rowSelection": "multiple", "stopEditingWhenCellsLoseFocus": True},
+                            dashGridOptions={
+                                "pagination": False,
+                                "suppressFieldDotNotation": True,
+                                "rowSelection": "multiple",
+                                "rowMultiSelectWithClick": True,
+                                "stopEditingWhenCellsLoseFocus": True,
+                            },
                             className=_ag_grid_class_name(theme),
                             style=_ag_grid_style("640px"),
                         )
@@ -1983,7 +2044,7 @@ def _kaspi_import_column_defs() -> list[dict]:
 def _transaction_draft_column_defs(category_options: list[dict], currencies: list[str]) -> list[dict]:
     categories = [option["value"] for option in category_options]
     return [
-        {"field": "date", "headerName": "Дата", "width": 130},
+        {"field": "date", "headerName": "Дата", "width": 130, "checkboxSelection": True, "headerCheckboxSelection": True},
         {"field": "category", "headerName": "Категория", "cellEditor": "agSelectCellEditor", "cellEditorParams": {"values": categories}, "width": 180},
         {"field": "currency", "headerName": "Валюта", "cellEditor": "agSelectCellEditor", "cellEditorParams": {"values": currencies}, "width": 110},
         {"field": "amount", "headerName": "Сумма", "width": 130},
@@ -2029,10 +2090,34 @@ def _graph_section(dataset: DashboardDataset, height: str = "520px", theme: str 
     )
 
 
+REPORT_SCROLL_TABLE_IDS = {
+    "yearly_stats",
+    "year_quarter_stats",
+    "year_cost_distribution",
+    "year_income_by_month",
+    "year_cost_by_month",
+    "year_income_cost_stats",
+    "year_capital_by_month",
+    "month_transactions",
+    "month_cost_distribution",
+    "month_assets",
+    "planning_fx_scenarios",
+}
+
+
 def _grid_section(dataset: DashboardDataset, height: str = "360px", theme: str | None = None):
+    if dataset.id in {"fx_rates", "year_fx_rates", "month_fx_rates"}:
+        return _fx_dense_table_section(dataset, theme)
+
     data = dataset.display_dataframe if dataset.display_dataframe is not None else dataset.dataframe
     if data.empty:
         return _empty_section(dataset)
+
+    if dataset.id == "planning_goals":
+        return _limited_ag_grid_section(dataset, data, height, theme)
+
+    if dataset.id in REPORT_SCROLL_TABLE_IDS:
+        return _report_table_section(dataset, data, height, theme)
 
     return html.Section(
         [
@@ -2055,6 +2140,183 @@ def _grid_section(dataset: DashboardDataset, height: str = "360px", theme: str |
         ],
         style=_section_style(theme),
     )
+
+
+def _limited_ag_grid_section(dataset: DashboardDataset, data: pd.DataFrame, max_height: str, theme: str | None = None):
+    return html.Section(
+        [
+            _section_header(dataset),
+            _ag_grid_limited_scroll(
+                dag.AgGrid(
+                    id=f"{dataset.id}-grid",
+                    rowData=_grid_row_data(dataset, data),
+                    columnDefs=_grid_column_defs(dataset, data, theme),
+                    defaultColDef=_ag_grid_default_col_def(),
+                    columnSize="sizeToFit",
+                    dashGridOptions={
+                        "domLayout": "autoHeight",
+                        "pagination": False,
+                        "suppressFieldDotNotation": True,
+                    },
+                    className=_ag_grid_class_name(theme),
+                    style={"width": "100%"},
+                ),
+                max_height,
+            ),
+        ],
+        style=_section_style(theme),
+    )
+
+
+def _report_table_section(dataset: DashboardDataset, data: pd.DataFrame, max_height: str, theme: str | None = None):
+    rows = _grid_row_data(dataset, data)
+    columns = list(data.columns)
+    style_maps = _report_table_style_maps(dataset, data)
+
+    return html.Section(
+        [
+            _section_header(dataset),
+            html.Div(
+                html.Table(
+                    [
+                        html.Thead(html.Tr([html.Th(column) for column in columns])),
+                        html.Tbody(
+                            [
+                                html.Tr(
+                                    [
+                                        html.Td(
+                                            row.get(column, ""),
+                                            className=_report_cell_class(column, row),
+                                            style=_report_cell_style(column, row, style_maps, theme),
+                                        )
+                                        for column in columns
+                                    ],
+                                    className=_report_row_class(row),
+                                )
+                                for row in rows
+                            ]
+                        ),
+                    ],
+                    className="finrep-report-table",
+                ),
+                className="finrep-report-table-cap",
+                style={"maxHeight": max_height},
+            ),
+        ],
+        style=_section_style(theme),
+    )
+
+
+def _report_table_style_maps(dataset: DashboardDataset, data: pd.DataFrame) -> dict[str, dict]:
+    if dataset.id == "yearly_stats":
+        return {
+            "levels": {
+                "Доход": ("__income_level", "green"),
+                "Расход": ("__expense_level", "red"),
+            },
+            "signs": {
+                "Сальдо": "__balance_sign",
+                "Процент дохода": "__income_pct_sign",
+            },
+        }
+    if dataset.id == "year_quarter_stats":
+        return {
+            "levels": {
+                "Общий доход": ("__quarter_income_level", "green"),
+                "Общий расход": ("__quarter_expense_level", "red"),
+            },
+            "signs": {"Сальдо": "__quarter_balance_sign"},
+        }
+    if dataset.id == "year_income_cost_stats":
+        return {
+            "levels": {
+                "Доход": ("__stats_income_level", "green"),
+                "Расход": ("__stats_expense_level", "red"),
+            },
+            "signs": {},
+        }
+    if dataset.id in {"year_cost_distribution", "month_cost_distribution"}:
+        return {
+            "levels": {
+                "Суммарно": ("__cost_sum_level", "red"),
+                "Среднее": ("__cost_avg_level", "red"),
+                "Процент": ("__cost_pct_level", "red"),
+            },
+            "signs": {},
+        }
+    if dataset.id == "month_transactions":
+        expense_columns = [column for column in data.columns if column not in ["Дата", *config.NOT_COST_COLS]]
+        levels = {
+            "Доход": ("__month_income_level", "green"),
+            "Сбережения": ("__month_savings_level", "green"),
+        }
+        levels.update({column: (f"__month_expense_{index}_level", "red") for index, column in enumerate(expense_columns)})
+        return {"levels": levels, "signs": {}}
+    if dataset.id == "month_assets":
+        return {"levels": {}, "signs": {}, "assets": {}}
+    if dataset.id == "year_income_by_month":
+        return {"levels": {"Доход": ("__monthly_income_level", "green")}, "signs": {}}
+    if dataset.id == "year_cost_by_month":
+        return {"levels": {"Расход": ("__monthly_cost_level", "red")}, "signs": {}}
+    if dataset.id == "year_capital_by_month":
+        return {
+            "levels": {
+                "Капитал": ("__monthly_capital_level", "green"),
+                "Капитал по активам": ("__monthly_asset_capital_level", "blue"),
+            },
+            "signs": {
+                "Валютная переоценка": "__monthly_fx_revaluation_sign",
+                "Расхождение с активами": "__monthly_asset_gap_sign",
+            },
+        }
+    if dataset.id == "planning_fx_scenarios":
+        return {
+            "levels": {"Капитал": ("__planning_fx_capital_level", "blue")},
+            "signs": {"Изменение капитала": "__planning_fx_delta_sign"},
+        }
+    return {"levels": {}, "signs": {}}
+
+
+def _report_row_class(row: dict) -> str:
+    classes = []
+    if row.get("__is_total") or row.get("__is_asset_total"):
+        classes.append("is-total")
+    if row.get("__is_asset_currency_total"):
+        classes.append("is-currency-total")
+    return " ".join(classes)
+
+
+def _report_cell_class(column: str, row: dict) -> str:
+    classes = ["finrep-report-cell"]
+    if column in {"Год", "Квартал", "Дата", "Показатель", "Счет"}:
+        classes.append("is-label")
+    if row.get("__is_total") or row.get("__is_asset_total"):
+        classes.append("is-total")
+    if row.get("__is_asset_currency_total"):
+        classes.append("is-currency-total")
+    return " ".join(classes)
+
+
+def _report_cell_style(column: str, row: dict, style_maps: dict, theme: str | None = None) -> dict:
+    if row.get("__is_total") or row.get("__is_asset_total"):
+        return _total_style(theme)
+
+    if row.get("__is_asset_currency_total") and column != "Счет":
+        return _level_cell_style(row.get(f"__asset_blue_{column}_level", 0), "blue", theme)
+
+    if "assets" in style_maps and column != "Счет":
+        return _level_cell_style(row.get(f"__asset_{column}_level", 0), "green", theme)
+
+    level_info = style_maps.get("levels", {}).get(column)
+    if level_info:
+        field, palette = level_info
+        return _level_cell_style(row.get(field, 0), palette, theme)
+
+    sign_field = style_maps.get("signs", {}).get(column)
+    if sign_field:
+        return _sign_cell_style(row.get(sign_field), theme)
+
+    return {}
 
 
 def _grid_row_data(dataset: DashboardDataset, data: pd.DataFrame) -> list[dict]:
@@ -2507,6 +2769,20 @@ def _percentage_sign(value) -> str:
     return "negative"
 
 
+def _sign_cell_style(sign: str, theme: str | None = None) -> dict:
+    if theme == "dark":
+        positive_style = {"backgroundColor": "#31452f", "color": "#b6d7a8"}
+        negative_style = {"backgroundColor": "#4a2f2f", "color": "#d99694"}
+    else:
+        positive_style = {"backgroundColor": "#dff3e3", "color": "#1f5130"}
+        negative_style = {"backgroundColor": "#f8dddd", "color": "#6b2626"}
+    if sign == "positive":
+        return {**positive_style, "fontWeight": "600"}
+    if sign == "negative":
+        return {**negative_style, "fontWeight": "600"}
+    return {}
+
+
 def _sign_style(field: str, theme: str | None = None) -> dict:
     if theme == "dark":
         positive_style = {"backgroundColor": "#31452f", "color": "#b6d7a8"}
@@ -2558,7 +2834,7 @@ def _merge_total_style(style: dict, theme: str | None = None) -> dict:
     }
 
 
-def _level_style(field: str, palette: str, theme: str | None = None) -> dict:
+def _level_palette(palette: str, theme: str | None = None) -> tuple[dict[int, str], str]:
     if theme == "dark" and palette == "green":
         colors = {1: "#2f3d2f", 2: "#3d5a3a", 3: "#4f714b"}
         text_color = "#b6d7a8"
@@ -2577,6 +2853,21 @@ def _level_style(field: str, palette: str, theme: str | None = None) -> dict:
     else:
         colors = {1: "#fff0ed", 2: "#f9d8d2", 3: "#f1c0b8"}
         text_color = "#63312c"
+
+    return colors, text_color
+
+
+def _level_cell_style(level, palette: str, theme: str | None = None) -> dict:
+    numeric_level = pd.to_numeric(level, errors="coerce")
+    if pd.isna(numeric_level) or int(numeric_level) <= 0:
+        return {}
+    colors, text_color = _level_palette(palette, theme)
+    level_key = min(max(int(numeric_level), 1), 3)
+    return {"backgroundColor": colors[level_key], "color": text_color, "fontWeight": "600"}
+
+
+def _level_style(field: str, palette: str, theme: str | None = None) -> dict:
+    colors, text_color = _level_palette(palette, theme)
 
     return {
         "styleConditions": [
