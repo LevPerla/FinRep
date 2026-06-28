@@ -1350,7 +1350,7 @@ def _fx_dense_table_section(dataset: DashboardDataset, theme: str | None):
     return html.Section(
         [
             _section_header(dataset),
-            _fx_dense_table(rows),
+            html.Div(_fx_dense_table(rows), className="finrep-table-scroll"),
         ],
         style=_section_style(theme),
     )
@@ -2076,13 +2076,16 @@ def _graph_section(dataset: DashboardDataset, height: str = "520px", theme: str 
     return html.Section(
         [
             _section_header(dataset),
-            dcc.Graph(
-                id=f"{dataset.id}-graph",
-                figure=dataset.figure,
-                responsive=True,
-                className="finrep-graph",
-                style={"height": height, "width": "100%"},
-                config=graph_config,
+            html.Div(
+                dcc.Graph(
+                    id=f"{dataset.id}-graph",
+                    figure=dataset.figure,
+                    responsive=True,
+                    className="finrep-graph",
+                    style={"height": height, "width": "100%"},
+                    config=graph_config,
+                ),
+                className="finrep-chart-scroll",
             ),
         ],
         className="finrep-chart-section",
