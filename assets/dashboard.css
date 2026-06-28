@@ -1290,9 +1290,16 @@ body {
 .finrep-table-scroll {
   width: 100%;
   max-width: 100%;
-  overflow-x: auto;
   overflow-y: hidden;
   -webkit-overflow-scrolling: touch;
+}
+
+.finrep-chart-scroll {
+  overflow-x: hidden;
+}
+
+.finrep-table-scroll {
+  overflow-x: auto;
 }
 
 .finrep-table-scroll .finrep-fx-table {
@@ -1375,11 +1382,13 @@ body {
   }
 
   .finrep-chart-scroll {
-    touch-action: pan-x pan-y;
+    overflow-x: hidden;
+    touch-action: pan-y pinch-zoom;
   }
 
   .finrep-chart-scroll .finrep-graph {
-    min-width: 720px !important;
+    width: 100% !important;
+    min-width: 0 !important;
     height: clamp(360px, 68vh, 520px) !important;
     overflow: visible;
   }
@@ -1399,7 +1408,19 @@ body {
   }
 }
 
+@media (max-width: 480px) {
+  .finrep-chart-scroll .finrep-graph {
+    width: 720px !important;
+    min-width: 720px !important;
+    zoom: 0.558;
+  }
+}
+
 @media (max-width: 420px) {
+  .finrep-chart-scroll .finrep-graph {
+    zoom: 0.507;
+  }
+
   .dashboard-toolbar .btn {
     font-size: 0.9rem;
   }
@@ -1415,5 +1436,17 @@ body {
   #export-png,
   #export-pdf {
     grid-column: span 3;
+  }
+}
+
+@media (max-width: 380px) {
+  .finrep-chart-scroll .finrep-graph {
+    zoom: 0.482;
+  }
+}
+
+@media (max-width: 360px) {
+  .finrep-chart-scroll .finrep-graph {
+    zoom: 0.461;
   }
 }
