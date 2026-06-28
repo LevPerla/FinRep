@@ -1285,3 +1285,135 @@ body {
     display: none !important;
   }
 }
+
+.finrep-chart-scroll,
+.finrep-table-scroll {
+  width: 100%;
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  -webkit-overflow-scrolling: touch;
+}
+
+.finrep-table-scroll .finrep-fx-table {
+  min-width: 640px;
+}
+
+#dashboard-content {
+  max-width: 100%;
+  min-width: 0;
+}
+
+@media (max-width: 768px) {
+  html,
+  body {
+    overflow-x: hidden;
+  }
+
+  .finrep-shell {
+    overflow-x: hidden;
+  }
+
+  .finrep-shell > .row {
+    margin-right: 0;
+    margin-left: 0;
+  }
+
+  .dashboard-toolbar {
+    display: grid !important;
+    grid-template-columns: repeat(6, minmax(0, 1fr));
+    width: 100%;
+    gap: 8px !important;
+  }
+
+  .dashboard-toolbar > .dash-dropdown-wrapper {
+    width: 100% !important;
+    min-width: 0;
+    grid-column: span 2;
+  }
+
+  .dashboard-toolbar > .dash-dropdown-wrapper .dashboard-filter {
+    width: 100% !important;
+  }
+
+  .dashboard-toolbar .btn {
+    width: 100%;
+    min-width: 0;
+    height: 42px !important;
+    padding-right: 8px;
+    padding-left: 8px;
+    white-space: nowrap;
+  }
+
+  #refresh-reports,
+  #refresh-fx-rates {
+    grid-column: span 3;
+  }
+
+  #theme-toggle,
+  #export-png,
+  #export-pdf {
+    grid-column: span 2;
+  }
+
+  .finrep-chart-section {
+    overflow: visible;
+  }
+
+  #dashboard-content,
+  #dashboard-content > *,
+  #dashboard-content section,
+  #dashboard-content .row,
+  #dashboard-content [class*="col-"],
+  .finrep-chart-section,
+  .finrep-chart-scroll,
+  .finrep-table-scroll,
+  .finrep-report-table-cap,
+  .finrep-grid-scroll {
+    max-width: 100%;
+    min-width: 0;
+  }
+
+  .finrep-chart-scroll {
+    touch-action: pan-x pan-y;
+  }
+
+  .finrep-chart-scroll .finrep-graph {
+    min-width: 720px !important;
+    height: clamp(360px, 68vh, 520px) !important;
+    overflow: visible;
+  }
+
+  .finrep-report-table-cap,
+  .finrep-grid-scroll,
+  .finrep-table-scroll {
+    overflow-x: auto;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .finrep-report-table th,
+  .finrep-report-table td {
+    overflow-wrap: normal;
+    word-break: normal;
+  }
+}
+
+@media (max-width: 420px) {
+  .dashboard-toolbar .btn {
+    font-size: 0.9rem;
+  }
+
+  #refresh-fx-rates {
+    grid-column: span 4;
+  }
+
+  #theme-toggle {
+    grid-column: span 2;
+  }
+
+  #export-png,
+  #export-pdf {
+    grid-column: span 3;
+  }
+}
