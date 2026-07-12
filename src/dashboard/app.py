@@ -35,7 +35,7 @@ from src.data.staging import (
 )
 from src.dashboard.export import export_dashboard_page
 from src.dashboard.investment_data import build_investment_dashboard_data
-from src.dashboard.main_data import DashboardDataset, build_main_dashboard_data
+from src.dashboard.main_data import DashboardDataset, build_main_dashboard_data, clear_main_dashboard_cache
 from src.dashboard.month_data import build_month_dashboard_data
 from src.dashboard.planning_data import build_planning_dashboard_data, save_goal_targets
 from src.dashboard.year_data import build_year_dashboard_data
@@ -519,6 +519,7 @@ def register_callbacks(app: Dash) -> None:
             raise PreventUpdate
         clear_data_cache()
         clear_table_cache()
+        clear_main_dashboard_cache()
         return int(current_token or 0) + 1
 
     @app.callback(
@@ -545,6 +546,7 @@ def register_callbacks(app: Dash) -> None:
                 refresh_crypto_price_cache(enabled_assets)
             clear_data_cache()
             clear_table_cache()
+            clear_main_dashboard_cache()
             errors = balances.attrs.get("errors", [])
             statuses = balances.attrs.get("statuses", [])
             message = f"Crypto обновлено: {len(balances)} balance row(s), assets: {', '.join(enabled_assets) or 'нет включенных кошельков'}."
@@ -575,6 +577,7 @@ def register_callbacks(app: Dash) -> None:
         save_goal_targets(year, currency, row_data or [])
         clear_data_cache()
         clear_table_cache()
+        clear_main_dashboard_cache()
         return int(current_token or 0) + 1
 
     @app.callback(
@@ -655,6 +658,7 @@ def register_callbacks(app: Dash) -> None:
         fx_network_enabled = ctx.triggered_id == "refresh-fx-rates"
         if fx_network_enabled:
             clear_table_cache()
+            clear_main_dashboard_cache()
 
         if active_tab == "year":
             try:
@@ -1044,6 +1048,7 @@ def register_callbacks(app: Dash) -> None:
                 )
                 clear_data_cache()
                 clear_table_cache()
+                clear_main_dashboard_cache()
                 token += 1
                 message = f"Долг создан: {result['debt_id']}. Черновик транзакции добавлен."
                 color = "success"
@@ -1060,12 +1065,14 @@ def register_callbacks(app: Dash) -> None:
                 )
                 clear_data_cache()
                 clear_table_cache()
+                clear_main_dashboard_cache()
                 token += 1
                 message = f"Погашение создано: {result['payment_id']}. Черновик транзакции добавлен во вкладку Ввод данных."
                 color = "success"
             elif trigger == "debt-migrate-button":
                 result = migrate_legacy_debts()
                 clear_table_cache()
+                clear_main_dashboard_cache()
                 token += 1
                 if result.get("skipped"):
                     message = f"Миграция пропущена: {result['skipped']}."
@@ -1124,6 +1131,7 @@ def register_callbacks(app: Dash) -> None:
                 result = write_asset_snapshot(row_data or [], year, month)
                 clear_data_cache()
                 clear_table_cache()
+                clear_main_dashboard_cache()
                 message = (
                     f"Активы сохранены: {result['rows']} строк. "
                     f"Файл: {result['path']}. "
