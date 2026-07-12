@@ -21,7 +21,8 @@ from src.data.debts import (
     create_debt_payment_from_cash,
     migrate_legacy_debts,
 )
-from src.data.importers.kaspi_pdf import parse_kaspi_upload_contents, save_kaspi_import_to_staging
+from src.data.importers.bank_pdf import parse_bank_upload_contents
+from src.data.importers.kaspi_pdf import save_kaspi_import_to_staging
 from src.data.staging import (
     DRAFT_COLUMNS,
     DRAFT_STATUSES,
@@ -822,7 +823,7 @@ def register_callbacks(app: Dash) -> None:
         if not contents:
             raise PreventUpdate
         try:
-            data = parse_kaspi_upload_contents(contents)
+            data = parse_bank_upload_contents(contents)
             internal_count = int(data["skip_reason"].eq("internal_transfer").sum()) if "skip_reason" in data else 0
             message = (
                 f"{filename or 'PDF'}: найдено строк {len(data)}, "
@@ -1526,7 +1527,7 @@ def _transaction_input_layout(currency: str, year: str, month: str, theme: str |
                 [
                     html.Div(
                         [
-                            html.H2("Импорт Kaspi PDF", className="h5 mb-0"),
+                            html.H2("Импорт банковского PDF", className="h5 mb-0"),
                             dbc.Button("Сохранить импорт в staging", id="kaspi-save-button", color="primary", outline=True, size="sm"),
                         ],
                         className="d-flex justify-content-between align-items-center mb-3",
@@ -1535,7 +1536,7 @@ def _transaction_input_layout(currency: str, year: str, month: str, theme: str |
                         id="kaspi-upload",
                         children=html.Div(
                             [
-                                html.Div("Перетащи Kaspi PDF сюда", className="fw-semibold"),
+                                html.Div("Перетащи Kaspi или BCC PDF сюда", className="fw-semibold"),
                                 html.Div("или нажми для выбора файла", className="small opacity-75"),
                             ],
                             className="kaspi-upload-content",

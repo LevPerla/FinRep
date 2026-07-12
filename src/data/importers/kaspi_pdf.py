@@ -67,7 +67,7 @@ def _extract_rows_from_pdf(pdf_source) -> list[dict]:
     return rows
 
 
-def _import_frame_from_rows(rows: list[dict]) -> pd.DataFrame:
+def _import_frame_from_rows(rows: list[dict], source: str = KASPI_SOURCE) -> pd.DataFrame:
     data = pd.DataFrame(rows)
     if data.empty:
         return _empty_import_frame()
@@ -75,10 +75,10 @@ def _import_frame_from_rows(rows: list[dict]) -> pd.DataFrame:
     data["category"] = data.apply(lambda row: _categorize(row["details"], row["signed_amount"]), axis=1)
     data["amount"] = data["signed_amount"].abs()
     data["comment"] = data["details"].map(_clean_comment)
-    data["source"] = KASPI_SOURCE
+    data["source"] = source
     data["source_id"] = _source_ids(data)
     data["status"] = "draft"
-    data = _add_duplicate_flags(data)
+    data = _add_duplicate_flags(data, source)
     data = _sort_import_preview(data)
     return data[_import_columns()]
 
@@ -102,11 +102,14 @@ def save_kaspi_import_to_staging(import_rows: list[dict], path: str | Path | Non
             incoming[column] = ""
     incoming = incoming[_import_columns()].copy(deep=True)
     drafts = read_transaction_drafts(path)
-    existing_source_ids = set(drafts.loc[drafts["source"].eq(KASPI_SOURCE), "source_id"].astype(str))
+    existing_source_ids = set(zip(drafts["source"].astype(str), drafts["source_id"].astype(str)))
     source_keys = _existing_source_keys()
 
     duplicate_mask = _as_bool_series(incoming["duplicate_in_staging"]) | _as_bool_series(incoming["duplicate_in_source"])
-    duplicate_mask = duplicate_mask | incoming["source_id"].astype(str).isin(existing_source_ids)
+    duplicate_mask = duplicate_mask | pd.Series(
+        list(zip(incoming["source"].astype(str), incoming["source_id"].astype(str))),
+        index=incoming.index,
+    ).isin(existing_source_ids)
     duplicate_mask = duplicate_mask | incoming.apply(lambda row: _source_key(row) in source_keys, axis=1)
     duplicate_mask = duplicate_mask | incoming.duplicated(subset=["source", "source_id"], keep="first")
     if "skip_reason" in incoming.columns:
@@ -188,10 +191,10 @@ def _source_base_key(row: pd.Series) -> str:
     return f"{row['date']}|{row['amount']}|{row['currency']}|{_normalize_text(row['details'])}"
 
 
-def _add_duplicate_flags(data: pd.DataFrame) -> pd.DataFrame:
+def _add_duplicate_flags(data: pd.DataFrame, source: str = KASPI_SOURCE) -> pd.DataFrame:
     result = data.copy(deep=True)
     existing_drafts = read_transaction_drafts()
-    existing_source_ids = set(existing_drafts.loc[existing_drafts["source"].eq(KASPI_SOURCE), "source_id"])
+    existing_source_ids = set(existing_drafts.loc[existing_drafts["source"].eq(source), "source_id"])
     source_keys = _existing_source_keys()
     result["duplicate_in_staging"] = result["source_id"].isin(existing_source_ids)
     result["duplicate_in_source"] = result.apply(lambda row: _source_key(row) in source_keys, axis=1)
