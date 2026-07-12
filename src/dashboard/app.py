@@ -21,7 +21,8 @@ from src.data.debts import (
     create_debt_payment_from_cash,
     migrate_legacy_debts,
 )
-from src.data.importers.kaspi_pdf import parse_kaspi_upload_contents, save_kaspi_import_to_staging
+from src.data.importers.bank_pdf import parse_bank_upload_contents
+from src.data.importers.kaspi_pdf import save_kaspi_import_to_staging
 from src.data.staging import (
     DRAFT_COLUMNS,
     DRAFT_STATUSES,
@@ -35,7 +36,7 @@ from src.data.staging import (
 )
 from src.dashboard.export import export_dashboard_page
 from src.dashboard.investment_data import build_investment_dashboard_data
-from src.dashboard.main_data import DashboardDataset, build_main_dashboard_data
+from src.dashboard.main_data import DashboardDataset, build_main_dashboard_data, clear_main_dashboard_cache
 from src.dashboard.month_data import build_month_dashboard_data
 from src.dashboard.planning_data import build_planning_dashboard_data, save_goal_targets
 from src.dashboard.year_data import build_year_dashboard_data
@@ -519,6 +520,7 @@ def register_callbacks(app: Dash) -> None:
             raise PreventUpdate
         clear_data_cache()
         clear_table_cache()
+        clear_main_dashboard_cache()
         return int(current_token or 0) + 1
 
     @app.callback(
@@ -545,6 +547,7 @@ def register_callbacks(app: Dash) -> None:
                 refresh_crypto_price_cache(enabled_assets)
             clear_data_cache()
             clear_table_cache()
+            clear_main_dashboard_cache()
             errors = balances.attrs.get("errors", [])
             statuses = balances.attrs.get("statuses", [])
             message = f"Crypto обновлено: {len(balances)} balance row(s), assets: {', '.join(enabled_assets) or 'нет включенных кошельков'}."
@@ -575,6 +578,7 @@ def register_callbacks(app: Dash) -> None:
         save_goal_targets(year, currency, row_data or [])
         clear_data_cache()
         clear_table_cache()
+        clear_main_dashboard_cache()
         return int(current_token or 0) + 1
 
     @app.callback(
@@ -655,6 +659,7 @@ def register_callbacks(app: Dash) -> None:
         fx_network_enabled = ctx.triggered_id == "refresh-fx-rates"
         if fx_network_enabled:
             clear_table_cache()
+            clear_main_dashboard_cache()
 
         if active_tab == "year":
             try:
@@ -818,7 +823,7 @@ def register_callbacks(app: Dash) -> None:
         if not contents:
             raise PreventUpdate
         try:
-            data = parse_kaspi_upload_contents(contents)
+            data = parse_bank_upload_contents(contents)
             internal_count = int(data["skip_reason"].eq("internal_transfer").sum()) if "skip_reason" in data else 0
             message = (
                 f"{filename or 'PDF'}: найдено строк {len(data)}, "
@@ -1044,6 +1049,7 @@ def register_callbacks(app: Dash) -> None:
                 )
                 clear_data_cache()
                 clear_table_cache()
+                clear_main_dashboard_cache()
                 token += 1
                 message = f"Долг создан: {result['debt_id']}. Черновик транзакции добавлен."
                 color = "success"
@@ -1060,12 +1066,14 @@ def register_callbacks(app: Dash) -> None:
                 )
                 clear_data_cache()
                 clear_table_cache()
+                clear_main_dashboard_cache()
                 token += 1
                 message = f"Погашение создано: {result['payment_id']}. Черновик транзакции добавлен во вкладку Ввод данных."
                 color = "success"
             elif trigger == "debt-migrate-button":
                 result = migrate_legacy_debts()
                 clear_table_cache()
+                clear_main_dashboard_cache()
                 token += 1
                 if result.get("skipped"):
                     message = f"Миграция пропущена: {result['skipped']}."
@@ -1124,6 +1132,7 @@ def register_callbacks(app: Dash) -> None:
                 result = write_asset_snapshot(row_data or [], year, month)
                 clear_data_cache()
                 clear_table_cache()
+                clear_main_dashboard_cache()
                 message = (
                     f"Активы сохранены: {result['rows']} строк. "
                     f"Файл: {result['path']}. "
@@ -1518,7 +1527,7 @@ def _transaction_input_layout(currency: str, year: str, month: str, theme: str |
                 [
                     html.Div(
                         [
-                            html.H2("Импорт Kaspi PDF", className="h5 mb-0"),
+                            html.H2("Импорт банковского PDF", className="h5 mb-0"),
                             dbc.Button("Сохранить импорт в staging", id="kaspi-save-button", color="primary", outline=True, size="sm"),
                         ],
                         className="d-flex justify-content-between align-items-center mb-3",
@@ -1527,7 +1536,7 @@ def _transaction_input_layout(currency: str, year: str, month: str, theme: str |
                         id="kaspi-upload",
                         children=html.Div(
                             [
-                                html.Div("Перетащи Kaspi PDF сюда", className="fw-semibold"),
+                                html.Div("Перетащи Kaspi или BCC PDF сюда", className="fw-semibold"),
                                 html.Div("или нажми для выбора файла", className="small opacity-75"),
                             ],
                             className="kaspi-upload-content",

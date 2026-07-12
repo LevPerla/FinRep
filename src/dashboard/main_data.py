@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from functools import lru_cache
 
 import pandas as pd
 import plotly.graph_objects as go
@@ -33,6 +34,10 @@ class DashboardDataset:
     display_dataframe: pd.DataFrame | None = None
     figure: go.Figure | None = None
     graph_config: dict | None = None
+
+
+def clear_main_dashboard_cache() -> None:
+    _asset_currency_allocation_data_cached.cache_clear()
 
 
 def build_main_dashboard_data(
@@ -445,6 +450,11 @@ def _fx_changes_data(balance: pd.DataFrame, currency: str) -> pd.DataFrame:
 
 
 def _asset_currency_allocation_data(currency: str) -> pd.DataFrame:
+    return _asset_currency_allocation_data_cached(str(currency).upper()).copy(deep=True)
+
+
+@lru_cache(maxsize=None)
+def _asset_currency_allocation_data_cached(currency: str) -> pd.DataFrame:
     assets = get_assets()
     if assets.empty:
         return pd.DataFrame(columns=["Дата"])
