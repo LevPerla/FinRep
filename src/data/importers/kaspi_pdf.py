@@ -14,7 +14,6 @@ from src.data.get import get_transactions
 from src.data.staging import DRAFT_COLUMNS, read_transaction_drafts, write_transaction_drafts
 
 KASPI_SOURCE = "kaspi_pdf"
-RULES_PATH = Path(config.DATA_PATH) / "import_rules" / "categories.csv"
 TRANSACTION_RE = re.compile(
     r"^(?P<date>\d{2}\.\d{2}\.\d{2})\s+"
     r"(?P<sign>[+-])\s+"
@@ -163,9 +162,10 @@ def _categorize(details: str, amount: float) -> str:
 
 
 def _load_rules() -> pd.DataFrame:
-    if not RULES_PATH.exists():
+    rules_path = config.active_data_path("import_rules", "categories.csv")
+    if not rules_path.exists():
         return pd.DataFrame(columns=["pattern", "category"])
-    return pd.read_csv(RULES_PATH, sep=";", dtype=str, encoding="utf-8-sig").fillna("")
+    return pd.read_csv(rules_path, sep=";", dtype=str, encoding="utf-8-sig").fillna("")
 
 
 def _is_internal_transfer(details: str) -> bool:

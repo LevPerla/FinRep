@@ -14,7 +14,7 @@ ASSET_EDITOR_COLUMNS = ["account", "amount", "currency"]
 def asset_snapshot_path(year: str, month: str, assets_root: str | Path | None = None) -> Path:
     year = str(year)
     month = str(int(month)).zfill(2)
-    root = Path(assets_root or config.ASSETS_INFO_PATH)
+    root = Path(assets_root or config.active_data_path("assets_info"))
     return root / year / f"{year}_{month}.csv"
 
 
@@ -22,6 +22,7 @@ def ensure_asset_snapshot(year: str, month: str, assets_root: str | Path | None 
     target_path = asset_snapshot_path(year, month, assets_root)
     if target_path.exists():
         return {"path": str(target_path), "created": False, "template_path": None}
+    config.require_writable_mode()
 
     template_path = previous_asset_snapshot_path(year, month, assets_root)
     target_path.parent.mkdir(parents=True, exist_ok=True)
@@ -38,7 +39,7 @@ def ensure_asset_snapshot(year: str, month: str, assets_root: str | Path | None 
 
 
 def previous_asset_snapshot_path(year: str, month: str, assets_root: str | Path | None = None) -> Path | None:
-    root = Path(assets_root or config.ASSETS_INFO_PATH)
+    root = Path(assets_root or config.active_data_path("assets_info"))
     current = pd.Period(f"{int(year):04d}-{int(month):02d}", freq="M") - 1
     for _ in range(240):
         candidate = root / str(current.year) / f"{current.year}_{current.month:02d}.csv"
@@ -49,8 +50,14 @@ def previous_asset_snapshot_path(year: str, month: str, assets_root: str | Path 
 
 
 def read_asset_snapshot(year: str, month: str, assets_root: str | Path | None = None) -> pd.DataFrame:
-    ensure_asset_snapshot(year, month, assets_root)
     path = asset_snapshot_path(year, month, assets_root)
+    if not path.exists() and config.is_test_mode():
+        template = previous_asset_snapshot_path(year, month, assets_root)
+        if template is None:
+            return pd.DataFrame(columns=ASSET_EDITOR_COLUMNS)
+        path = template
+    else:
+        ensure_asset_snapshot(year, month, assets_root)
     data = pd.read_csv(path, sep=";", dtype=str, encoding="utf-8-sig").fillna("")
     if "Счет" not in data.columns:
         data["Счет"] = ""
@@ -65,6 +72,7 @@ def read_asset_snapshot(year: str, month: str, assets_root: str | Path | None = 
 
 
 def write_asset_snapshot(rows: list[dict], year: str, month: str, assets_root: str | Path | None = None) -> dict:
+    config.require_writable_mode()
     target_path = asset_snapshot_path(year, month, assets_root)
     ensure_info = ensure_asset_snapshot(year, month, assets_root)
     data = _normalize_asset_rows(pd.DataFrame(rows))
@@ -131,6 +139,6 @@ def _format_asset_amount(value: float) -> str:
 
 def _asset_snapshot_backup_path(target_path: Path) -> Path:
     year = target_path.parent.name
-    backup_root = Path(config.ASSET_BACKUPS_PATH) / year
+    backup_root = config.active_data_path("backups", "assets_info", year)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     return backup_root / f"{target_path.stem}.backup_{timestamp}{target_path.suffix}"

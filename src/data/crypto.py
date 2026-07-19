@@ -89,7 +89,9 @@ class CryptoValidationIssue:
 
 
 def ensure_crypto_wallets_file(path: str | Path | None = None) -> Path:
-    wallets_path = Path(path or config.CRYPTO_WALLETS_PATH)
+    wallets_path = Path(path or config.active_data_path("investments", "crypto_wallets.csv"))
+    if config.is_test_mode() and not wallets_path.exists():
+        return wallets_path
     wallets_path.parent.mkdir(parents=True, exist_ok=True)
     if not wallets_path.exists():
         pd.DataFrame(columns=WALLET_COLUMNS).to_csv(wallets_path, sep=";", index=False, encoding="utf-8-sig")
@@ -98,6 +100,8 @@ def ensure_crypto_wallets_file(path: str | Path | None = None) -> Path:
 
 def read_crypto_wallets(path: str | Path | None = None) -> pd.DataFrame:
     wallets_path = ensure_crypto_wallets_file(path)
+    if not wallets_path.exists():
+        return pd.DataFrame(columns=WALLET_COLUMNS)
     data = pd.read_csv(wallets_path, sep=";", dtype=str, encoding="utf-8-sig").fillna("")
     for column in WALLET_COLUMNS:
         if column not in data.columns:
@@ -112,7 +116,7 @@ def read_crypto_wallets(path: str | Path | None = None) -> pd.DataFrame:
 
 
 def read_crypto_balances(path: str | Path | None = None) -> pd.DataFrame:
-    balance_path = Path(path or config.CRYPTO_BALANCES_PATH)
+    balance_path = Path(path or config.active_data_path("investments", "crypto_balances.csv"))
     if not balance_path.exists():
         return pd.DataFrame(columns=BALANCE_COLUMNS)
     data = pd.read_csv(balance_path, sep=";", dtype=str, encoding="utf-8-sig").fillna("")
@@ -126,7 +130,7 @@ def read_crypto_balances(path: str | Path | None = None) -> pd.DataFrame:
 
 
 def read_crypto_refresh_status(path: str | Path | None = None) -> pd.DataFrame:
-    status_path = Path(path or config.CRYPTO_REFRESH_STATUS_PATH)
+    status_path = Path(path or config.active_data_path("investments", "crypto_refresh_status.csv"))
     if not status_path.exists():
         return pd.DataFrame(columns=REFRESH_STATUS_COLUMNS)
     data = pd.read_csv(status_path, sep=";", dtype=str, encoding="utf-8-sig").fillna("")
@@ -137,7 +141,8 @@ def read_crypto_refresh_status(path: str | Path | None = None) -> pd.DataFrame:
 
 
 def write_crypto_refresh_status(data: pd.DataFrame, path: str | Path | None = None) -> None:
-    status_path = Path(path or config.CRYPTO_REFRESH_STATUS_PATH)
+    config.require_writable_mode()
+    status_path = Path(path or config.active_data_path("investments", "crypto_refresh_status.csv"))
     status_path.parent.mkdir(parents=True, exist_ok=True)
     normalized = data.copy(deep=True)
     for column in REFRESH_STATUS_COLUMNS:
@@ -148,7 +153,8 @@ def write_crypto_refresh_status(data: pd.DataFrame, path: str | Path | None = No
 
 
 def write_crypto_balances(data: pd.DataFrame, path: str | Path | None = None) -> None:
-    balance_path = Path(path or config.CRYPTO_BALANCES_PATH)
+    config.require_writable_mode()
+    balance_path = Path(path or config.active_data_path("investments", "crypto_balances.csv"))
     balance_path.parent.mkdir(parents=True, exist_ok=True)
     normalized = data.copy(deep=True)
     for column in BALANCE_COLUMNS:
@@ -159,7 +165,7 @@ def write_crypto_balances(data: pd.DataFrame, path: str | Path | None = None) ->
 
 
 def read_crypto_transactions(path: str | Path | None = None) -> pd.DataFrame:
-    transactions_path = Path(path or config.CRYPTO_TRANSACTIONS_PATH)
+    transactions_path = Path(path or config.active_data_path("investments", "crypto_transactions.csv"))
     if not transactions_path.exists():
         return pd.DataFrame(columns=TRANSACTION_COLUMNS)
     data = pd.read_csv(transactions_path, sep=";", dtype=str, encoding="utf-8-sig").fillna("")
@@ -170,7 +176,8 @@ def read_crypto_transactions(path: str | Path | None = None) -> pd.DataFrame:
 
 
 def write_crypto_transactions(data: pd.DataFrame, path: str | Path | None = None) -> None:
-    transactions_path = Path(path or config.CRYPTO_TRANSACTIONS_PATH)
+    config.require_writable_mode()
+    transactions_path = Path(path or config.active_data_path("investments", "crypto_transactions.csv"))
     transactions_path.parent.mkdir(parents=True, exist_ok=True)
     normalized = data.copy(deep=True)
     for column in TRANSACTION_COLUMNS:

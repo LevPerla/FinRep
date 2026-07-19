@@ -18,6 +18,7 @@ def _project_path_from_env(env_name: str, default_folder: str) -> str:
 
 
 DATA_PATH = _project_path_from_env('FINREP_DATA_DIR', 'data')
+SAMPLE_DATA_PATH = str(PROJECT_PATH / 'sample_data')
 REPORTS_PATH = _project_path_from_env('FINREP_REPORTS_DIR', 'reports')
 SECRETS_PATH = os.path.join(PROJECT_PATH, 'src', 'secrets.json')
 
@@ -55,3 +56,29 @@ REPORTS_TYPES = ['main', 'year', 'month']
 DATA_TYPES = ['transactions', 'assets', 'investments']
 TRANSACTIONS_COLUMNS = ['Дата', 'Категория', 'Валюта', 'Значение', 'Комментарий']
 ASSETS_COLUMNS = ['Счет', 'Валюта', 'Значение', 'Год', 'Месяц']
+
+
+def get_data_mode() -> str:
+    """Return the signed session's data mode, falling back to live for CLI use."""
+    try:
+        from flask import has_request_context, session
+
+        if has_request_context() and session.get("authenticated"):
+            return "test" if session.get("data_mode") == "test" else "live"
+    except RuntimeError:
+        pass
+    return "live"
+
+
+def is_test_mode() -> bool:
+    return get_data_mode() == "test"
+
+
+def active_data_path(*parts: str) -> Path:
+    root = Path(SAMPLE_DATA_PATH if is_test_mode() else DATA_PATH)
+    return root.joinpath(*parts)
+
+
+def require_writable_mode() -> None:
+    if is_test_mode():
+        raise PermissionError("Test mode работает только на чтение.")

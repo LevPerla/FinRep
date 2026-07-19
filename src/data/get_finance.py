@@ -1,4 +1,5 @@
 import logging
+from contextvars import ContextVar
 from datetime import datetime, timedelta
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -17,8 +18,8 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 FX_CACHE_COLUMNS = ['date', 'currency', 'usd_rate', 'source', 'fetched_at']
-_FX_NETWORK_ENABLED = False
-_FX_CACHE_DF = None
+_FX_NETWORK_ENABLED = ContextVar("finrep_fx_network_enabled", default=False)
+_FX_CACHE_DF: dict[str, pd.DataFrame] = {}
 _CBR_SERIES_CACHE = {}
 _CBR_VALUTE_IDS = {
     'USD': 'R01235',
@@ -49,17 +50,16 @@ def _build_retry_session():
 
 
 _HTTP_SESSION = _build_retry_session()
-logger.info("FX network mode: %s", "online" if _FX_NETWORK_ENABLED else "offline")
+logger.info("FX network mode: offline")
 
 
 def set_fx_network_enabled(enabled: bool):
     """
     Set FX network mode globally for this process.
     """
-    global _FX_NETWORK_ENABLED
-    prev_value = _FX_NETWORK_ENABLED
-    _FX_NETWORK_ENABLED = bool(enabled)
-    logger.info("FX network mode switched to: %s", "online" if _FX_NETWORK_ENABLED else "offline")
+    prev_value = _FX_NETWORK_ENABLED.get()
+    _FX_NETWORK_ENABLED.set(bool(enabled))
+    logger.info("FX network mode switched to: %s", "online" if enabled else "offline")
     return prev_value
 
 
@@ -335,7 +335,7 @@ def _ensure_currency_cached(currency: str, min_date: pd.Timestamp, max_date: pd.
         return
 
     fetch_dates = _fetchable_missing_dates(currency, missing_dates)
-    if _FX_NETWORK_ENABLED and fetch_dates:
+    if _FX_NETWORK_ENABLED.get() and fetch_dates:
         fetched = _fetch_missing_usd_rates(currency, min(fetch_dates), max(fetch_dates))
         if not fetched.empty:
             fetched = fetched.loc[(fetched.index >= min_date) & (fetched.index <= max_date)]
@@ -346,7 +346,7 @@ def _ensure_currency_cached(currency: str, min_date: pd.Timestamp, max_date: pd.
                 if not fetch_dates:
                     return
 
-    if _FX_NETWORK_ENABLED and fetch_dates:
+    if _FX_NETWORK_ENABLED.get() and fetch_dates:
         preview_dates = ", ".join(date.date().isoformat() for date in fetch_dates[:5])
         suffix = "..." if len(fetch_dates) > 5 else ""
         logger.warning(
@@ -503,7 +503,7 @@ def _fetch_cbr_currency_series(currency, min_date, max_date):
     """
     Fetch RUB-per-currency series from CBR.
     """
-    if not _FX_NETWORK_ENABLED:
+    if not _FX_NETWORK_ENABLED.get():
         return pd.Series(dtype=float)
 
     currency = currency.upper()
@@ -677,14 +677,14 @@ def _format_fx_source(legs: list[dict]) -> str:
 
 
 def _read_cache() -> pd.DataFrame:
-    global _FX_CACHE_DF
-    if _FX_CACHE_DF is not None:
-        return _FX_CACHE_DF.copy()
+    cache_path = config.active_data_path("rates", "fx_rates.csv")
+    cache_key = str(cache_path)
+    if cache_key in _FX_CACHE_DF:
+        return _FX_CACHE_DF[cache_key].copy()
 
-    cache_path = Path(config.FX_CACHE_PATH)
     if not cache_path.exists():
-        _FX_CACHE_DF = pd.DataFrame(columns=FX_CACHE_COLUMNS)
-        return _FX_CACHE_DF.copy()
+        _FX_CACHE_DF[cache_key] = pd.DataFrame(columns=FX_CACHE_COLUMNS)
+        return _FX_CACHE_DF[cache_key].copy()
 
     cache = pd.read_csv(cache_path, sep=';', dtype={'currency': str, 'source': str, 'fetched_at': str})
     for column in FX_CACHE_COLUMNS:
@@ -696,19 +696,19 @@ def _read_cache() -> pd.DataFrame:
     cache['usd_rate'] = pd.to_numeric(cache['usd_rate'], errors='coerce')
     cache = cache.dropna(subset=['date', 'currency', 'usd_rate'])
     cache = cache.sort_values(['currency', 'date', 'fetched_at']).drop_duplicates(['date', 'currency'], keep='last')
-    _FX_CACHE_DF = cache.reset_index(drop=True)
-    return _FX_CACHE_DF.copy()
+    _FX_CACHE_DF[cache_key] = cache.reset_index(drop=True)
+    return _FX_CACHE_DF[cache_key].copy()
 
 
 def _write_cache(cache: pd.DataFrame):
-    global _FX_CACHE_DF
-    cache_path = Path(config.FX_CACHE_PATH)
+    config.require_writable_mode()
+    cache_path = config.active_data_path("rates", "fx_rates.csv")
     cache_path.parent.mkdir(parents=True, exist_ok=True)
     cache = cache.copy()
     cache['date'] = pd.to_datetime(cache['date']).dt.strftime('%Y-%m-%d')
     cache = cache.sort_values(['currency', 'date'])
     cache.to_csv(cache_path, sep=';', index=False)
-    _FX_CACHE_DF = None
+    _FX_CACHE_DF.pop(str(cache_path), None)
 
 
 def _append_cache_rows(currency: str, rates: pd.Series, source: str):
@@ -734,8 +734,10 @@ def _append_cache_rows(currency: str, rates: pd.Series, source: str):
 
 
 def _ensure_cache_file():
-    cache_path = Path(config.FX_CACHE_PATH)
+    cache_path = config.active_data_path("rates", "fx_rates.csv")
     if not cache_path.exists():
+        if config.is_test_mode():
+            return
         cache_path.parent.mkdir(parents=True, exist_ok=True)
         pd.DataFrame(columns=FX_CACHE_COLUMNS).to_csv(cache_path, sep=';', index=False)
 
@@ -752,7 +754,7 @@ def _clean_rate_series(series: pd.Series) -> pd.Series:
 
 
 def _yf_close(ticker: str, min_date: pd.Timestamp, max_date: pd.Timestamp) -> pd.Series:
-    if not _FX_NETWORK_ENABLED:
+    if not _FX_NETWORK_ENABLED.get():
         return pd.Series(dtype=float)
     data = yf.download(
         ticker,
@@ -776,7 +778,7 @@ def _yf_close(ticker: str, min_date: pd.Timestamp, max_date: pd.Timestamp) -> pd
 
 
 def _download_latest_market_price(ticker: str):
-    if not _FX_NETWORK_ENABLED:
+    if not _FX_NETWORK_ENABLED.get():
         return None
     data = yf.download(ticker, period='5d', progress=False, auto_adjust=False)
     if data is None or data.empty:

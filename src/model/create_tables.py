@@ -92,11 +92,11 @@ def create_invest_tbl() -> (pd.DataFrame, pd.DataFrame):
 
 
 def get_balance_by_month(currency: str) -> pd.DataFrame:
-    return _get_balance_by_month_cached(str(currency).upper()).copy(deep=True)
+    return _get_balance_by_month_cached(str(config.active_data_path()), str(currency).upper()).copy(deep=True)
 
 
 @lru_cache(maxsize=None)
-def _get_balance_by_month_cached(currency: str) -> pd.DataFrame:
+def _get_balance_by_month_cached(data_root: str, currency: str) -> pd.DataFrame:
     """
     Get PNL of all transactions
     :param currency: ticker of currency
@@ -138,7 +138,7 @@ def _get_balance_by_month_cached(currency: str) -> pd.DataFrame:
                               )
     all_stats_df['Капитал'] = all_stats_df['Баланс'].cumsum()
     all_stats_df['Дельта'] = all_stats_df['Доход'] - all_stats_df['Расход']
-    asset_capital = _get_asset_capital_by_month_cached(currency)
+    asset_capital = _get_asset_capital_by_month_cached(data_root, currency)
     if not asset_capital.empty:
         all_stats_df = all_stats_df.join(asset_capital, how='left')
         asset_delta = all_stats_df['Капитал по активам'].diff()
@@ -158,20 +158,20 @@ def _get_balance_by_month_cached(currency: str) -> pd.DataFrame:
 
 
 def get_act_receivables(currency: str | None = None):
-    return _get_act_receivables_cached(_normalize_currency_arg(currency)).copy(deep=True)
+    return _get_act_receivables_cached(str(config.active_data_path()), _normalize_currency_arg(currency)).copy(deep=True)
 
 
 @lru_cache(maxsize=None)
-def _get_act_receivables_cached(currency: str | None):
+def _get_act_receivables_cached(data_root: str, currency: str | None):
     return _ledger_debt_balance("receivable", "Дебиторская задолженность", currency)
 
 
 def get_act_liabilities(currency: str | None = None):
-    return _get_act_liabilities_cached(_normalize_currency_arg(currency)).copy(deep=True)
+    return _get_act_liabilities_cached(str(config.active_data_path()), _normalize_currency_arg(currency)).copy(deep=True)
 
 
 @lru_cache(maxsize=None)
-def _get_act_liabilities_cached(currency: str | None):
+def _get_act_liabilities_cached(data_root: str, currency: str | None):
     return _ledger_debt_balance("liability", "Кредиторская задолженность", currency)
 
 
@@ -287,11 +287,11 @@ def _convert_debt_transactions(data: pd.DataFrame, currency: str) -> pd.DataFram
 
 
 def get_asset_capital_by_month(currency: str) -> pd.DataFrame:
-    return _get_asset_capital_by_month_cached(str(currency).upper()).copy(deep=True)
+    return _get_asset_capital_by_month_cached(str(config.active_data_path()), str(currency).upper()).copy(deep=True)
 
 
 @lru_cache(maxsize=None)
-def _get_asset_capital_by_month_cached(currency: str) -> pd.DataFrame:
+def _get_asset_capital_by_month_cached(data_root: str, currency: str) -> pd.DataFrame:
     assets_df = get_assets()
     if assets_df.empty:
         return pd.DataFrame(columns=['Капитал по активам'])
@@ -317,11 +317,11 @@ def _get_asset_capital_by_month_cached(currency: str) -> pd.DataFrame:
 def get_cost_distribution(currency, year, month=None):
     year_key = _as_tuple(year)
     month_key = None if month is None else _as_month_tuple(month)
-    return _get_cost_distribution_cached(str(currency).upper(), year_key, month_key).copy(deep=True)
+    return _get_cost_distribution_cached(str(config.active_data_path()), str(currency).upper(), year_key, month_key).copy(deep=True)
 
 
 @lru_cache(maxsize=None)
-def _get_cost_distribution_cached(currency, year_key, month_key=None):
+def _get_cost_distribution_cached(data_root, currency, year_key, month_key=None):
     transactions_df = get_transactions()
 
     # Get transaction sample by chosen year
@@ -435,6 +435,7 @@ def get_assets_by_currencies(year, month) -> pd.DataFrame:
 
 def get_month_transactions(currency, year, month):
     return _get_month_transactions_cached(
+        str(config.active_data_path()),
         str(currency).upper(),
         str(year),
         str(int(month)) if str(month).isdigit() else str(month),
@@ -442,7 +443,7 @@ def get_month_transactions(currency, year, month):
 
 
 @lru_cache(maxsize=None)
-def _get_month_transactions_cached(currency, year, month):
+def _get_month_transactions_cached(data_root, currency, year, month):
     transactions_df = get_transactions()
     smpl_tr_df = transactions_df[(transactions_df['Год'].isin(list(np.array(year).flat))) &
                                  (transactions_df['Месяц'].isin(list(np.array(month).astype(int).astype(str).flat)))
