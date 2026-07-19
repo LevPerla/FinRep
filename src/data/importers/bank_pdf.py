@@ -8,6 +8,7 @@ import pdfplumber
 
 from src.data.importers.bcc_pdf import BCC_MARKER, parse_bcc_pdf_bytes
 from src.data.importers.kaspi_pdf import parse_kaspi_pdf_bytes
+from src.data.importers.ozon_pdf import OZON_MARKER, parse_ozon_pdf_bytes
 
 
 def parse_bank_upload_contents(contents: str) -> pd.DataFrame:
@@ -19,4 +20,6 @@ def parse_bank_upload_contents(contents: str) -> pd.DataFrame:
         first_page_text = pdf.pages[0].extract_text() if pdf.pages else ""
     if BCC_MARKER in (first_page_text or ""):
         return parse_bcc_pdf_bytes(content)
+    if OZON_MARKER in (first_page_text or ""):
+        return parse_ozon_pdf_bytes(content)
     return parse_kaspi_pdf_bytes(content)
