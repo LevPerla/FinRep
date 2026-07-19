@@ -35,6 +35,8 @@ def export_dashboard_page(
     export_format: str,
     year: str | None = None,
     month: str | None = None,
+    session_cookie: str | None = None,
+    session_cookie_name: str = "session",
 ) -> Path:
     export_format = export_format.lower()
     if export_format not in {"png", "pdf"}:
@@ -48,7 +50,20 @@ def export_dashboard_page(
     try:
         with sync_playwright() as playwright:
             browser = playwright.chromium.launch()
-            page = browser.new_page(viewport=EXPORT_VIEWPORT)
+            context = browser.new_context(viewport=EXPORT_VIEWPORT)
+            if session_cookie:
+                origin = urlsplit(dashboard_url)
+                context.add_cookies([
+                    {
+                        "name": session_cookie_name,
+                        "value": session_cookie,
+                        "url": f"{origin.scheme}://{origin.netloc}",
+                        "httpOnly": True,
+                        "sameSite": "Lax",
+                        "secure": origin.scheme == "https",
+                    }
+                ])
+            page = context.new_page()
             page.goto(dashboard_url, wait_until="domcontentloaded")
             page.wait_for_selector("#dashboard-content")
             page.wait_for_timeout(EXPORT_WAIT_MS)

@@ -54,7 +54,7 @@ def validate_all_data(raise_on_error: bool = True) -> list[ValidationIssue]:
 
 def validate_transactions() -> list[ValidationIssue]:
     issues = []
-    root = Path(config.TRANSACTIONS_INFO_PATH)
+    root = config.active_data_path("transactions_info")
     if not root.exists():
         return [ValidationIssue(root, "transactions folder does not exist")]
 
@@ -68,7 +68,7 @@ def validate_transactions() -> list[ValidationIssue]:
 
 def validate_assets() -> list[ValidationIssue]:
     issues = []
-    root = Path(config.ASSETS_INFO_PATH)
+    root = config.active_data_path("assets_info")
     if not root.exists():
         return [ValidationIssue(root, "assets folder does not exist")]
 
@@ -79,12 +79,12 @@ def validate_assets() -> list[ValidationIssue]:
 
 
 def validate_investments() -> list[ValidationIssue]:
-    csv_path = Path(config.INVESTMENTS_PATH)
+    csv_path = config.active_data_path("investments", "investments.csv")
     return [ValidationIssue(csv_path, str(issue)) for issue in validate_legacy_investments(csv_path)]
 
 
 def validate_transaction_draft_staging() -> list[ValidationIssue]:
-    csv_path = Path(config.TRANSACTION_DRAFTS_PATH)
+    csv_path = config.active_data_path("staging", "transaction_drafts.csv")
     if not csv_path.exists():
         return []
 
@@ -103,7 +103,7 @@ def validate_debts() -> list[ValidationIssue]:
 
 
 def validate_crypto_wallet_config() -> list[ValidationIssue]:
-    csv_path = Path(config.CRYPTO_WALLETS_PATH)
+    csv_path = config.active_data_path("investments", "crypto_wallets.csv")
     if not csv_path.exists():
         return []
     return [ValidationIssue(csv_path, str(issue)) for issue in validate_crypto_wallets(path=csv_path)]

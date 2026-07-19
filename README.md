@@ -19,11 +19,13 @@ Install dependencies with [uv](https://docs.astral.sh/uv/):
 uv sync
 ```
 
-Run the Dash dashboard with demo data:
+Run Dash and open the public read-only demo:
 
 ```bash
-FINREP_DATA_DIR=sample_data FINREP_REPORTS_DIR=reports uv run python -m src.dashboard.app
+FINREP_REPORTS_DIR=reports uv run python -m src.dashboard.app
 ```
+
+To enable LIVE mode, copy `.env.example` to `.env` and replace both dashboard secrets.
 
 Open the local URL printed by Dash, usually:
 
@@ -121,9 +123,12 @@ uv run python -m src.dashboard.app
 Useful environment switches:
 
 ```bash
-FINREP_DATA_DIR=sample_data uv run python -m src.dashboard.app
-FINREP_DASH_DEBUG=0 FINREP_DASH_HOT_RELOAD=0 uv run python -m src.dashboard.app
+uv run python -m src.dashboard.app
 ```
+
+The dashboard reads only `FINREP_DASH_PASSWORD` and `FINREP_DASH_SECRET_KEY` from the local `.env`; exported shell variables take precedence.
+
+The login page offers public read-only demo access backed by `sample_data`; no password is required for TEST MODE. LIVE mode reads private data from `FINREP_DATA_DIR` and requires the shared password plus a signed 30-day browser session. Configure both secret variables to enable LIVE mode, and log out before changing modes.
 
 The dashboard includes:
 
@@ -217,7 +222,7 @@ PYTHONPYCACHEPREFIX=/private/tmp/finrep_pycache python3 -m compileall main.py sr
 Dash layout smoke check:
 
 ```bash
-FINREP_DATA_DIR=sample_data FINREP_REPORTS_DIR=/private/tmp/finrep_reports uv run python -c "from src.dashboard.app import create_app; app = create_app(); assert app.layout is not None; print(app.title)"
+FINREP_DASH_PASSWORD=test FINREP_DASH_SECRET_KEY=test-secret FINREP_DATA_DIR=sample_data FINREP_REPORTS_DIR=/private/tmp/finrep_reports uv run python -c "from src.dashboard.app import create_app; app = create_app(); assert app.layout is not None; print(app.title)"
 ```
 
 ## Notes For Contributors

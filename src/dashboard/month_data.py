@@ -95,6 +95,37 @@ def build_month_dashboard_data(
     }
 
 
+def get_day_transaction_details(date: str, currency: str) -> pd.DataFrame:
+    columns = ["Категория", "Исходная сумма", "Валюта", "В валюте отчета", "Комментарий"]
+    selected_date = pd.to_datetime(date, errors="coerce")
+    if pd.isna(selected_date):
+        return pd.DataFrame(columns=columns)
+
+    transactions = get_transactions()
+    transaction_dates = pd.to_datetime(transactions["Дата"], errors="coerce").dt.normalize()
+    details = transactions[transaction_dates == selected_date.normalize()].copy(deep=True)
+    details["Значение"] = pd.to_numeric(details["Значение"], errors="coerce")
+    details = details[details["Значение"].fillna(0).ne(0)].reset_index(drop=True)
+    if details.empty:
+        return pd.DataFrame(columns=columns)
+
+    converted = convert_transaction(
+        df_to_convert=details,
+        to_curr=str(currency).upper(),
+        target_col="Значение",
+        use_current_rate=False,
+    )
+    return pd.DataFrame(
+        {
+            "Категория": details["Категория"].astype(str),
+            "Исходная сумма": details["Значение"],
+            "Валюта": details["Валюта"].astype(str),
+            "В валюте отчета": converted["Значение"],
+            "Комментарий": details["Комментарий"].fillna("").astype(str),
+        }
+    )
+
+
 def _prepare_summary(data: pd.DataFrame) -> pd.DataFrame:
     order = [
         "Доход",
@@ -115,10 +146,30 @@ def _prepare_summary(data: pd.DataFrame) -> pd.DataFrame:
     display = data.drop(columns=["Дата"], errors="ignore").copy(deep=True)
     values = display[[column for column in order if column in display.columns]].iloc[0]
     rows = [
-        (column, values[column], _summary_metric_status(column, values[column]), "За выбранный месяц", "money")
+        (column, values[column], _summary_metric_status(column, values[column]), _summary_metric_detail(column), "money")
         for column in values.index
     ]
     return pd.DataFrame(rows, columns=["Показатель", "Значение", "Статус", "Детали", "Тип"])
+
+
+def _summary_metric_detail(name: str) -> str:
+    details = {
+        "Доход": "Все операции категории «Доход» за выбранный месяц",
+        "Расход": "Все расходные операции за выбранный месяц",
+        "Сбережения": "Операции категории «Сбережения» за выбранный месяц",
+        "Дельта": "Доход минус расход за выбранный месяц",
+        "Баланс": "Cash-flow месяца с учетом сбережений и долговых операций",
+        "Дебиторская задолженность": "Новые суммы, выданные в долг за выбранный месяц",
+        "Погашение деб. зад.": "Возвраты ранее выданных долгов за выбранный месяц",
+        "Кредиторская задолженность": "Новые заимствования за выбранный месяц",
+        "Погашение кред. зад.": "Погашения ранее полученных долгов за выбранный месяц",
+        "Капитал": "Накопленный cash-flow на конец выбранного месяца",
+        "Капитал по активам": "Стоимость assets snapshot; инвестиции учтены в последнем доступном месяце",
+        "Инвестиции": "Операции категории «Инвестиции» за выбранный месяц",
+        "Расхождение с активами": "Assets snapshot минус накопленный cash-flow капитал",
+        "Валютная переоценка": "Изменение активов сверх cash-flow месяца: валютная и рыночная переоценка",
+    }
+    return details.get(name, f"Показатель «{name}» за выбранный месяц")
 
 
 def _summary_metric_status(name: str, value) -> str:

@@ -41,7 +41,7 @@ class InvestmentValidationIssue:
 
 
 def read_legacy_investments(path: str | Path | None = None) -> pd.DataFrame:
-    legacy_path = Path(path or config.INVESTMENTS_PATH)
+    legacy_path = Path(path or config.active_data_path("investments", "investments.csv"))
     data = pd.read_csv(legacy_path, sep=";", dtype=str, encoding="utf-8-sig").fillna("")
     return data
 
@@ -85,7 +85,7 @@ def build_instrument_registry(transactions: pd.DataFrame | None = None) -> pd.Da
 
 
 def read_investment_transactions(path: str | Path | None = None, legacy_path: str | Path | None = None) -> pd.DataFrame:
-    transaction_path = Path(path or config.INVESTMENT_TRANSACTIONS_PATH)
+    transaction_path = Path(path or config.active_data_path("investments", "transactions.csv"))
     if transaction_path.exists():
         data = pd.read_csv(transaction_path, sep=";", dtype=str, encoding="utf-8-sig").fillna("")
         return normalize_investment_transactions(data)
@@ -93,7 +93,7 @@ def read_investment_transactions(path: str | Path | None = None, legacy_path: st
 
 
 def read_instrument_registry(path: str | Path | None = None) -> pd.DataFrame:
-    registry_path = Path(path or config.INVESTMENT_INSTRUMENTS_PATH)
+    registry_path = Path(path or config.active_data_path("investments", "instruments.csv"))
     if not registry_path.exists():
         return build_instrument_registry()
     data = pd.read_csv(registry_path, sep=";", dtype=str, encoding="utf-8-sig").fillna("")
@@ -123,6 +123,8 @@ def read_price_cache(path: str | Path | None = None) -> pd.DataFrame:
 
 def ensure_price_cache_file(path: str | Path | None = None) -> Path:
     cache_path = _price_cache_path(path)
+    if config.is_test_mode() and not cache_path.exists():
+        return cache_path
     cache_path.parent.mkdir(parents=True, exist_ok=True)
     if not cache_path.exists():
         pd.DataFrame(columns=PRICE_CACHE_COLUMNS).to_csv(cache_path, sep=";", index=False, encoding="utf-8-sig")
@@ -130,6 +132,7 @@ def ensure_price_cache_file(path: str | Path | None = None) -> Path:
 
 
 def write_price_cache(data: pd.DataFrame, path: str | Path | None = None) -> None:
+    config.require_writable_mode()
     cache_path = ensure_price_cache_file(path)
     normalized = data.copy(deep=True)
     for column in PRICE_CACHE_COLUMNS:
@@ -233,9 +236,10 @@ def export_legacy_investment_migration(
     price_cache_path: str | Path | None = None,
     legacy_path: str | Path | None = None,
 ) -> dict:
-    transactions_path = Path(transactions_path or config.INVESTMENT_TRANSACTIONS_PATH)
-    instruments_path = Path(instruments_path or config.INVESTMENT_INSTRUMENTS_PATH)
-    price_cache_path = Path(price_cache_path or config.INVESTMENT_PRICE_CACHE_PATH)
+    config.require_writable_mode()
+    transactions_path = Path(transactions_path or config.active_data_path("investments", "transactions.csv"))
+    instruments_path = Path(instruments_path or config.active_data_path("investments", "instruments.csv"))
+    price_cache_path = Path(price_cache_path or config.active_data_path("investments", "price_cache.csv"))
 
     transactions = migrate_legacy_investments(legacy_path)
     issues = validate_investment_transactions(transactions)
@@ -281,7 +285,7 @@ def normalize_investment_transactions(data: pd.DataFrame) -> pd.DataFrame:
 
 
 def validate_legacy_investments(path: str | Path | None = None) -> list[InvestmentValidationIssue]:
-    legacy_path = Path(path or config.INVESTMENTS_PATH)
+    legacy_path = Path(path or config.active_data_path("investments", "investments.csv"))
     if not legacy_path.exists():
         return [InvestmentValidationIssue(None, "investments file does not exist")]
     try:
@@ -396,7 +400,7 @@ def _format_issues(issues: list[InvestmentValidationIssue]) -> str:
 
 
 def _price_cache_path(path: str | Path | None = None) -> Path:
-    return Path(path or config.INVESTMENT_PRICE_CACHE_PATH)
+    return Path(path or config.active_data_path("investments", "price_cache.csv"))
 
 
 def _fetch_latest_price_from_provider(ticker: str, provider: str) -> float | None:

@@ -110,6 +110,26 @@ body {
   gap: 12px;
 }
 
+.finrep-cockpit-groups {
+  display: grid;
+  gap: 18px;
+}
+
+.finrep-cockpit-group + .finrep-cockpit-group {
+  padding-top: 18px;
+  border-top: 1px solid #dee2e6;
+}
+
+.finrep-theme-dark .finrep-cockpit-group + .finrep-cockpit-group {
+  border-top-color: #555555;
+}
+
+.finrep-cockpit-group-title {
+  margin: 0 0 10px;
+  font-size: 0.95rem;
+  font-weight: 700;
+}
+
 .finrep-cockpit-card {
   min-height: 128px;
   padding: 14px;
@@ -562,6 +582,50 @@ body {
 
 .finrep-report-table tr:last-child td {
   border-bottom: 0;
+}
+
+.finrep-report-row-clickable {
+  cursor: pointer;
+}
+
+.finrep-report-row-clickable:hover td {
+  box-shadow: inset 0 0 0 9999px rgba(104, 151, 187, 0.1);
+}
+
+.finrep-transaction-detail-table td:last-child,
+.finrep-transaction-detail-table th:last-child {
+  min-width: 240px;
+  white-space: normal;
+}
+
+.finrep-modal-dark {
+  --bs-modal-bg: #2b2b2b;
+  --bs-modal-color: #dcdcdc;
+  --bs-modal-border-color: #555555;
+}
+
+.finrep-modal-dark .modal-content {
+  color: #dcdcdc;
+  background-color: #2b2b2b;
+  border-color: #555555;
+}
+
+.finrep-modal-dark .modal-header,
+.finrep-modal-dark .modal-footer {
+  border-color: #555555;
+}
+
+.finrep-modal-dark .btn-close {
+  filter: invert(1) grayscale(100%) brightness(180%);
+}
+
+.finrep-modal-dark .finrep-report-table-cap {
+  border-color: #555555;
+}
+
+.finrep-modal-dark .finrep-report-table td {
+  color: #dcdcdc;
+  border-bottom-color: #555555;
 }
 
 .finrep-report-table tr.is-total td,
@@ -1078,6 +1142,11 @@ body {
   overflow: auto;
 }
 
+#planning_goals-grid .ag-layout-auto-height .ag-center-cols-viewport,
+#planning_goals-grid .ag-layout-auto-height .ag-center-cols-container {
+  min-height: 0 !important;
+}
+
 @media (max-width: 768px) {
   html,
   body {
@@ -1395,6 +1464,25 @@ body {
   #export-png,
   #export-pdf {
     grid-column: span 2;
+  }
+
+  #dashboard-mode-badge,
+  #dashboard-logout-form {
+    grid-column: span 3;
+    width: 100%;
+    min-width: 0;
+  }
+
+  #dashboard-mode-badge {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 42px;
+    white-space: nowrap;
+  }
+
+  #dashboard-logout-form .btn {
+    width: 100%;
   }
 
   .finrep-chart-section {

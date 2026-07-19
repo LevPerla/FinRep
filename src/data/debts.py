@@ -54,6 +54,8 @@ class DebtValidationIssue:
 def ensure_debt_files(debts_path: str | Path | None = None, payments_path: str | Path | None = None) -> None:
     debt_path = _debt_path(debts_path)
     payment_path = _payment_path(payments_path)
+    if config.is_test_mode():
+        return
     debt_path.parent.mkdir(parents=True, exist_ok=True)
     payment_path.parent.mkdir(parents=True, exist_ok=True)
     if not debt_path.exists():
@@ -64,17 +66,22 @@ def ensure_debt_files(debts_path: str | Path | None = None, payments_path: str |
 
 def read_debts(path: str | Path | None = None) -> pd.DataFrame:
     ensure_debt_files(path, None)
+    if not _debt_path(path).exists():
+        return pd.DataFrame(columns=DEBT_COLUMNS)
     data = pd.read_csv(_debt_path(path), sep=";", dtype=str, encoding="utf-8-sig").fillna("")
     return _normalize_debts(data)
 
 
 def read_debt_payments(path: str | Path | None = None) -> pd.DataFrame:
     ensure_debt_files(None, path)
+    if not _payment_path(path).exists():
+        return pd.DataFrame(columns=PAYMENT_COLUMNS)
     data = pd.read_csv(_payment_path(path), sep=";", dtype=str, encoding="utf-8-sig").fillna("")
     return _normalize_payments(data)
 
 
 def write_debts(data: pd.DataFrame, path: str | Path | None = None) -> None:
+    config.require_writable_mode()
     normalized = _normalize_debts(data)
     _raise_if_issues(validate_debt_rows(normalized, read_debt_payments()))
     debt_path = _debt_path(path)
@@ -83,6 +90,7 @@ def write_debts(data: pd.DataFrame, path: str | Path | None = None) -> None:
 
 
 def write_debt_payments(data: pd.DataFrame, path: str | Path | None = None) -> None:
+    config.require_writable_mode()
     normalized = _normalize_payments(data)
     _raise_if_issues(validate_debt_rows(read_debts(), normalized))
     payment_path = _payment_path(path)
@@ -101,6 +109,7 @@ def create_debt(
     comment: str = "",
     create_draft: bool = True,
 ) -> dict:
+    config.require_writable_mode()
     debts = read_debts()
     debt_id = f"debt-{uuid4().hex[:12]}"
     cash_amount_value = principal_amount if cash_amount in {None, ""} else cash_amount
@@ -145,6 +154,7 @@ def create_debt_payment(
     comment: str = "",
     create_draft: bool = True,
 ) -> dict:
+    config.require_writable_mode()
     debts = read_debts()
     payments = read_debt_payments()
     debt_rows = debts[debts["debt_id"].eq(str(debt_id))]
@@ -245,6 +255,7 @@ def active_debt_balances(debt_type: str, currency: str | None = None) -> pd.Data
 
 
 def migrate_legacy_debts(create_files_only_if_missing: bool = True) -> dict:
+    config.require_writable_mode()
     if create_files_only_if_missing and _existing_debt_rows_count() > 0:
         return {"created_debts": 0, "created_payments": 0, "skipped": "debt files already contain rows"}
 
@@ -550,11 +561,11 @@ def _read_raw_csv(path: Path, columns: list[str]) -> pd.DataFrame:
 
 
 def _debt_path(path: str | Path | None = None) -> Path:
-    return Path(path or config.DEBTS_CSV_PATH)
+    return Path(path or config.active_data_path("debts", "debts.csv"))
 
 
 def _payment_path(path: str | Path | None = None) -> Path:
-    return Path(path or config.DEBT_PAYMENTS_CSV_PATH)
+    return Path(path or config.active_data_path("debts", "debt_payments.csv"))
 
 
 def _slug(value) -> str:

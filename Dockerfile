@@ -18,6 +18,7 @@ COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-dev --no-install-project
 
 COPY assets ./assets
+COPY sample_data ./sample_data
 COPY src ./src
 COPY main.py README.md ./
 

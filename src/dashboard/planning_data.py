@@ -1,4 +1,3 @@
-from pathlib import Path
 import re
 
 import pandas as pd
@@ -10,7 +9,6 @@ from src.data.get import get_assets
 from src.data.get_finance import get_actual_fx_rate, set_fx_network_enabled
 from src.model.create_tables import get_balance_by_month
 
-GOALS_PATH = Path(config.DATA_PATH) / "plans" / "goals.csv"
 GOALS_COLUMNS = [
     "year",
     "currency",
@@ -82,9 +80,10 @@ def build_planning_dashboard_data(
 
 
 def _load_goals() -> pd.DataFrame:
-    if not GOALS_PATH.exists():
+    goals_path = config.active_data_path("plans", "goals.csv")
+    if not goals_path.exists():
         return pd.DataFrame(columns=GOALS_COLUMNS)
-    goals = pd.read_csv(GOALS_PATH, sep=";")
+    goals = pd.read_csv(goals_path, sep=";")
     for legacy_column, new_column in LEGACY_GOALS_COLUMNS.items():
         if new_column not in goals.columns and legacy_column in goals.columns:
             goals[new_column] = goals[legacy_column]
@@ -100,6 +99,7 @@ def _load_goals() -> pd.DataFrame:
 
 
 def save_goal_targets(year: str, currency: str, rows: list[dict]) -> None:
+    config.require_writable_mode()
     year = str(year)
     currency = str(currency).upper()
     goals = _load_goals()
@@ -119,8 +119,9 @@ def save_goal_targets(year: str, currency: str, rows: list[dict]) -> None:
     goals = goals[GOALS_COLUMNS].copy(deep=True)
     goals["year"] = goals["year"].astype(str)
     goals["currency"] = goals["currency"].astype(str).str.upper()
-    GOALS_PATH.parent.mkdir(parents=True, exist_ok=True)
-    goals.to_csv(GOALS_PATH, sep=";", index=False, encoding="utf-8-sig")
+    goals_path = config.active_data_path("plans", "goals.csv")
+    goals_path.parent.mkdir(parents=True, exist_ok=True)
+    goals.to_csv(goals_path, sep=";", index=False, encoding="utf-8-sig")
 
 
 def _parse_goal_value(value):

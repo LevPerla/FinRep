@@ -39,6 +39,8 @@ class DraftValidationIssue:
 
 def ensure_transaction_drafts_file(path: str | Path | None = None) -> Path:
     draft_path = _draft_path(path)
+    if config.is_test_mode() and not draft_path.exists():
+        return draft_path
     draft_path.parent.mkdir(parents=True, exist_ok=True)
     if not draft_path.exists():
         pd.DataFrame(columns=DRAFT_COLUMNS).to_csv(draft_path, sep=";", index=False)
@@ -47,6 +49,8 @@ def ensure_transaction_drafts_file(path: str | Path | None = None) -> Path:
 
 def read_transaction_drafts(path: str | Path | None = None) -> pd.DataFrame:
     draft_path = ensure_transaction_drafts_file(path)
+    if not draft_path.exists():
+        return pd.DataFrame(columns=DRAFT_COLUMNS)
     data = pd.read_csv(draft_path, sep=";", dtype=str, encoding="utf-8-sig").fillna("")
     for column in DRAFT_COLUMNS:
         if column not in data.columns:
@@ -58,6 +62,7 @@ def read_transaction_drafts(path: str | Path | None = None) -> pd.DataFrame:
 
 
 def write_transaction_drafts(data: pd.DataFrame, path: str | Path | None = None) -> None:
+    config.require_writable_mode()
     normalized = _normalize_drafts(data)
     issues = validate_transaction_drafts(normalized)
     if issues:
@@ -139,6 +144,7 @@ def ensure_monthly_transaction_csv(year: str, month: str, transactions_root: str
     target_path = monthly_transaction_csv_path(year, month, transactions_root)
     if target_path.exists():
         return {"path": str(target_path), "created": False, "template_path": None}
+    config.require_writable_mode()
 
     template_path = previous_monthly_transaction_csv_path(year, month, transactions_root)
     table = _empty_month_table_from_template(year, month, template_path)
@@ -176,6 +182,7 @@ def export_monthly_transaction_drafts(
     transactions_root: str | Path | None = None,
     preview_rows: list[dict] | None = None,
 ) -> dict:
+    config.require_writable_mode()
     target_path = monthly_transaction_csv_path(year, month, transactions_root)
     preview = _preview_rows_to_month_table(preview_rows) if preview_rows is not None else preview_monthly_transaction_export(year, month, path, transactions_root)
     drafts = _exportable_month_drafts(year, month, path)
@@ -201,7 +208,7 @@ def export_monthly_transaction_drafts(
 
 def _monthly_transaction_backup_path(target_path: Path) -> Path:
     year = target_path.parent.name
-    backup_root = Path(config.TRANSACTION_BACKUPS_PATH) / year
+    backup_root = config.active_data_path("backups", "transactions_info", year)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     return backup_root / f"{target_path.stem}.backup_{timestamp}{target_path.suffix}"
 
@@ -219,7 +226,7 @@ def _preview_rows_to_month_table(preview_rows: list[dict] | None) -> pd.DataFram
 def monthly_transaction_csv_path(year: str, month: str, transactions_root: str | Path | None = None) -> Path:
     year = str(year)
     month = str(int(month)).zfill(2)
-    root = Path(transactions_root or config.TRANSACTIONS_INFO_PATH)
+    root = Path(transactions_root or config.active_data_path("transactions_info"))
     folder = root / year
     plain = folder / f"{year}_{month}.csv"
     underscored = folder / f"{year}_{month}_.csv"
@@ -229,7 +236,7 @@ def monthly_transaction_csv_path(year: str, month: str, transactions_root: str |
 
 
 def previous_monthly_transaction_csv_path(year: str, month: str, transactions_root: str | Path | None = None) -> Path | None:
-    root = Path(transactions_root or config.TRANSACTIONS_INFO_PATH)
+    root = Path(transactions_root or config.active_data_path("transactions_info"))
     current = pd.Period(f"{int(year):04d}-{int(month):02d}", freq="M") - 1
     for _ in range(240):
         folder = root / str(current.year)
@@ -283,7 +290,7 @@ def _template_transaction_columns(template_path: Path | None) -> list[str]:
 
 def _known_transaction_categories() -> list[str]:
     categories: list[str] = []
-    root = Path(config.TRANSACTIONS_INFO_PATH)
+    root = config.active_data_path("transactions_info")
     for csv_path in sorted(root.glob("*/*.csv")):
         try:
             columns = pd.read_csv(csv_path, sep=";", nrows=0, encoding="utf-8-sig").columns.tolist()
@@ -400,7 +407,7 @@ def _normalize_drafts(data: pd.DataFrame) -> pd.DataFrame:
 
 
 def _draft_path(path: str | Path | None = None) -> Path:
-    return Path(path or config.TRANSACTION_DRAFTS_PATH)
+    return Path(path or config.active_data_path("staging", "transaction_drafts.csv"))
 
 
 def _new_source_id(source: str) -> str:

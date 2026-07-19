@@ -10,20 +10,20 @@ from src import config
 
 
 def get_transactions():
-    return _get_transactions_cached().copy(deep=True)
+    return _get_transactions_cached(str(config.active_data_path("transactions_info"))).copy(deep=True)
 
 
 @lru_cache(maxsize=1)
-def _get_transactions_cached():
+def _get_transactions_cached(transactions_root: str):
     transactions_df = pd.DataFrame()
-    for folder_name in os.listdir(config.TRANSACTIONS_INFO_PATH):
+    for folder_name in os.listdir(transactions_root):
         if folder_name == '.DS_Store':
             continue
-        for file_name in os.listdir(os.path.join(config.TRANSACTIONS_INFO_PATH, folder_name)):
+        for file_name in os.listdir(os.path.join(transactions_root, folder_name)):
             # print(file_name)
             if file_name == '.DS_Store' or '.backup_' in file_name:
                 continue
-            month_df = pd.read_csv(os.path.join(config.TRANSACTIONS_INFO_PATH, folder_name, file_name), sep=';',
+            month_df = pd.read_csv(os.path.join(transactions_root, folder_name, file_name), sep=';',
                                    decimal=',',
                                    parse_dates=True,
                                    dayfirst=True,
@@ -63,20 +63,20 @@ def _get_transactions_cached():
 
 
 def get_assets():
-    return _get_assets_cached().copy(deep=True)
+    return _get_assets_cached(str(config.active_data_path("assets_info"))).copy(deep=True)
 
 
 @lru_cache(maxsize=1)
-def _get_assets_cached():
+def _get_assets_cached(assets_root: str):
     assets_df = pd.DataFrame()
-    for folder_name in os.listdir(config.ASSETS_INFO_PATH):
+    for folder_name in os.listdir(assets_root):
         if folder_name == '.DS_Store':
             continue
-        for file_name in os.listdir(os.path.join(config.ASSETS_INFO_PATH, folder_name)):
+        for file_name in os.listdir(os.path.join(assets_root, folder_name)):
             # print(file_name)
             if file_name == '.DS_Store':
                 continue
-            month_df = pd.read_csv(os.path.join(config.ASSETS_INFO_PATH, folder_name, file_name),
+            month_df = pd.read_csv(os.path.join(assets_root, folder_name, file_name),
                                    sep=';', decimal=',', index_col='Счет')
 
             for col_name in month_df.columns:
@@ -106,12 +106,12 @@ def _get_assets_cached():
 
 
 def get_investments():
-    return _get_investments_cached().copy(deep=True)
+    return _get_investments_cached(str(config.active_data_path("investments", "investments.csv"))).copy(deep=True)
 
 
 @lru_cache(maxsize=1)
-def _get_investments_cached():
-    data = pd.read_csv(config.INVESTMENTS_PATH, sep=';', decimal=',')
+def _get_investments_cached(investments_path: str):
+    data = pd.read_csv(investments_path, sep=';', decimal=',')
     data['Дата'] = data['Дата'].astype('datetime64[ns]')
     data['Валюта'] = data['Цена'].apply(lambda x: x.split('|')[1])
     data['Цена'] = data['Цена'].apply(lambda x: x.split('|')[0].replace(',', '.')).astype(float)

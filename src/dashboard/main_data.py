@@ -450,11 +450,11 @@ def _fx_changes_data(balance: pd.DataFrame, currency: str) -> pd.DataFrame:
 
 
 def _asset_currency_allocation_data(currency: str) -> pd.DataFrame:
-    return _asset_currency_allocation_data_cached(str(currency).upper()).copy(deep=True)
+    return _asset_currency_allocation_data_cached(str(config.active_data_path()), str(currency).upper()).copy(deep=True)
 
 
 @lru_cache(maxsize=None)
-def _asset_currency_allocation_data_cached(currency: str) -> pd.DataFrame:
+def _asset_currency_allocation_data_cached(data_root: str, currency: str) -> pd.DataFrame:
     assets = get_assets()
     if assets.empty:
         return pd.DataFrame(columns=["Дата"])
