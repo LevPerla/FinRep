@@ -1536,7 +1536,7 @@ def _transaction_input_layout(currency: str, year: str, month: str, theme: str |
                         id="kaspi-upload",
                         children=html.Div(
                             [
-                                html.Div("Перетащи Kaspi или BCC PDF сюда", className="fw-semibold"),
+                                html.Div("Перетащи Kaspi, BCC или Ozon PDF сюда", className="fw-semibold"),
                                 html.Div("или нажми для выбора файла", className="small opacity-75"),
                             ],
                             className="kaspi-upload-content",
