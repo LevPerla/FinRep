@@ -71,7 +71,10 @@ def _import_frame_from_rows(rows: list[dict], source: str = KASPI_SOURCE) -> pd.
     if data.empty:
         return _empty_import_frame()
     data["is_internal_transfer"] = data["details"].map(_is_internal_transfer)
-    data["category"] = data.apply(lambda row: _categorize(row["details"], row["signed_amount"]), axis=1)
+    history_categories = _history_category_lookup()
+    data["category"] = data.apply(
+        lambda row: _categorize(row["details"], row["signed_amount"], history_categories), axis=1
+    )
     data["amount"] = data["signed_amount"].abs()
     data["comment"] = data["details"].map(_clean_comment)
     data["source"] = source
@@ -149,9 +152,12 @@ def _parse_amount(value: str) -> float:
     return float(value.replace(" ", "").replace(",", "."))
 
 
-def _categorize(details: str, amount: float) -> str:
+def _categorize(details: str, amount: float, history_categories: dict[str, str] | None = None) -> str:
     if _is_internal_transfer(details):
         return INTERNAL_TRANSFER_CATEGORY
+    history_category = (history_categories or {}).get(_normalize_text(_clean_comment(details)))
+    if history_category:
+        return history_category
     rules = _load_rules()
     normalized = _normalize_text(details)
     for _, rule in rules.iterrows():
@@ -159,6 +165,26 @@ def _categorize(details: str, amount: float) -> str:
         if pattern and pattern in normalized:
             return str(rule.get("category", DEFAULT_EXPENSE_CATEGORY))
     return DEFAULT_INCOME_CATEGORY if amount > 0 else DEFAULT_EXPENSE_CATEGORY
+
+
+def _history_category_lookup() -> dict[str, str]:
+    try:
+        transactions = get_transactions()
+    except Exception:
+        return {}
+    required_columns = {"Дата", "Категория", "Комментарий"}
+    if transactions.empty or not required_columns.issubset(transactions.columns):
+        return {}
+
+    history = transactions.loc[:, list(required_columns)].copy(deep=True)
+    history = history[history["Комментарий"].notna() & history["Категория"].notna()]
+    history["__comment"] = history["Комментарий"].map(_normalize_text)
+    history["__category"] = history["Категория"].astype(str).str.strip()
+    history["__date"] = pd.to_datetime(history["Дата"], errors="coerce")
+    history = history[history["__comment"].ne("") & history["__category"].ne("")]
+    history = history.sort_values("__date", ascending=False, kind="mergesort")
+    history = history.drop_duplicates("__comment", keep="first")
+    return dict(zip(history["__comment"], history["__category"]))
 
 
 def _load_rules() -> pd.DataFrame:
