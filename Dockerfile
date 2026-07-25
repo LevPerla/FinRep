@@ -27,4 +27,4 @@ EXPOSE 8050
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
     CMD python -c "from urllib.request import urlopen; urlopen('http://127.0.0.1:8050/healthz', timeout=3).read()"
 
-CMD ["python", "-m", "src.dashboard.app"]
+CMD ["sh", "-c", "exec gunicorn --bind 0.0.0.0:${PORT:-8050} src.dashboard.wsgi:server"]

@@ -1,0 +1,23 @@
+services:
+  - type: web
+    name: finrep-demo
+    runtime: docker
+    plan: free
+    region: frankfurt
+    healthCheckPath: /healthz
+    autoDeployTrigger: commit
+    envVars:
+      - key: PORT
+        value: 8050
+      - key: FINREP_DASH_HOST
+        value: 0.0.0.0
+      - key: FINREP_DASH_PORT
+        value: 8050
+      - key: FINREP_DASH_DEBUG
+        value: 0
+      - key: FINREP_DASH_HOT_RELOAD
+        value: 0
+      - key: FINREP_REPORTS_DIR
+        value: /tmp/finrep_reports
+      - key: FINREP_DASH_SECRET_KEY
+        generateValue: true
