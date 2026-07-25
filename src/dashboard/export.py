@@ -8,7 +8,8 @@ from src import config
 
 
 EXPORT_VIEWPORT = {"width": 1440, "height": 1200}
-EXPORT_WAIT_MS = 2000
+EXPORT_READY_TIMEOUT_MS = 90_000
+EXPORT_SETTLE_MS = 1_000
 
 
 def build_dashboard_url(
@@ -65,8 +66,7 @@ def export_dashboard_page(
                 ])
             page = context.new_page()
             page.goto(dashboard_url, wait_until="domcontentloaded")
-            page.wait_for_selector("#dashboard-content")
-            page.wait_for_timeout(EXPORT_WAIT_MS)
+            _wait_for_dashboard_ready(page)
             if export_format == "png":
                 page.screenshot(path=export_path, full_page=True)
             else:
@@ -85,6 +85,27 @@ def export_dashboard_page(
         ) from exc
 
     return export_path
+
+
+def _wait_for_dashboard_ready(page) -> None:
+    page.wait_for_function(
+        """() => {
+            const content = document.querySelector("#dashboard-content");
+            if (!content || document.querySelector('[data-dash-is-loading="true"]')) {
+                return false;
+            }
+            const visibleChild = Array.from(content.children).some((element) => {
+                const style = window.getComputedStyle(element);
+                return style.visibility !== "hidden"
+                    && style.display !== "none"
+                    && element.getBoundingClientRect().height > 0;
+            });
+            return visibleChild && content.textContent.trim().length > 0;
+        }""",
+        timeout=EXPORT_READY_TIMEOUT_MS,
+    )
+    page.evaluate("() => document.fonts ? document.fonts.ready : Promise.resolve()")
+    page.wait_for_timeout(EXPORT_SETTLE_MS)
 
 
 def _export_filename(
