@@ -1,5 +1,10 @@
 # FinRep
 
+> [!IMPORTANT]
+> **[Open the live demo / Открыть публичное демо →](https://finrep-f0t5.onrender.com/)**
+>
+> Select **«Открыть demo без пароля»** to enter the read-only TEST MODE. The demo uses only fictional `sample_data/` and never exposes private financial data. The first load can take up to a minute while the free Render service wakes up.
+
 FinRep is a local-first personal finance dashboard and report generator. It reads manually maintained CSV files, builds Plotly/Dash views, and writes reports to your own machine. It is not a hosted service and it does not upload your transactions.
 
 Русская версия кратко: FinRep хранит транзакции, активы и отчеты локально. Публичный репозиторий содержит только вымышленные `sample_data/`, чтобы можно было сразу увидеть интерфейс без приватных CSV.
