@@ -9,6 +9,20 @@ FinRep is a local-first personal finance dashboard and report generator. It read
 
 Русская версия кратко: FinRep хранит транзакции, активы и отчеты локально. Публичный репозиторий содержит только вымышленные `sample_data/`, чтобы можно было сразу увидеть интерфейс без приватных CSV.
 
+## Dashboard Screenshots
+
+Click a preview to open the full-size dashboard export.
+
+<p align="center">
+  <a href="examples/dashboard-main.png"><img src="examples/dashboard-main.png" width="31%" alt="FinRep main dashboard"></a>
+  <a href="examples/dashboard-year.png"><img src="examples/dashboard-year.png" width="31%" alt="FinRep yearly dashboard"></a>
+  <a href="examples/dashboard-month.png"><img src="examples/dashboard-month.png" width="31%" alt="FinRep monthly dashboard"></a>
+</p>
+
+<p align="center">
+  <strong>Main report</strong> · <strong>Yearly report</strong> · <strong>Monthly report</strong>
+</p>
+
 ## Quick Start
 
 Clone the repository and enter the project folder:
