@@ -25,6 +25,7 @@ DRAFT_STATUSES = {"draft", "ready", "exported", "ignored"}
 EXPORTABLE_STATUSES = {"draft", "ready"}
 DEFAULT_SOURCE = "manual"
 DEFAULT_STATUS = "draft"
+TRANSACTION_COMMENT_SEPARATORS = ("|", "#", ";", "\r", "\n")
 
 
 @dataclass(frozen=True)
@@ -328,7 +329,7 @@ def _append_transaction_cell(existing, new_value: str) -> str:
 def _draft_to_month_cell(draft: pd.Series) -> str:
     amount = _format_amount_for_month_cell(draft["amount"])
     currency = str(draft["currency"]).upper()
-    comment = str(draft.get("comment", ""))
+    comment = sanitize_transaction_comment(draft.get("comment", ""))
     return f"{amount}|{currency}|{comment}"
 
 
@@ -403,7 +404,17 @@ def _normalize_drafts(data: pd.DataFrame) -> pd.DataFrame:
     normalized["currency"] = normalized["currency"].astype(str).str.upper()
     normalized["status"] = normalized["status"].replace("", DEFAULT_STATUS)
     normalized["amount"] = normalized["amount"].astype(str)
+    normalized["comment"] = normalized["comment"].map(sanitize_transaction_comment)
     return normalized.fillna("")
+
+
+def sanitize_transaction_comment(value) -> str:
+    if value is None or pd.isna(value):
+        return ""
+    comment = str(value)
+    for separator in TRANSACTION_COMMENT_SEPARATORS:
+        comment = comment.replace(separator, " ")
+    return " ".join(comment.split())
 
 
 def _draft_path(path: str | Path | None = None) -> Path:

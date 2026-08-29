@@ -1,12 +1,37 @@
 import pandas as pd
 import numpy as np
 import os
+import re
 import warnings
 from functools import lru_cache
 
 warnings.filterwarnings('ignore')
 
 from src import config
+from src.data.staging import sanitize_transaction_comment
+
+TRANSACTION_BOUNDARY_RE = re.compile(r'#(?=\s*[+-]?(?:\d+(?:[.,]\d*)?|[.,]\d+)(?:\||#|$))')
+
+
+def _split_transaction_values(value):
+    return TRANSACTION_BOUNDARY_RE.split(str(value))
+
+
+def _parse_transaction_value(value):
+    normalized = (str(value)
+                  .replace(',', '.')
+                  .replace('\\xa0', '')
+                  .replace('\xa0', '')
+                  .replace(' ₽', ''))
+    parts = normalized.split('|', 2)
+    amount = parts[0]
+    currency = parts[1] if len(parts) >= 2 else 'RUB'
+    comment = sanitize_transaction_comment(parts[2]) if len(parts) == 3 else np.nan
+    return {
+        'Значение': float(amount),
+        'Валюта': currency.upper(),
+        'Комментарий': comment,
+    }
 
 
 def get_transactions():
@@ -34,18 +59,9 @@ def _get_transactions_cached(transactions_root: str):
                                        errors='ignore')
             month_df = month_df.reset_index().melt(id_vars='Дата', var_name='Категория')
 
-            month_df['value'] = month_df['value'].astype(str).apply(lambda x: x.split('#'))
+            month_df['value'] = month_df['value'].apply(_split_transaction_values)
             month_df = month_df.explode('value')
-            month_df['value'] = (month_df['value'].astype(str)
-                                 .str.replace(',', '.')
-                                 .str.replace('\\xa0', '')
-                                 .str.replace('\xa0', '')
-                                 .str.replace(' ₽', '')
-                                 .apply(lambda x: x.split('|') if len(x.split('|')) == 3 else [x, 'RUB', np.nan])
-                                 .apply(lambda x: {'Значение': float(x[0]),
-                                                   'Валюта': x[1].upper(),
-                                                   'Комментарий': x[2]})
-                                 )
+            month_df['value'] = month_df['value'].apply(_parse_transaction_value)
 
             month_df['Валюта'] = month_df['value'].apply(lambda x: x['Валюта'])
             month_df['Значение'] = month_df['value'].apply(lambda x: x['Значение'])

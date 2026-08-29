@@ -197,12 +197,13 @@ def _split_transaction_cell(value: str) -> list[str]:
     normalized = _normalize_money_text(value)
     if normalized == "":
         return ["0"]
-    return [part.strip() for part in normalized.split("#")]
+    parts = re.split(r"#(?=\s*[+-]?(?:\d+(?:[.]\d*)?|[.]\d+)(?:\||#|$))", normalized)
+    return [part.strip() for part in parts]
 
 
 def _parse_money_cell(value: str, expected_parts: int):
     normalized = _normalize_money_text(value)
-    parts = [part.strip() for part in normalized.split("|")]
+    parts = [part.strip() for part in normalized.split("|", 2 if expected_parts == 3 else -1)]
 
     if len(parts) == 1:
         return (float(parts[0]), "RUB") if _is_number(parts[0]) else None
