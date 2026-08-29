@@ -797,6 +797,7 @@ def register_callbacks(app: Dash) -> None:
                 _graph_section(datasets["fx_revaluation"], height="420px", theme=theme),
                 _graph_section(datasets["asset_currency_allocation"], height="520px", theme=theme),
                 _graph_section(datasets["fx_changes"], theme=theme),
+                _grid_section(datasets["top_purchases"], height="680px", theme=theme),
             ],
             className="d-grid gap-4",
         )
@@ -1399,6 +1400,7 @@ def _year_report_layout(datasets: dict[str, DashboardDataset], theme: str | None
             _grid_section(datasets["year_fx_rates"], height="260px", theme=theme),
             _graph_section(datasets["year_cost_distribution_chart"], theme=theme),
             _grid_section(datasets["year_cost_distribution"], height="620px", theme=theme),
+            _grid_section(datasets["year_top_purchases"], height="680px", theme=theme),
             dbc.Row(
                 [
                     dbc.Col(_grid_section(datasets["year_income_by_month"], height="560px", theme=theme), xs=12, lg=3),
@@ -1702,6 +1704,11 @@ def _transaction_input_layout(currency: str, year: str, month: str, theme: str |
                         },
                     ),
                     dbc.Alert(id="kaspi-import-message", children="PDF preview появится здесь. Дубли из staging/source CSV будут помечены как skip.", color="secondary", is_open=True, className="my-3 py-2"),
+                    html.Div(
+                        "Категории: клик — одна ячейка, Shift+клик — диапазон, "
+                        "Ctrl/Cmd+клик — несколько; Ctrl/Cmd+C и Ctrl/Cmd+V — копировать и вставить.",
+                        className="small opacity-75 mb-2",
+                    ),
                     _ag_grid_scroll(
                         dag.AgGrid(
                             id="kaspi-import-grid",
@@ -1709,6 +1716,11 @@ def _transaction_input_layout(currency: str, year: str, month: str, theme: str |
                             columnDefs=_kaspi_import_column_defs(),
                             defaultColDef=_ag_grid_default_col_def(editable=False),
                             dashGridOptions={"pagination": False, "suppressFieldDotNotation": True, "stopEditingWhenCellsLoseFocus": True},
+                            eventListeners={
+                                "cellClicked": ["finrepCategoryCellClicked(params)"],
+                                "cellKeyDown": ["finrepCategoryClipboard(params)"],
+                                "rowDataUpdated": ["finrepCategorySelectionReset(params)"],
+                            },
                             className=_ag_grid_class_name(theme),
                             style=_ag_grid_style("420px"),
                         )
@@ -2169,6 +2181,10 @@ def _format_input_amount(value) -> str:
 def _kaspi_import_column_defs() -> list[dict]:
     categories = [option["value"] for option in _transaction_category_options()]
     category_class_rules = {
+        "finrep-category-selected": (
+            "params.api.__finrepCategorySelection && "
+            "params.api.__finrepCategorySelection.has(params.node.id)"
+        ),
         "kaspi-category-income": "params.value == 'Доход'",
         "kaspi-category-saving": "params.value == 'Сбережения' || params.value == 'Инвестиции'",
         "kaspi-category-internal": "params.value == 'Внутренний перевод'",
@@ -2250,6 +2266,8 @@ REPORT_SCROLL_TABLE_IDS = {
     "yearly_stats",
     "year_quarter_stats",
     "year_cost_distribution",
+    "top_purchases",
+    "year_top_purchases",
     "year_income_by_month",
     "year_cost_by_month",
     "year_income_cost_stats",

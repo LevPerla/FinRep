@@ -1389,6 +1389,12 @@ body {
   }
 }
 
+.finrep-ag-grid .finrep-category-selected {
+  box-shadow: inset 0 0 0 2px #62a8ff;
+  position: relative;
+  z-index: 1;
+}
+
 .finrep-chart-scroll,
 .finrep-table-scroll {
   width: 100%;

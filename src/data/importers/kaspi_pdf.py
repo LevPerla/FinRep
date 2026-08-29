@@ -200,7 +200,12 @@ def _is_internal_transfer(details: str) -> bool:
 
 
 def _clean_comment(details: str) -> str:
-    details = re.sub(r"^(Purchases|Transfers|Replenishment|Transfer to your)\s+", "", str(details), flags=re.IGNORECASE)
+    details = re.sub(
+        r"^(Purchases|Transfers|Replenishment|Transfer to your|Pending)\s+",
+        "",
+        str(details),
+        flags=re.IGNORECASE,
+    )
     return details.strip()
 
 

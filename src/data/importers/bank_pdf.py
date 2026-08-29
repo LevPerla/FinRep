@@ -6,7 +6,11 @@ import io
 import pandas as pd
 import pdfplumber
 
-from src.data.importers.bcc_pdf import BCC_MARKER, parse_bcc_pdf_bytes
+from src.data.importers.bcc_pdf import is_bcc_statement, parse_bcc_pdf_bytes
+from src.data.importers.kaspi_deposit_pdf import (
+    is_kaspi_deposit_statement,
+    parse_kaspi_deposit_pdf_bytes,
+)
 from src.data.importers.kaspi_pdf import parse_kaspi_pdf_bytes
 from src.data.importers.ozon_pdf import OZON_MARKER, parse_ozon_pdf_bytes
 
@@ -18,7 +22,9 @@ def parse_bank_upload_contents(contents: str) -> pd.DataFrame:
     content = base64.b64decode(encoded)
     with pdfplumber.open(io.BytesIO(content)) as pdf:
         first_page_text = pdf.pages[0].extract_text() if pdf.pages else ""
-    if BCC_MARKER in (first_page_text or ""):
+    if is_kaspi_deposit_statement(first_page_text):
+        return parse_kaspi_deposit_pdf_bytes(content)
+    if is_bcc_statement(first_page_text):
         return parse_bcc_pdf_bytes(content)
     if OZON_MARKER in (first_page_text or ""):
         return parse_ozon_pdf_bytes(content)

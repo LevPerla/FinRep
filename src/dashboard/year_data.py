@@ -3,7 +3,12 @@ import pandas as pd
 import plotly.graph_objects as go
 
 from src import config, utils
-from src.dashboard.main_data import DashboardDataset, _apply_dashboard_chart_layout
+from src.dashboard.main_data import (
+    DashboardDataset,
+    _apply_dashboard_chart_layout,
+    _format_top_purchases,
+    _top_purchases_data,
+)
 from src.data.exchange_rates_info import get_exchange_rates_info
 from src.data.get import get_transactions
 from src.data.get_finance import set_fx_network_enabled
@@ -27,6 +32,7 @@ def build_year_dashboard_data(
 
     quarter_stats = _quarter_stats(year_balance)
     cost_distribution = _cost_distribution(year, currency)
+    top_purchases = _top_purchases_data(currency, year=year)
     income_by_month = year_balance[["Доход"]].reset_index()
     cost_by_month = year_balance[["Расход"]].reset_index()
     income_cost_stats = _income_cost_stats(year_balance)
@@ -73,6 +79,12 @@ def build_year_dashboard_data(
             title="Распределение расходов",
             dataframe=cost_distribution,
             figure=_cost_distribution_figure(cost_distribution),
+        ),
+        "year_top_purchases": DashboardDataset(
+            id="year_top_purchases",
+            title=f"Топ-15 самых больших покупок за {year} год",
+            dataframe=top_purchases,
+            display_dataframe=_format_top_purchases(top_purchases, currency),
         ),
         "year_income_expense": DashboardDataset(
             id="year_income_expense",
