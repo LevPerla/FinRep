@@ -862,7 +862,6 @@ def register_callbacks(app: Dash) -> None:
         State("dashboard-year", "value"),
         State("dashboard-month", "value"),
         State("dashboard-tabs", "active_tab"),
-        State("dashboard-location", "href"),
         prevent_initial_call=True,
     )
     def export_page(
@@ -872,14 +871,12 @@ def register_callbacks(app: Dash) -> None:
         year: str,
         month: str,
         active_tab: str,
-        href: str,
     ):
         if not png_clicks and not pdf_clicks:
             raise PreventUpdate
 
         export_format = "png" if ctx.triggered_id == "export-png" else "pdf"
         export_path = export_dashboard_page(
-            href,
             currency,
             active_tab,
             export_format,
@@ -3244,7 +3241,7 @@ app = create_app()
 
 if __name__ == "__main__":
     host = os.environ.get("FINREP_DASH_HOST", "127.0.0.1")
-    port = int(os.environ.get("FINREP_DASH_PORT", "8050"))
+    port = int(os.environ.get("PORT") or os.environ.get("FINREP_DASH_PORT", "8050"))
     debug = os.environ.get("FINREP_DASH_DEBUG", "1") == "1"
     hot_reload = os.environ.get("FINREP_DASH_HOT_RELOAD", "1") == "1"
     app.run(
