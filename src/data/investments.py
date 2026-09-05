@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+from math import isfinite
 from pathlib import Path
 
 import pandas as pd
@@ -87,7 +88,7 @@ def build_instrument_registry(transactions: pd.DataFrame | None = None) -> pd.Da
 def read_investment_transactions(path: str | Path | None = None, legacy_path: str | Path | None = None) -> pd.DataFrame:
     transaction_path = Path(path or config.active_data_path("investments", "transactions.csv"))
     if transaction_path.exists():
-        data = pd.read_csv(transaction_path, sep=";", dtype=str, encoding="utf-8-sig").fillna("")
+        data = pd.read_csv(transaction_path, sep=";", dtype=str, encoding="utf-8-sig", keep_default_na=False)
         return normalize_investment_transactions(data)
     return migrate_legacy_investments(legacy_path)
 
@@ -133,7 +134,6 @@ def ensure_price_cache_file(path: str | Path | None = None) -> Path:
 
 def write_price_cache(data: pd.DataFrame, path: str | Path | None = None) -> None:
     config.require_writable_mode()
-    cache_path = ensure_price_cache_file(path)
     normalized = data.copy(deep=True)
     for column in PRICE_CACHE_COLUMNS:
         if column not in normalized.columns:
@@ -141,6 +141,10 @@ def write_price_cache(data: pd.DataFrame, path: str | Path | None = None) -> Non
     normalized = normalized[PRICE_CACHE_COLUMNS].fillna("")
     normalized["ticker"] = normalized["ticker"].astype(str).str.strip().str.upper()
     normalized["currency"] = normalized["currency"].astype(str).str.strip().str.upper()
+    for row_number, price in enumerate(normalized["price"], start=2):
+        if _to_float(price) is None:
+            raise ValueError(f"row {row_number}: price must be finite")
+    cache_path = ensure_price_cache_file(path)
     normalized.to_csv(cache_path, sep=";", index=False, encoding="utf-8-sig")
 
 
@@ -270,6 +274,8 @@ def normalize_investment_transactions(data: pd.DataFrame) -> pd.DataFrame:
     for column in TRANSACTION_COLUMNS:
         if column not in normalized.columns:
             normalized[column] = ""
+    # An omitted/blank fee defaults to zero; an explicit NaN must not become zero.
+    normalized["fee"] = normalized["fee"].map(lambda value: "" if value is None else str(value))
     normalized = normalized[TRANSACTION_COLUMNS].fillna("")
     normalized["date"] = normalized["date"].astype(str).str.strip()
     normalized["operation"] = normalized["operation"].astype(str).str.strip().str.lower()
@@ -390,7 +396,8 @@ def _is_non_negative_number(value) -> bool:
 
 def _to_float(value) -> float | None:
     try:
-        return float(_normalize_decimal(value))
+        parsed = float(_normalize_decimal(value))
+        return parsed if isfinite(parsed) else None
     except (TypeError, ValueError):
         return None
 

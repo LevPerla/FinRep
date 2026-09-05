@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from math import isfinite
 from pathlib import Path
 from uuid import uuid4
 
@@ -482,8 +483,8 @@ def _number_series(series: pd.Series) -> pd.Series:
 
 def _to_positive_float(value, name: str) -> float:
     parsed = pd.to_numeric(str(value).replace(" ", "").replace(",", "."), errors="coerce")
-    if pd.isna(parsed) or float(parsed) <= 0:
-        raise ValueError(f"{name} must be positive")
+    if not isfinite(parsed) or float(parsed) <= 0:
+        raise ValueError(f"{name} must be finite and positive")
     return float(parsed)
 
 
@@ -496,12 +497,12 @@ def _validate_debt_row(index: int, row: pd.Series, issues: list[DebtValidationIs
         issues.append(DebtValidationIssue(_debt_path(), index + 2, "counterparty is required"))
     if pd.isna(pd.to_datetime(row["opened_date"], errors="coerce")):
         issues.append(DebtValidationIssue(_debt_path(), index + 2, "invalid opened_date"))
-    if pd.isna(row["principal_amount"]) or float(row["principal_amount"]) <= 0:
-        issues.append(DebtValidationIssue(_debt_path(), index + 2, "principal_amount must be positive"))
+    if not isfinite(row["principal_amount"]) or float(row["principal_amount"]) <= 0:
+        issues.append(DebtValidationIssue(_debt_path(), index + 2, "principal_amount must be finite and positive"))
     if row["principal_currency"] not in config.UNIQUE_TICKERS:
         issues.append(DebtValidationIssue(_debt_path(), index + 2, f"unsupported principal_currency {row['principal_currency']!r}"))
-    if pd.isna(row["cash_amount"]) or float(row["cash_amount"]) <= 0:
-        issues.append(DebtValidationIssue(_debt_path(), index + 2, "cash_amount must be positive"))
+    if not isfinite(row["cash_amount"]) or float(row["cash_amount"]) <= 0:
+        issues.append(DebtValidationIssue(_debt_path(), index + 2, "cash_amount must be finite and positive"))
     if row["cash_currency"] not in config.UNIQUE_TICKERS:
         issues.append(DebtValidationIssue(_debt_path(), index + 2, f"unsupported cash_currency {row['cash_currency']!r}"))
     if row["status"] not in DEBT_STATUSES:
@@ -515,10 +516,10 @@ def _validate_payment_row(index: int, row: pd.Series, known_debt_ids: set[str], 
         issues.append(DebtValidationIssue(_payment_path(), index + 2, f"unknown debt_id {row['debt_id']!r}"))
     if pd.isna(pd.to_datetime(row["date"], errors="coerce")):
         issues.append(DebtValidationIssue(_payment_path(), index + 2, "invalid date"))
-    if pd.isna(row["amount"]) or float(row["amount"]) <= 0:
-        issues.append(DebtValidationIssue(_payment_path(), index + 2, "amount must be positive"))
-    if pd.isna(row["cash_amount"]) or float(row["cash_amount"]) <= 0:
-        issues.append(DebtValidationIssue(_payment_path(), index + 2, "cash_amount must be positive"))
+    if not isfinite(row["amount"]) or float(row["amount"]) <= 0:
+        issues.append(DebtValidationIssue(_payment_path(), index + 2, "amount must be finite and positive"))
+    if not isfinite(row["cash_amount"]) or float(row["cash_amount"]) <= 0:
+        issues.append(DebtValidationIssue(_payment_path(), index + 2, "cash_amount must be finite and positive"))
     if row["cash_currency"] not in config.UNIQUE_TICKERS:
         issues.append(DebtValidationIssue(_payment_path(), index + 2, f"unsupported cash_currency {row['cash_currency']!r}"))
     if row["status"] not in PAYMENT_STATUSES:

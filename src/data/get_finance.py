@@ -702,6 +702,9 @@ def _read_cache() -> pd.DataFrame:
 
 def _write_cache(cache: pd.DataFrame):
     config.require_writable_mode()
+    rates = pd.to_numeric(cache['usd_rate'], errors='coerce')
+    if rates.isna().any() or not np.isfinite(rates).all():
+        raise ValueError("usd_rate must be finite")
     cache_path = config.active_data_path("rates", "fx_rates.csv")
     cache_path.parent.mkdir(parents=True, exist_ok=True)
     cache = cache.copy()
@@ -748,7 +751,7 @@ def _clean_rate_series(series: pd.Series) -> pd.Series:
     series = pd.Series(series).copy()
     series.index = pd.to_datetime(series.index, errors='coerce').normalize()
     series = pd.to_numeric(series, errors='coerce')
-    series = series.dropna()
+    series = series[np.isfinite(series)]
     series = series[series > 0]
     return series[~series.index.isna()].sort_index()
 

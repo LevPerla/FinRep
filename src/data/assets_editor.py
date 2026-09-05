@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from math import isfinite
 from pathlib import Path
 from shutil import copy2
 
@@ -74,8 +75,8 @@ def read_asset_snapshot(year: str, month: str, assets_root: str | Path | None = 
 def write_asset_snapshot(rows: list[dict], year: str, month: str, assets_root: str | Path | None = None) -> dict:
     config.require_writable_mode()
     target_path = asset_snapshot_path(year, month, assets_root)
-    ensure_info = ensure_asset_snapshot(year, month, assets_root)
     data = _normalize_asset_rows(pd.DataFrame(rows))
+    ensure_info = ensure_asset_snapshot(year, month, assets_root)
 
     backup_path = None
     if target_path.exists():
@@ -110,8 +111,9 @@ def _normalize_asset_rows(data: pd.DataFrame) -> pd.DataFrame:
     if invalid_currencies:
         raise ValueError(f"Недопустимые валюты активов: {', '.join(invalid_currencies)}")
     amounts = pd.to_numeric(normalized["amount"].astype(str).str.replace(" ", "").str.replace(",", "."), errors="coerce")
-    if amounts.isna().any():
-        bad_accounts = normalized.loc[amounts.isna(), "account"].tolist()
+    invalid_amounts = ~amounts.map(isfinite)
+    if invalid_amounts.any():
+        bad_accounts = normalized.loc[invalid_amounts, "account"].tolist()
         raise ValueError(f"Некорректная сумма у активов: {', '.join(bad_accounts[:5])}")
     normalized["amount"] = amounts.astype(float)
     return normalized.reset_index(drop=True)

@@ -1,16 +1,13 @@
 import pandas as pd
 import numpy as np
 import os
-import re
 import warnings
 from functools import lru_cache
 
 warnings.filterwarnings('ignore')
 
 from src import config
-from src.data.staging import sanitize_transaction_comment
-
-TRANSACTION_BOUNDARY_RE = re.compile(r'#(?=\s*[+-]?(?:\d+(?:[.,]\d*)?|[.,]\d+)(?:\||#|$))')
+from src.data.staging import TRANSACTION_BOUNDARY_RE, sanitize_transaction_comment
 
 
 def _split_transaction_values(value):

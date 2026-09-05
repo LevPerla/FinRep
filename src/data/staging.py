@@ -4,12 +4,16 @@ from dataclasses import dataclass
 from pathlib import Path
 from calendar import monthrange
 from datetime import datetime
+from math import isfinite
+import re
 from shutil import copy2
 from uuid import uuid4
 
 import pandas as pd
 
 from src import config
+
+TRANSACTION_BOUNDARY_RE = re.compile(r'#(?=\s*[+-]?(?:\d+(?:[.,]\d*)?|[.,]\d+)(?:\||#|$))')
 
 DRAFT_COLUMNS = [
     "date",
@@ -185,10 +189,16 @@ def export_monthly_transaction_drafts(
 ) -> dict:
     config.require_writable_mode()
     target_path = monthly_transaction_csv_path(year, month, transactions_root)
-    preview = _preview_rows_to_month_table(preview_rows) if preview_rows is not None else preview_monthly_transaction_export(year, month, path, transactions_root)
+    rows = preview_rows if preview_rows is not None else preview_monthly_transaction_export(year, month, path, transactions_root).to_dict("records")
+    preview = _preview_rows_to_month_table(rows)
     drafts = _exportable_month_drafts(year, month, path)
     if drafts.empty and preview_rows is None:
         raise ValueError("Нет черновиков со статусом draft/ready для выбранного месяца.")
+    if not drafts.empty:
+        # Marking exported rows validates the whole staging file; check before the month write.
+        issues = validate_transaction_drafts(path=path)
+        if issues:
+            raise ValueError(_format_issues(issues))
 
     target_path.parent.mkdir(parents=True, exist_ok=True)
     backup_path = None
@@ -217,9 +227,22 @@ def _monthly_transaction_backup_path(target_path: Path) -> Path:
 def _preview_rows_to_month_table(preview_rows: list[dict] | None) -> pd.DataFrame:
     if not preview_rows:
         raise ValueError("Preview пустой: сначала нажми Preview или заполни таблицу.")
-    data = pd.DataFrame(preview_rows).fillna("0")
+    data = pd.DataFrame(preview_rows, dtype=object)
     if "Дата" not in data.columns:
         raise ValueError("В preview нет колонки Дата.")
+    for column in data.columns:
+        if column == "Дата":
+            continue
+        for row_number, value in enumerate(data[column], start=2):
+            if value is None or (isinstance(value, str) and value == ""):
+                continue
+            for part in TRANSACTION_BOUNDARY_RE.split(str(value)):
+                amount_text = (part.split("|", 1)[0].replace(",", ".")
+                               .replace("\\xa0", "").replace("\xa0", "").replace(" ₽", ""))
+                amount = pd.to_numeric(amount_text, errors="coerce")
+                if not isfinite(amount):
+                    raise ValueError(f"row {row_number}, column {column!r}: amount must be finite")
+    data = data.fillna("0")
     ordered_columns = ["Дата", *[column for column in data.columns if column != "Дата"]]
     return data[ordered_columns]
 
@@ -335,7 +358,7 @@ def _draft_to_month_cell(draft: pd.Series) -> str:
 
 def _format_amount_for_month_cell(value) -> str:
     numeric = pd.to_numeric(value, errors="coerce")
-    if pd.isna(numeric):
+    if not isfinite(numeric):
         raise ValueError(f"invalid amount {value!r}")
     if float(numeric).is_integer():
         return str(int(numeric))
@@ -374,9 +397,9 @@ def validate_transaction_drafts(data: pd.DataFrame | None = None, path: str | Pa
             issues.append(DraftValidationIssue(index, f"unsupported currency {value!r}"))
 
     amounts = pd.to_numeric(data["amount"], errors="coerce")
-    for index, is_bad in enumerate(amounts.isna(), start=2):
+    for index, is_bad in enumerate(~amounts.map(isfinite), start=2):
         if is_bad:
-            issues.append(DraftValidationIssue(index, "invalid amount"))
+            issues.append(DraftValidationIssue(index, "invalid amount: must be finite"))
 
     for index, value in enumerate(data["status"], start=2):
         if str(value) not in DRAFT_STATUSES:

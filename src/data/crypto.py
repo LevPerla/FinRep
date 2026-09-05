@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+from math import isfinite
 from pathlib import Path
 import re
 
@@ -155,12 +156,13 @@ def write_crypto_refresh_status(data: pd.DataFrame, path: str | Path | None = No
 def write_crypto_balances(data: pd.DataFrame, path: str | Path | None = None) -> None:
     config.require_writable_mode()
     balance_path = Path(path or config.active_data_path("investments", "crypto_balances.csv"))
-    balance_path.parent.mkdir(parents=True, exist_ok=True)
     normalized = data.copy(deep=True)
     for column in BALANCE_COLUMNS:
         if column not in normalized.columns:
             normalized[column] = ""
+    _validate_crypto_numbers(normalized, ["balance"])
     normalized = normalized[BALANCE_COLUMNS].fillna("")
+    balance_path.parent.mkdir(parents=True, exist_ok=True)
     normalized.to_csv(balance_path, sep=";", index=False, encoding="utf-8-sig")
 
 
@@ -178,13 +180,25 @@ def read_crypto_transactions(path: str | Path | None = None) -> pd.DataFrame:
 def write_crypto_transactions(data: pd.DataFrame, path: str | Path | None = None) -> None:
     config.require_writable_mode()
     transactions_path = Path(path or config.active_data_path("investments", "crypto_transactions.csv"))
-    transactions_path.parent.mkdir(parents=True, exist_ok=True)
     normalized = data.copy(deep=True)
     for column in TRANSACTION_COLUMNS:
         if column not in normalized.columns:
             normalized[column] = ""
+    # Some providers return transfer metadata without a known quantity/fee.
+    _validate_crypto_numbers(normalized, ["quantity", "fee"], allow_empty=True)
     normalized = normalized[TRANSACTION_COLUMNS].fillna("")
+    transactions_path.parent.mkdir(parents=True, exist_ok=True)
     normalized.to_csv(transactions_path, sep=";", index=False, encoding="utf-8-sig")
+
+
+def _validate_crypto_numbers(data: pd.DataFrame, columns: list[str], allow_empty: bool = False) -> None:
+    for column in columns:
+        for row_number, value in enumerate(data[column], start=2):
+            if allow_empty and (value is None or (isinstance(value, str) and not value.strip())):
+                continue
+            parsed = pd.to_numeric(value, errors="coerce")
+            if pd.isna(parsed) or not isfinite(parsed):
+                raise ValueError(f"row {row_number}: {column} must be finite")
 
 
 def validate_crypto_wallets(data: pd.DataFrame | None = None, path: str | Path | None = None) -> list[CryptoValidationIssue]:

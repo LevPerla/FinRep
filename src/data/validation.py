@@ -1,4 +1,5 @@
 import re
+from math import isfinite
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -119,7 +120,7 @@ def _validate_transaction_file(csv_path: Path) -> list[ValidationIssue]:
         issues.append(ValidationIssue(csv_path, "parent folder year does not match filename year"))
 
     try:
-        data = pd.read_csv(csv_path, sep=";", dtype=str, encoding="utf-8-sig").fillna("")
+        data = pd.read_csv(csv_path, sep=";", dtype=str, encoding="utf-8-sig", keep_default_na=False)
     except Exception as exc:
         return [ValidationIssue(csv_path, f"cannot read transaction CSV: {exc}")]
 
@@ -168,7 +169,7 @@ def _validate_asset_file(csv_path: Path) -> list[ValidationIssue]:
         issues.append(ValidationIssue(csv_path, "parent folder year does not match filename year"))
 
     try:
-        data = pd.read_csv(csv_path, sep=";", dtype=str, encoding="utf-8-sig").fillna("")
+        data = pd.read_csv(csv_path, sep=";", dtype=str, encoding="utf-8-sig", keep_default_na=False)
     except Exception as exc:
         return [ValidationIssue(csv_path, f"cannot read asset CSV: {exc}")]
 
@@ -234,10 +235,9 @@ def _normalize_money_text(value: str) -> str:
 
 def _is_number(value: str) -> bool:
     try:
-        float(_normalize_money_text(value))
+        return isfinite(float(_normalize_money_text(value)))
     except (TypeError, ValueError):
         return False
-    return True
 
 
 def _format_issues(issues: list[ValidationIssue]) -> str:
