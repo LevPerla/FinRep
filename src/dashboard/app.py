@@ -22,7 +22,11 @@ from src.data.debts import (
     create_debt_payment_from_cash,
     migrate_legacy_debts,
 )
-from src.data.importers.bank_pdf import parse_bank_upload_contents
+from src.data.importers.bank_pdf import (
+    BANK_PDF_UPLOAD_LIMIT_LABEL,
+    MAX_BANK_PDF_REQUEST_BYTES,
+    parse_bank_upload_contents,
+)
 from src.data.importers.kaspi_pdf import save_kaspi_import_to_staging
 from src.data.staging import (
     DRAFT_COLUMNS,
@@ -374,6 +378,7 @@ def create_app() -> Dash:
         title="FinRep Dashboard",
         suppress_callback_exceptions=True,
     )
+    app.server.config["MAX_CONTENT_LENGTH"] = MAX_BANK_PDF_REQUEST_BYTES
     configure_auth(app.server)
     app.index_string = _app_index_string()
     app.server.add_url_rule("/healthz", "healthz", _healthcheck)
@@ -1681,6 +1686,7 @@ def _transaction_input_layout(currency: str, year: str, month: str, theme: str |
                             [
                                 html.Div("Перетащи Kaspi, BCC или Ozon PDF сюда", className="fw-semibold"),
                                 html.Div("или нажми для выбора файла", className="small opacity-75"),
+                                html.Div(f"до {BANK_PDF_UPLOAD_LIMIT_LABEL}", className="small opacity-75"),
                             ],
                             className="kaspi-upload-content",
                         ),
