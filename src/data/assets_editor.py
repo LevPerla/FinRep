@@ -51,24 +51,34 @@ def previous_asset_snapshot_path(year: str, month: str, assets_root: str | Path 
 
 
 def read_asset_snapshot(year: str, month: str, assets_root: str | Path | None = None) -> pd.DataFrame:
-    path = asset_snapshot_path(year, month, assets_root)
-    if not path.exists() and config.is_test_mode():
+    target_path = asset_snapshot_path(year, month, assets_root)
+    path = target_path
+    if not path.exists():
         template = previous_asset_snapshot_path(year, month, assets_root)
-        if template is None:
+        if template is not None:
+            path = template
+        elif config.is_test_mode():
             return pd.DataFrame(columns=ASSET_EDITOR_COLUMNS)
-        path = template
-    else:
-        ensure_asset_snapshot(year, month, assets_root)
-    data = pd.read_csv(path, sep=";", dtype=str, encoding="utf-8-sig").fillna("")
-    if "Счет" not in data.columns:
-        data["Счет"] = ""
-    if "Сумма" not in data.columns:
-        data["Сумма"] = "0|RUB"
+        else:
+            ensure_asset_snapshot(year, month, assets_root)
+    try:
+        data = pd.read_csv(path, sep=";", dtype=str, encoding="utf-8-sig", keep_default_na=False)
+    except (pd.errors.ParserError, pd.errors.EmptyDataError, UnicodeError) as exc:
+        raise ValueError(f"{path.name}: не удалось прочитать CSV снимка активов.") from exc
+    missing = [column for column in ["Счет", "Сумма"] if column not in data.columns]
+    if missing:
+        raise ValueError(f"{path.name}: отсутствуют обязательные колонки: {', '.join(missing)}")
 
     rows = []
-    for _, row in data[["Счет", "Сумма"]].iterrows():
-        amount, currency = _parse_asset_cell(row["Сумма"])
+    for row_number, (_, row) in enumerate(data[["Счет", "Сумма"]].iterrows(), start=2):
+        try:
+            amount, currency = _parse_asset_cell(row["Сумма"])
+        except ValueError as exc:
+            raise ValueError(f"{path.name}: строка {row_number}, счёт {row['Счет']!r}: {exc}") from exc
         rows.append({"account": str(row["Счет"]), "amount": amount, "currency": currency})
+    # Validate the template before creating a new LIVE snapshot from it.
+    if path != target_path and not config.is_test_mode():
+        ensure_asset_snapshot(year, month, assets_root)
     return pd.DataFrame(rows, columns=ASSET_EDITOR_COLUMNS)
 
 
@@ -121,14 +131,17 @@ def _normalize_asset_rows(data: pd.DataFrame) -> pd.DataFrame:
 
 def _parse_asset_cell(value) -> tuple[float, str]:
     parts = str(value).replace("\xa0", "").replace(" ", "").split("|")
+    if len(parts) > 2:
+        raise ValueError("Некорректный формат суммы актива: ожидается сумма или сумма|валюта.")
+    # Preserve legacy defaults for empty cells and an omitted currency.
     amount = parts[0] if parts and parts[0] else "0"
     currency = parts[1] if len(parts) > 1 and parts[1] else "RUB"
     parsed_amount = pd.to_numeric(str(amount).replace(",", "."), errors="coerce")
-    if pd.isna(parsed_amount):
-        parsed_amount = 0.0
+    if not isfinite(parsed_amount):
+        raise ValueError("Некорректная сумма актива: требуется конечное число.")
     currency = str(currency).upper()
     if currency not in config.UNIQUE_TICKERS:
-        currency = "RUB"
+        raise ValueError(f"Недопустимая валюта актива: {currency!r}.")
     return float(parsed_amount), currency
 
 
