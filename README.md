@@ -238,7 +238,7 @@ Run the complete test suite without changing the lock file:
 uv run --frozen python -m pytest -q -ra --tb=short
 ```
 
-The command intentionally includes every existing test. At present, a fresh public checkout reports two known fixture failures because the BCC and Ozon parser tests refer to private local PDF files. Those fixtures still need to be replaced with public synthetic statements; the failures are not excluded or hidden.
+The command intentionally includes every existing test. BCC and Ozon parser tests use fictional statements under `tests/fixtures/bank_statements/`; no private bank PDF is required.
 
 Validate CSV data:
 

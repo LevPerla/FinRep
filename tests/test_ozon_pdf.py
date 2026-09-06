@@ -1,8 +1,14 @@
+from pathlib import Path
+
+from src import config
 from src.data.importers.ozon_pdf import OZON_SOURCE, parse_ozon_pdf
 
+FIXTURE = Path(__file__).parent / "fixtures" / "bank_statements" / "ozon_synthetic.pdf"
 
-def test_parse_ozon_statement():
-    data = parse_ozon_pdf("data/bank_data/ozon/выписка.pdf")
+
+def test_parse_ozon_statement(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "DATA_PATH", str(tmp_path))
+    data = parse_ozon_pdf(FIXTURE)
 
     assert len(data) == 4
     assert set(data["source"]) == {OZON_SOURCE}

@@ -1,3 +1,6 @@
+from pathlib import Path
+
+from src import config
 from src.data.importers.bcc_pdf import (
     BCC_SOURCE,
     _russian_row_from_cells,
@@ -5,9 +8,12 @@ from src.data.importers.bcc_pdf import (
     parse_bcc_pdf,
 )
 
+FIXTURE = Path(__file__).parent / "fixtures" / "bank_statements" / "bcc_synthetic.pdf"
 
-def test_parse_bcc_statement_includes_pending_transactions():
-    data = parse_bcc_pdf("data/bank_data/bcc/Document.pdf")
+
+def test_parse_bcc_statement_includes_pending_transactions(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "DATA_PATH", str(tmp_path))
+    data = parse_bcc_pdf(FIXTURE)
 
     assert len(data) == 2
     assert set(data["source"]) == {BCC_SOURCE}
