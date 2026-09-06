@@ -3233,6 +3233,11 @@ def _dataframe_to_xlsx_bytes(data: pd.DataFrame, sheet_name: str) -> bytes:
     safe_sheet_name = sheet_name[:31] or "data"
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
         data.to_excel(writer, sheet_name=safe_sheet_name, index=False)
+        # Dataset text is untrusted; openpyxl otherwise serializes leading "=" as a formula.
+        for row in writer.sheets[safe_sheet_name].iter_rows():
+            for cell in row:
+                if cell.data_type == "f":
+                    cell.data_type = "s"
     return output.getvalue()
 
 
