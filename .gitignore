@@ -181,3 +181,4 @@ cython_debug/
 /pgdata/
 /src/secrets.json
 /src/flatter_app/
+/AGENTS_MD/
