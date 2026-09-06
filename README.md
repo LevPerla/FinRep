@@ -35,7 +35,7 @@ cd FinRep
 Install dependencies with [uv](https://docs.astral.sh/uv/):
 
 ```bash
-uv sync
+uv sync --locked
 ```
 
 Run Dash and open the public read-only demo:
@@ -225,6 +225,20 @@ docker compose ps
 By default the compose file binds to `127.0.0.1`. Keep it that way unless the host is protected by a firewall, VPN, or SSH tunnel.
 
 ## Useful Checks
+
+Install the application and development tools exactly from `uv.lock`:
+
+```bash
+uv sync --locked
+```
+
+Run the complete test suite without changing the lock file:
+
+```bash
+uv run --frozen python -m pytest -q -ra --tb=short
+```
+
+The command intentionally includes every existing test. At present, a fresh public checkout reports two known fixture failures because the BCC and Ozon parser tests refer to private local PDF files. Those fixtures still need to be replaced with public synthetic statements; the failures are not excluded or hidden.
 
 Validate CSV data:
 
