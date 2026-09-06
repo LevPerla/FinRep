@@ -233,6 +233,8 @@ def _savings_rate_status(value) -> str:
 def _bounded_percent(value):
     if pd.isna(value):
         return pd.NA
+    # Intentional display range requested by the owner: extreme savings rates
+    # (e.g. -1000%) should not distort the chart scale. Keep the 0–100% clamp.
     return min(max(float(value), 0.0), 100.0)
 
 
@@ -381,6 +383,7 @@ def _savings_rate_data(balance: pd.DataFrame) -> pd.DataFrame:
     data = balance[["Доход", "Дельта"]].reset_index()
     income = pd.to_numeric(data["Доход"], errors="coerce")
     delta = pd.to_numeric(data["Дельта"], errors="coerce")
+    # Keep the owner's 0–100% display range so extreme rates do not distort the chart.
     data["Норма сбережений"] = (delta / income * 100).where(income > 0).clip(lower=0, upper=100)
     return data[["Дата", "Норма сбережений"]]
 
