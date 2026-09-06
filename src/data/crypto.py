@@ -222,14 +222,24 @@ def refresh_crypto_balances(
     timeout: int = 20,
 ) -> pd.DataFrame:
     wallets = read_crypto_wallets(wallets_path)
+    existing = read_crypto_balances(balances_path)
+    balance_key_columns = ["account", "chain", "asset", "address"]
+    existing = existing.drop_duplicates(subset=balance_key_columns, keep="last")
+    cached_by_key = {
+        tuple(row[column] for column in balance_key_columns): row
+        for _, row in existing.iterrows()
+    }
     fetched_at = datetime.now().isoformat(timespec="seconds")
     rows = []
     errors = []
     statuses = []
     status_rows = []
+    enabled_keys = set()
     for index, wallet in wallets.iterrows():
         if _is_disabled(wallet):
             continue
+        wallet_key = tuple(wallet[column] for column in balance_key_columns)
+        enabled_keys.add(wallet_key)
         row_number = int(index) + 2
         row_issues = _validate_wallet_row(wallet.to_dict(), int(index) + 2)
         if row_issues:
@@ -255,14 +265,21 @@ def refresh_crypto_balances(
             status_rows.append(_refresh_status_row(fetched_at, wallet, row_number, "ok", message))
         except Exception as exc:
             message = f"{wallet['chain']}/{wallet['asset']} balance refresh failed: {exc}"
+            cached = cached_by_key.get(wallet_key)
+            if cached is not None:
+                message += f"; cached balance retained from {cached['fetched_at']}"
             errors.append(f"row {row_number}: {message}")
             status_rows.append(_refresh_status_row(fetched_at, wallet, row_number, "error", message))
 
-    balances = pd.DataFrame(rows, columns=BALANCE_COLUMNS)
-    if not balances.empty:
-        write_crypto_balances(balances, balances_path)
-    else:
-        balances = read_crypto_balances(balances_path)
+    retained = existing[
+        existing.apply(
+            lambda row: tuple(row[column] for column in balance_key_columns) in enabled_keys,
+            axis=1,
+        )
+    ]
+    balances = pd.concat([retained, pd.DataFrame(rows, columns=BALANCE_COLUMNS)], ignore_index=True)
+    balances = balances.drop_duplicates(subset=balance_key_columns, keep="last")
+    write_crypto_balances(balances, balances_path)
     balances.attrs["errors"] = errors
     balances.attrs["statuses"] = statuses
     if status_rows:
