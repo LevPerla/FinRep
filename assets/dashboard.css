@@ -110,6 +110,32 @@ body {
   gap: 12px;
 }
 
+.finrep-main-metrics-primary {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.finrep-main-metrics-supporting {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.finrep-main-metric-group {
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid #dee2e6;
+  border-radius: 8px;
+}
+
+.finrep-theme-dark .finrep-main-metric-group {
+  border-color: #555555;
+}
+
+.finrep-cockpit-grid-compact {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
 .finrep-cockpit-groups {
   display: grid;
   gap: 18px;
@@ -137,6 +163,89 @@ body {
   border-left: 4px solid #6897bb;
   border-radius: 8px;
   background: #ffffff;
+}
+
+.finrep-cockpit-card-compact {
+  min-height: 104px;
+  padding: 11px;
+}
+
+.finrep-cockpit-card-compact .finrep-cockpit-value {
+  margin: 5px 0 4px;
+  font-size: 1.18rem;
+}
+
+.dashboard-header-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.dashboard-header-actions #dashboard-mode-badge {
+  flex: 0 0 auto;
+  min-height: 40px;
+  display: inline-flex;
+  align-items: center;
+}
+
+.dashboard-settings {
+  position: relative;
+}
+
+.dashboard-settings-summary {
+  display: flex;
+  min-height: 40px;
+  align-items: center;
+  gap: 7px;
+  padding: 7px 12px;
+  border: 1px solid #646464;
+  border-radius: 6px;
+  color: #a9b7c6;
+  font-weight: 600;
+  cursor: pointer;
+  list-style: none;
+}
+
+.dashboard-settings-summary::-webkit-details-marker {
+  display: none;
+}
+
+.dashboard-settings-summary:focus-visible {
+  outline: 3px solid #2563eb;
+  outline-offset: 2px;
+}
+
+.finrep-theme-dark .dashboard-settings-summary:focus-visible {
+  outline-color: #62a8ff;
+}
+
+.dashboard-settings[open] .dashboard-settings-summary {
+  background: rgba(104, 151, 187, 0.12);
+}
+
+.dashboard-settings-icon {
+  font-size: 1.05rem;
+  line-height: 1;
+}
+
+.dashboard-settings .dashboard-toolbar {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 1050;
+  width: min(920px, calc(100vw - 24px));
+  padding: 12px;
+  border: 1px solid #dee2e6;
+  border-radius: 8px;
+  background: #ffffff;
+  box-shadow: 0 14px 34px rgba(15, 23, 42, 0.18);
+}
+
+.finrep-theme-dark .dashboard-settings .dashboard-toolbar {
+  border-color: #555555;
+  background: #2b2b2b;
+  box-shadow: 0 14px 34px rgba(0, 0, 0, 0.42);
 }
 
 .finrep-theme-dark .finrep-cockpit-card {
@@ -1184,6 +1293,20 @@ body {
     padding-bottom: calc(92px + env(safe-area-inset-bottom)) !important;
   }
 
+  .dashboard-header-actions {
+    justify-content: space-between;
+  }
+
+  .dashboard-settings .dashboard-toolbar {
+    position: fixed;
+    top: 76px;
+    right: 14px;
+    left: 14px;
+    width: auto;
+    max-height: calc(100vh - 100px);
+    overflow-y: auto;
+  }
+
   .dashboard-toolbar {
     justify-content: flex-start !important;
   }
@@ -1198,6 +1321,11 @@ body {
   }
 
   .finrep-cockpit-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .finrep-main-metrics-supporting,
+  .finrep-cockpit-grid-compact {
     grid-template-columns: minmax(0, 1fr);
   }
 
@@ -1486,19 +1614,10 @@ body {
     grid-column: span 2;
   }
 
-  #dashboard-mode-badge,
   #dashboard-logout-form {
     grid-column: span 3;
     width: 100%;
     min-width: 0;
-  }
-
-  #dashboard-mode-badge {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    height: 42px;
-    white-space: nowrap;
   }
 
   #dashboard-logout-form .btn {

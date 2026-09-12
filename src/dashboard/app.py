@@ -469,58 +469,76 @@ def create_layout():
                     dbc.Col(
                         html.H1("Finance Dashboard", className="h3 mb-0"),
                         xs=12,
-                        md=4,
+                        md=6,
                     ),
                     dbc.Col(
                         html.Div(
                             [
-                                dcc.Dropdown(
-                                    id="dashboard-currency",
-                                    options=currency_options,
-                                    value=DEFAULT_CURRENCY,
-                                    clearable=False,
-                                    className="dashboard-filter",
-                                    style={"width": "92px"},
-                                ),
-                                dcc.Dropdown(
-                                    id="dashboard-year",
-                                    options=year_options,
-                                    value=default_year,
-                                    clearable=False,
-                                    className="dashboard-filter",
-                                    style={"width": "104px"},
-                                ),
-                                dcc.Dropdown(
-                                    id="dashboard-month",
-                                    options=month_options,
-                                    value=default_month,
-                                    clearable=False,
-                                    className="dashboard-filter",
-                                    style={"width": "78px"},
-                                ),
-                                dbc.Button("Обновить", id="refresh-reports", color="secondary", outline=True),
-                                dbc.Button("Обновить курс", id="refresh-fx-rates", color="warning", outline=True, disabled=test_mode),
-                                dbc.Button("Светлая", id="theme-toggle", color="secondary", outline=True),
-                                dbc.Button("PNG", id="export-png", color="primary", outline=True, disabled=test_mode),
-                                dbc.Button("PDF", id="export-pdf", color="primary", outline=True, disabled=test_mode),
                                 dbc.Badge(
                                     "TEST MODE" if test_mode else "LIVE",
                                     id="dashboard-mode-badge",
                                     color="warning" if test_mode else "success",
                                     className="px-2 py-2",
                                 ),
-                                html.Form(
-                                    dbc.Button("Выйти", type="submit", color="secondary", outline=True),
-                                    id="dashboard-logout-form",
-                                    action="/logout",
-                                    method="post",
+                                html.Details(
+                                    [
+                                        html.Summary(
+                                            [
+                                                html.Span("⚙", className="dashboard-settings-icon", **{"aria-hidden": "true"}),
+                                                html.Span("Параметры"),
+                                            ],
+                                            className="dashboard-settings-summary",
+                                        ),
+                                        html.Div(
+                                            [
+                                                dcc.Dropdown(
+                                                    id="dashboard-currency",
+                                                    options=currency_options,
+                                                    value=DEFAULT_CURRENCY,
+                                                    clearable=False,
+                                                    className="dashboard-filter",
+                                                    style={"width": "92px"},
+                                                ),
+                                                dcc.Dropdown(
+                                                    id="dashboard-year",
+                                                    options=year_options,
+                                                    value=default_year,
+                                                    clearable=False,
+                                                    className="dashboard-filter",
+                                                    style={"width": "104px"},
+                                                ),
+                                                dcc.Dropdown(
+                                                    id="dashboard-month",
+                                                    options=month_options,
+                                                    value=default_month,
+                                                    clearable=False,
+                                                    className="dashboard-filter",
+                                                    style={"width": "78px"},
+                                                ),
+                                                dbc.Button("Обновить", id="refresh-reports", color="secondary", outline=True),
+                                                dbc.Button("Обновить курс", id="refresh-fx-rates", color="warning", outline=True, disabled=test_mode),
+                                                dbc.Button("Светлая", id="theme-toggle", color="secondary", outline=True),
+                                                dbc.Button("PNG", id="export-png", color="primary", outline=True, disabled=test_mode),
+                                                dbc.Button("PDF", id="export-pdf", color="primary", outline=True, disabled=test_mode),
+                                                html.Form(
+                                                    dbc.Button("Выйти", type="submit", color="secondary", outline=True),
+                                                    id="dashboard-logout-form",
+                                                    action="/logout",
+                                                    method="post",
+                                                ),
+                                                dcc.Download(id="page-export-download"),
+                                            ],
+                                            className="dashboard-toolbar d-flex flex-wrap justify-content-end align-items-center gap-2",
+                                        ),
+                                    ],
+                                    id="dashboard-settings",
+                                    className="dashboard-settings",
                                 ),
-                                dcc.Download(id="page-export-download"),
                             ],
-                            className="dashboard-toolbar d-flex flex-wrap justify-content-md-end align-items-center gap-2",
+                            className="dashboard-header-actions",
                         ),
                         xs=12,
-                        md=8,
+                        md=6,
                         className="mt-3 mt-md-0",
                     ),
                 ],
@@ -1376,19 +1394,72 @@ def _cockpit_section(dataset: DashboardDataset, theme: str | None = None):
     if data.empty:
         return _empty_section(dataset)
 
+    rows_by_metric = {str(row.get("Показатель", "")): row for _, row in data.iterrows()}
+    capital_metric = next((name for name in rows_by_metric if name.startswith("Капитал по ")), None)
+    runway_metric = next((name for name in rows_by_metric if name.startswith("Runway по ")), None)
+    primary_metrics = [
+        metric
+        for metric in (capital_metric, "Доход месяца", "Расход месяца", "Cash-flow месяца")
+        if metric in rows_by_metric
+    ]
+    reconciliation_metrics = [
+        metric for metric in ("Расхождение с активами", "FX impact месяца") if metric in rows_by_metric
+    ]
+    grouped_metrics = set(primary_metrics + reconciliation_metrics)
+    stability_metrics = [
+        metric
+        for metric in ("Норма сбережений", runway_metric)
+        if metric in rows_by_metric and metric not in grouped_metrics
+    ]
+    grouped_metrics.update(stability_metrics)
+    stability_metrics.extend(metric for metric in rows_by_metric if metric not in grouped_metrics)
+
     return html.Section(
         [
             _section_header(dataset),
             html.Div(
-                [_cockpit_card(row) for _, row in data.iterrows()],
-                className="finrep-cockpit-grid",
+                [_cockpit_card(rows_by_metric[metric]) for metric in primary_metrics],
+                id="main-metrics-primary",
+                className="finrep-cockpit-grid finrep-main-metrics-primary",
+            ),
+            html.Div(
+                [
+                    _cockpit_metric_group(
+                        "main-metrics-reconciliation",
+                        "Сверка",
+                        reconciliation_metrics,
+                        rows_by_metric,
+                    ),
+                    _cockpit_metric_group(
+                        "main-metrics-stability",
+                        "Устойчивость",
+                        stability_metrics,
+                        rows_by_metric,
+                    ),
+                ],
+                className="finrep-main-metrics-supporting",
             ),
         ],
         style=_section_style(theme),
     )
 
 
-def _cockpit_card(row):
+def _cockpit_metric_group(group_id: str, title: str, metrics: list[str], rows_by_metric: dict[str, pd.Series]):
+    return html.Div(
+        [
+            html.H3(title, className="finrep-cockpit-group-title"),
+            html.Div(
+                [_cockpit_card(rows_by_metric[metric], compact=True) for metric in metrics],
+                className="finrep-cockpit-grid finrep-cockpit-grid-compact",
+            ),
+        ],
+        id=group_id,
+        className="finrep-main-metric-group",
+    )
+
+
+def _cockpit_card(row, compact: bool = False):
+    compact_class = " finrep-cockpit-card-compact" if compact else ""
     return html.Div(
         [
             html.Div(str(row.get("Показатель", "")), className="finrep-cockpit-label"),
@@ -1396,7 +1467,7 @@ def _cockpit_card(row):
             html.Div(str(row.get("Статус", "")), className="finrep-cockpit-status"),
             html.Div(str(row.get("Детали", "")), className="finrep-cockpit-detail"),
         ],
-        className=f"finrep-cockpit-card finrep-cockpit-{_cockpit_status_class(row.get('Статус', ''))}",
+        className=f"finrep-cockpit-card finrep-cockpit-{_cockpit_status_class(row.get('Статус', ''))}{compact_class}",
     )
 
 

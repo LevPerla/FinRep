@@ -124,6 +124,70 @@ def test_test_mode_never_requires_password():
     assert desktop_labels["investments"] == "Инвестиции · Beta"
 
 
+def test_dashboard_filters_and_actions_are_inside_collapsible_settings():
+    app = create_app()
+    client = app.server.test_client()
+    client.post("/login", data={"data_mode": "test"})
+
+    layout = client.get("/_dash-layout").get_json()
+    settings = _layout_component(layout, "dashboard-settings")
+
+    assert settings is not None
+    assert settings["type"] == "Details"
+    assert settings["props"].get("open") is not True
+    for component_id in (
+        "dashboard-currency",
+        "dashboard-year",
+        "dashboard-month",
+        "refresh-reports",
+        "refresh-fx-rates",
+        "theme-toggle",
+        "export-png",
+        "export-pdf",
+        "dashboard-logout-form",
+    ):
+        assert _layout_component(settings, component_id) is not None
+
+
+def test_main_metrics_are_grouped_by_decision_priority():
+    from src.dashboard.app import _cockpit_section
+    from src.dashboard.main_data import DashboardDataset
+
+    names = [
+        "Капитал по активам",
+        "Доход месяца",
+        "Расход месяца",
+        "Cash-flow месяца",
+        "Норма сбережений",
+        "Runway по активам",
+        "Расхождение с активами",
+        "FX impact месяца",
+    ]
+    metrics = pd.DataFrame(
+        [
+            {"Показатель": name, "Значение": str(index), "Статус": "ok", "Детали": "detail"}
+            for index, name in enumerate(names)
+        ]
+    )
+    dataset = DashboardDataset(
+        id="cockpit_metrics",
+        title="Ключевые метрики",
+        dataframe=metrics,
+        display_dataframe=metrics,
+    )
+
+    section = _cockpit_section(dataset)
+    primary = _layout_component(section, "main-metrics-primary")
+    reconciliation = _layout_component(section, "main-metrics-reconciliation")
+    stability = _layout_component(section, "main-metrics-stability")
+
+    assert len(primary.children) == 4
+    assert [card.children[0].children for card in primary.children] == names[:4]
+    assert [card.children[0].children for card in reconciliation.children[1].children] == names[6:]
+    assert [card.children[0].children for card in stability.children[1].children] == names[4:6]
+    assert all("finrep-cockpit-card-compact" in card.className for card in reconciliation.children[1].children)
+
+
 def test_month_summary_is_split_into_logical_groups():
     from src.dashboard.app import _month_summary_section
     from src.dashboard.main_data import DashboardDataset
