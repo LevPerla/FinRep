@@ -1,4 +1,5 @@
 import logging
+from contextlib import contextmanager
 from contextvars import ContextVar
 from datetime import datetime, timedelta
 import xml.etree.ElementTree as ET
@@ -75,12 +76,23 @@ logger.info("FX network mode: offline")
 
 def set_fx_network_enabled(enabled: bool):
     """
-    Set FX network mode globally for this process.
+    Set FX network mode for the current execution context.
     """
     prev_value = _FX_NETWORK_ENABLED.get()
     _FX_NETWORK_ENABLED.set(bool(enabled))
     logger.info("FX network mode switched to: %s", "online" if enabled else "offline")
     return prev_value
+
+
+@contextmanager
+def fx_network_mode(enabled: bool):
+    """Temporarily set FX network mode and restore the exact prior context."""
+    token = _FX_NETWORK_ENABLED.set(bool(enabled))
+    logger.info("FX network mode switched to: %s", "online" if enabled else "offline")
+    try:
+        yield
+    finally:
+        _FX_NETWORK_ENABLED.reset(token)
 
 
 def get_usd_rates(currencies, min_date, max_date) -> pd.DataFrame:

@@ -7,7 +7,7 @@ import plotly.graph_objects as go
 from src import config, utils
 from src.data.get import get_assets, get_transactions
 from src.data.exchange_rates_info import get_exchange_rates_info
-from src.data.get_finance import get_fx_rates, require_fx_rate, set_fx_network_enabled
+from src.data.get_finance import fx_network_mode, get_fx_rates, require_fx_rate
 from src.data.proccess import convert_transaction
 from src.model.create_tables import get_balance_by_month
 
@@ -47,11 +47,19 @@ def build_main_dashboard_data(
     year: str | None = None,
     month: str | None = None,
 ) -> dict[str, DashboardDataset]:
+    with fx_network_mode(fx_network_enabled):
+        return _build_main_dashboard_data(currency, year, month)
+
+
+def _build_main_dashboard_data(
+    currency: str,
+    year: str | None,
+    month: str | None,
+) -> dict[str, DashboardDataset]:
     currency = currency.upper()
     if currency not in config.UNIQUE_TICKERS:
         raise ValueError(f"currency must be one of {tuple(config.UNIQUE_TICKERS)}")
 
-    set_fx_network_enabled(fx_network_enabled)
     balance = get_balance_by_month(currency)
 
     cockpit_metrics = _cockpit_metrics(balance, currency, year, month)

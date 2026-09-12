@@ -7,7 +7,7 @@ from src.dashboard.year_data import _format_cost_distribution
 from src.data.exchange_rates_info import get_exchange_rates_info
 from src.data.get import clear_data_cache, get_transactions
 from src.data.assets_editor import asset_snapshot_path
-from src.data.get_finance import set_fx_network_enabled
+from src.data.get_finance import fx_network_mode
 from src.data.proccess import convert_transaction
 from src.data.staging import ensure_monthly_transaction_csv
 from src.model.create_tables import (
@@ -25,13 +25,21 @@ def build_month_dashboard_data(
     currency: str,
     fx_network_enabled: bool = True,
 ) -> dict[str, DashboardDataset]:
+    with fx_network_mode(fx_network_enabled):
+        return _build_month_dashboard_data(year, month, currency)
+
+
+def _build_month_dashboard_data(
+    year: str,
+    month: str,
+    currency: str,
+) -> dict[str, DashboardDataset]:
     currency = currency.upper()
     year = str(year)
     month = _normalize_month(month)
     if currency not in config.UNIQUE_TICKERS:
         raise ValueError(f"currency must be one of {tuple(config.UNIQUE_TICKERS)}")
 
-    set_fx_network_enabled(fx_network_enabled)
     created_info = ensure_monthly_transaction_csv(year, month)
     if created_info["created"]:
         clear_data_cache()

@@ -4,6 +4,7 @@ import plotly.graph_objects as go
 from src import config
 from src.dashboard.main_data import DashboardDataset, _apply_dashboard_chart_layout
 from src.data.crypto import read_crypto_balances, read_crypto_refresh_status, read_crypto_wallets, validate_crypto_wallets
+from src.data.get_finance import fx_network_mode
 from src.data.investment_calculations import calculate_portfolio
 from src.data.investments import latest_cached_prices
 
@@ -11,6 +12,13 @@ from src.data.investments import latest_cached_prices
 def build_investment_dashboard_data(
     currency: str,
     fx_network_enabled: bool = True,
+) -> dict[str, DashboardDataset]:
+    with fx_network_mode(fx_network_enabled):
+        return _build_investment_dashboard_data(currency)
+
+
+def _build_investment_dashboard_data(
+    currency: str,
 ) -> dict[str, DashboardDataset]:
     currency = currency.upper()
     if currency not in config.UNIQUE_TICKERS:

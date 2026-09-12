@@ -7,7 +7,7 @@ from src import config, utils
 from src.dashboard.main_data import DashboardDataset, _apply_dashboard_chart_layout, _peak_money_labels
 from src.data.get import get_assets
 from src.data.csv_storage import atomic_write_csv
-from src.data.get_finance import get_actual_fx_rate, require_fx_rate, set_fx_network_enabled
+from src.data.get_finance import fx_network_mode, get_actual_fx_rate, require_fx_rate
 from src.data.money import format_money_amount, parse_money_amount
 from src.model.create_tables import get_balance_by_month
 
@@ -36,12 +36,19 @@ def build_planning_dashboard_data(
     currency: str,
     fx_network_enabled: bool = True,
 ) -> dict[str, DashboardDataset]:
+    with fx_network_mode(fx_network_enabled):
+        return _build_planning_dashboard_data(year, currency)
+
+
+def _build_planning_dashboard_data(
+    year: str,
+    currency: str,
+) -> dict[str, DashboardDataset]:
     currency = currency.upper()
     year = str(year)
     if currency not in config.UNIQUE_TICKERS:
         raise ValueError(f"currency must be one of {tuple(config.UNIQUE_TICKERS)}")
 
-    set_fx_network_enabled(fx_network_enabled)
     balance = get_balance_by_month(currency)
     goals = _load_goals()
     goal_row = _goal_for_year_currency(goals, year, currency)

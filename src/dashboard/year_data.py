@@ -11,7 +11,7 @@ from src.dashboard.main_data import (
 )
 from src.data.exchange_rates_info import get_exchange_rates_info
 from src.data.get import get_transactions
-from src.data.get_finance import set_fx_network_enabled
+from src.data.get_finance import fx_network_mode
 from src.data.proccess import convert_transaction
 from src.model.create_tables import get_balance_by_month
 
@@ -21,12 +21,19 @@ def build_year_dashboard_data(
     currency: str,
     fx_network_enabled: bool = True,
 ) -> dict[str, DashboardDataset]:
+    with fx_network_mode(fx_network_enabled):
+        return _build_year_dashboard_data(year, currency)
+
+
+def _build_year_dashboard_data(
+    year: str,
+    currency: str,
+) -> dict[str, DashboardDataset]:
     currency = currency.upper()
     year = str(year)
     if currency not in config.UNIQUE_TICKERS:
         raise ValueError(f"currency must be one of {tuple(config.UNIQUE_TICKERS)}")
 
-    set_fx_network_enabled(fx_network_enabled)
     balance = get_balance_by_month(currency)
     year_balance = balance.loc[year]
 
