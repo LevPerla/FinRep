@@ -36,7 +36,7 @@ from src.data.importers.bank_pdf import (
     BankPdfError,
     parse_bank_upload_contents,
 )
-from src.data.importers.kaspi_pdf import save_kaspi_import_to_staging
+from src.data.importers.common import save_import_to_staging
 from src.data.money import format_money_amount
 from src.data.staging import (
     append_transaction_draft_rows,
@@ -1217,7 +1217,7 @@ def register_callbacks(app: Dash) -> None:
                     raise ValueError("Выбранный период не соответствует строкам текущей выписки.")
                 year, month = import_period.split("-", 1)
                 config.require_writable_mode()
-                import_result = save_kaspi_import_to_staging(import_rows)
+                import_result = save_import_to_staging(import_rows)
 
             preview, preview_state = prepare_monthly_transaction_export(year, month)
             if import_result is not None:

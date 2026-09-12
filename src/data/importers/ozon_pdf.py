@@ -7,7 +7,7 @@ from pathlib import Path
 import pandas as pd
 import pdfplumber
 
-from src.data.importers.kaspi_pdf import _import_frame_from_rows
+from src.data.importers.common import import_frame_from_rows
 
 OZON_SOURCE = "ozon_pdf"
 OZON_MARKER = "OZON Bank LLC"
@@ -21,7 +21,7 @@ def parse_ozon_pdf(path: str | Path) -> pd.DataFrame:
 def parse_ozon_pdf_bytes(content: bytes) -> pd.DataFrame:
     from hashlib import sha256
 
-    return _import_frame_from_rows(
+    return import_frame_from_rows(
         _extract_rows_from_pdf(io.BytesIO(content)),
         OZON_SOURCE,
         statement_id=sha256(content).hexdigest(),

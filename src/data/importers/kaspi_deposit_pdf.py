@@ -7,7 +7,7 @@ from pathlib import Path
 import pandas as pd
 import pdfplumber
 
-from src.data.importers.kaspi_pdf import _import_frame_from_rows
+from src.data.importers.common import import_frame_from_rows
 
 KASPI_DEPOSIT_SOURCE = "kaspi_deposit_pdf"
 KASPI_DEPOSIT_MARKERS = ("DEPOSIT", "statement balance for the period", "Agreement number:")
@@ -22,7 +22,7 @@ def parse_kaspi_deposit_pdf(path: str | Path) -> pd.DataFrame:
 def parse_kaspi_deposit_pdf_bytes(content: bytes) -> pd.DataFrame:
     from hashlib import sha256
 
-    return _import_frame_from_rows(
+    return import_frame_from_rows(
         _extract_rows_from_pdf(io.BytesIO(content)),
         KASPI_DEPOSIT_SOURCE,
         statement_id=sha256(content).hexdigest(),

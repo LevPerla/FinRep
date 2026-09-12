@@ -2,7 +2,7 @@ from src.data.importers.kaspi_deposit_pdf import (
     _rows_from_table,
     is_kaspi_deposit_statement,
 )
-from src.data.importers.kaspi_pdf import _is_internal_transfer
+from src.data.importers.common import is_internal_transfer
 
 
 def test_parse_kaspi_deposit_rows_for_kzt_and_usd():
@@ -79,5 +79,5 @@ def test_parse_kaspi_deposit_rows_for_kzt_and_usd():
             "details": "Interest after tax 5,02 USD",
         }
     ]
-    assert _is_internal_transfer(kzt_rows[0]["details"])
-    assert not _is_internal_transfer(kzt_rows[1]["details"])
+    assert is_internal_transfer(kzt_rows[0]["details"])
+    assert not is_internal_transfer(kzt_rows[1]["details"])
