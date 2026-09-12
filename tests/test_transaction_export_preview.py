@@ -30,7 +30,17 @@ def _snapshot(root: Path) -> dict[str, bytes]:
     return {str(path.relative_to(root)): path.read_bytes() for path in root.rglob("*.csv")}
 
 
-def _callback_request(app, client, trigger: str, year: str, month: str, rows=None, state=None):
+def _callback_request(
+    app,
+    client,
+    trigger: str,
+    year: str,
+    month: str,
+    rows=None,
+    state=None,
+    import_rows=None,
+    import_period=None,
+):
     key = next(
         key
         for key in app.callback_map
@@ -41,8 +51,11 @@ def _callback_request(app, client, trigger: str, year: str, month: str, rows=Non
     values = {
         "transaction-preview-export-button": 1 if trigger == "transaction-preview-export-button" else 0,
         "transaction-confirm-export-button": 1 if trigger == "transaction-confirm-export-button" else 0,
+        "dashboard-currency": "RUB",
         "dashboard-year": year,
         "dashboard-month": month,
+        "kaspi-import-grid": import_rows,
+        "transaction-import-period": import_period,
         "transaction-export-preview-grid": rows,
         "transaction-export-preview-state": state,
     }
@@ -57,6 +70,187 @@ def _callback_request(app, client, trigger: str, year: str, month: str, rows=Non
         "changedPropIds": [f"{trigger}.n_clicks"],
     }
     return client.post("/_dash-update-component", json=payload)
+
+
+def _import_row(date: str, source_id: str, revision: str) -> dict:
+    return {
+        "date": date,
+        "category": "Прочее",
+        "currency": "RUB",
+        "amount": "100",
+        "comment": source_id,
+        "source": "bank_pdf",
+        "source_id": source_id,
+        "status": "draft",
+        "bank_status": "posted",
+        "direction": "debit",
+        "import_action": "import",
+        "skip_reason": "",
+        "duplicate_in_source": False,
+        "duplicate_in_staging": False,
+        "staging_revision": revision,
+    }
+
+
+def _authenticated_app(monkeypatch):
+    monkeypatch.setenv("FINREP_DASH_PASSWORD", "synthetic-password")
+    monkeypatch.setenv("FINREP_DASH_SECRET_KEY", "synthetic-key")
+    from src.dashboard.app import create_app
+
+    app = create_app()
+    client = app.server.test_client()
+    client.post(
+        "/login",
+        data={"password": "synthetic-password", "data_mode": "live"},
+    )
+    return app, client
+
+
+def test_import_period_is_automatic_only_for_single_month():
+    from src.dashboard.app import _import_period_selection
+
+    one_month_options, one_month_value = _import_period_selection(
+        [{"date": "2026-02-01"}, {"date": "2026-02-28"}]
+    )
+    multiple_options, multiple_value = _import_period_selection(
+        [{"date": "2026-01-31"}, {"date": "2026-02-01"}]
+    )
+
+    assert one_month_options == [{"label": "2026-02", "value": "2026-02"}]
+    assert one_month_value == "2026-02"
+    assert [option["value"] for option in multiple_options] == ["2026-01", "2026-02"]
+    assert multiple_value is None
+
+
+def test_import_summary_explains_each_skipped_row():
+    from src.dashboard.app import _transaction_import_summary
+
+    summary = _transaction_import_summary(
+        [
+            {"import_action": "skip", "skip_reason": "internal_transfer"},
+            {"import_action": "import", "duplicate_in_staging": True},
+            {"import_action": "skip", "skip_reason": "possible_duplicate"},
+            {"import_action": "skip", "skip_reason": ""},
+        ],
+        {"accepted_rows": 2, "skipped_rows": 5},
+    )
+
+    assert summary["accepted_rows"] == 2
+    assert summary["skipped_rows"] == 5
+    assert summary["skip_reasons"] == [
+        {"label": "внутренние переводы", "count": 1},
+        {"label": "уже добавлены ранее", "count": 1},
+        {"label": "возможные дубли сохранённых операций", "count": 1},
+        {"label": "исключены вручную", "count": 1},
+        {"label": "уже обработаны", "count": 1},
+    ]
+
+
+def test_saved_result_uses_month_totals_and_links_to_reconciliation(monkeypatch):
+    from src.dashboard import app as dashboard_app
+
+    monthly = pd.DataFrame(
+        [
+            {
+                "Доход": 1000,
+                "Расход": 400.5,
+                "Сбережения": 50,
+                "Баланс": 649.5,
+            }
+        ],
+        index=pd.to_datetime(["2026-02-28"]),
+    )
+    monkeypatch.setattr(dashboard_app, "get_balance_by_month", lambda _currency: monthly)
+
+    result = dashboard_app._transaction_save_result(
+        "2026", "02", "RUB", 3, {"accepted_rows": 3, "skipped_rows": 1}
+    )
+    panel = dashboard_app._transaction_save_result_panel(result)
+
+    assert result["metrics"] == {
+        "Доход": "1 000.00₽",
+        "Расход": "400.50₽",
+        "Сбережения": "50.00₽",
+        "Баланс": "649.50₽",
+    }
+    assert panel.children[-1].href == "/?tab=month&year=2026&month=02&currency=RUB"
+
+
+def test_multi_month_import_requires_period_before_any_write(export_paths, monkeypatch):
+    drafts, _ = export_paths
+    _, revision = staging.read_transaction_drafts_snapshot(drafts)
+    import_rows = [
+        _import_row("2026-01-31", "JAN", revision),
+        _import_row("2026-02-01", "FEB", revision),
+    ]
+    app, client = _authenticated_app(monkeypatch)
+    before = _snapshot(drafts.parents[1])
+
+    response = _callback_request(
+        app,
+        client,
+        "transaction-preview-export-button",
+        "2025",
+        "12",
+        import_rows=import_rows,
+        import_period=None,
+    )
+
+    assert response.status_code == 200
+    result = response.get_json()["response"]
+    assert result["transaction-export-message"]["color"] == "danger"
+    assert "несколько месяцев" in result["transaction-export-message"]["children"]
+    assert _snapshot(drafts.parents[1]) == before
+
+
+def test_import_preview_uses_statement_period_and_stages_all_rows(export_paths, monkeypatch):
+    drafts, transactions = export_paths
+    _, revision = staging.read_transaction_drafts_snapshot(drafts)
+    import_rows = [
+        _import_row("2026-01-31", "JAN", revision),
+        _import_row("2026-02-01", "FEB", revision),
+    ]
+    app, client = _authenticated_app(monkeypatch)
+
+    response = _callback_request(
+        app,
+        client,
+        "transaction-preview-export-button",
+        "2025",
+        "12",
+        import_rows=import_rows,
+        import_period="2026-02",
+    )
+
+    assert response.status_code == 200
+    result = response.get_json()["response"]
+    assert result["transaction-export-message"]["color"] == "secondary"
+    assert "2026-02" in result["transaction-export-message"]["children"]
+    assert result["transaction-export-preview-state"]["data"]["year"] == "2026"
+    assert result["transaction-export-preview-state"]["data"]["month"] == "02"
+    assert set(staging.read_transaction_drafts(drafts)["source_id"]) == {"JAN", "FEB"}
+
+    confirm = _callback_request(
+        app,
+        client,
+        "transaction-confirm-export-button",
+        "2025",
+        "12",
+        rows=result["transaction-export-preview-grid"]["rowData"],
+        state=result["transaction-export-preview-state"]["data"],
+        import_rows=import_rows,
+        import_period="2026-02",
+    )
+
+    assert confirm.status_code == 200
+    confirm_result = confirm.get_json()["response"]
+    assert confirm_result["transaction-export-message"]["color"] == "success"
+    saved_result = confirm_result["transaction-save-result"]["data"]
+    assert saved_result["year"] == "2026"
+    assert saved_result["month"] == "02"
+    assert saved_result["exported_rows"] == 1
+    assert staging.monthly_transaction_csv_path("2026", "02", transactions).exists()
+    assert not staging.monthly_transaction_csv_path("2025", "12", transactions).exists()
 
 
 def test_stale_preview_rejects_new_draft_without_writing_or_exporting(export_paths):

@@ -109,26 +109,6 @@ def test_cleanup_archives_exported_and_physically_deletes_unposted(exported_case
     assert month_path.read_bytes() == before_month
 
 
-def test_archived_rows_are_hidden_by_default_but_available_by_filter(exported_case):
-    from src.dashboard.app import _transaction_draft_snapshot_records
-
-    rows, revision = staging.read_transaction_drafts_snapshot()
-    staging.delete_transaction_drafts(
-        rows.to_dict("records"), expected_revision=revision
-    )
-
-    default_rows, _ = _transaction_draft_snapshot_records(
-        "2026-09", "__all__", "__all__", "__all__"
-    )
-    archived_rows, _ = _transaction_draft_snapshot_records(
-        "2026-09", "__all__", "archived", "__all__"
-    )
-
-    assert default_rows == []
-    assert len(archived_rows) == 1
-    assert archived_rows[0]["source_id"] == "statement-row-A"
-
-
 def test_unchanged_exported_row_does_not_block_draft_edit(exported_case):
     staging.append_transaction_draft(
         "2026-09-02", "Прочее", "RUB", 50, source_id="draft-B"
@@ -144,13 +124,37 @@ def test_unchanged_exported_row_does_not_block_draft_edit(exported_case):
     assert saved.loc["draft-B", "amount"] == "75"
 
 
-def test_exported_grid_rows_are_read_only(exported_case):
+def test_staging_controls_are_absent_but_import_rows_can_be_excluded(exported_case):
     from src.dashboard.app import _transaction_input_layout
 
     layout = _transaction_input_layout("RUB", "2026", "09", "light")
-    grid = _component(layout, "transaction-drafts-grid")
+    import_grid = _component(layout, "kaspi-import-grid")
 
-    assert grid is not None
-    assert grid.defaultColDef["editable"]["function"] == (
-        "params.data.status !== 'exported' && params.data.status !== 'archived'"
+    assert _component(layout, "transaction-drafts-grid") is None
+    assert _component(layout, "kaspi-save-button") is None
+    assert _component(layout, "transaction-delete-button") is None
+    assert "finrep-import-grid" in import_grid.className
+    assert [column["field"] for column in import_grid.columnDefs[:4]] == [
+        "category",
+        "date",
+        "amount",
+        "import_action",
+    ]
+    action_column = next(
+        column for column in import_grid.columnDefs if column["field"] == "import_action"
     )
+    assert action_column["editable"] is True
+    assert action_column["cellEditorParams"]["values"] == ["import", "skip"]
+
+
+def test_month_save_is_presented_as_primary_non_destructive_action(exported_case):
+    from src.dashboard.app import _transaction_input_layout
+
+    layout = _transaction_input_layout("RUB", "2026", "09", "light")
+    button = _component(layout, "transaction-confirm-export-button")
+    message = _component(layout, "transaction-export-message")
+
+    assert button.children == "Сохранить месяц"
+    assert button.color == "primary"
+    assert button.outline is False
+    assert "«Сохранить месяц»" in message.children
