@@ -14,7 +14,12 @@ from flask import request
 
 from src import config
 from src.data.get import clear_data_cache, get_transactions
-from src.data.assets_editor import read_asset_snapshot, write_asset_snapshot
+from src.data.assets_editor import (
+    asset_snapshot_path,
+    previous_asset_snapshot_path,
+    read_asset_snapshot,
+    write_asset_snapshot,
+)
 from src.data.crypto import read_crypto_wallets, refresh_crypto_balances, refresh_crypto_price_cache
 from src.data.debts import (
     DEBT_TYPES,
@@ -29,6 +34,7 @@ from src.data.importers.bank_pdf import (
     parse_bank_upload_contents,
 )
 from src.data.importers.kaspi_pdf import save_kaspi_import_to_staging
+from src.data.money import format_money_amount
 from src.data.staging import (
     DRAFT_COLUMNS,
     DRAFT_STATUSES,
@@ -1338,13 +1344,8 @@ def register_callbacks(app: Dash) -> None:
                 )
                 return _asset_input_records(year, month), message, "success"
 
-            read_asset_snapshot(year, month)
-            path_info = f"Файл: {config.active_data_path('assets_info')}/{year}/{year}_{str(int(month)).zfill(2)}.csv"
-            if trigger == "assets-load-button":
-                message = f"Активы загружены для {year}-{str(int(month)).zfill(2)}. {path_info}"
-            else:
-                message = f"Активы для выбранного месяца. Если файла не было, он создан из предыдущего месяца. {path_info}"
-            return _asset_input_records(year, month), message, "secondary"
+            message, color = _asset_input_status(year, month)
+            return _asset_input_records(year, month), message, color
         except Exception as exc:
             return row_data or [], str(exc), "danger"
 
@@ -1581,9 +1582,9 @@ def _runway_section(dataset: DashboardDataset, theme: str | None = None):
             _section_header(dataset),
             html.Div(
                 [
-                    card("Runway в месяцах", str(row.get("Runway, мес.", "не рассчитано"))),
-                    card("Runway в годах", str(row.get("Runway, лет", "не рассчитано"))),
-                    card("Капитал", str(row.get("Капитал", "не задано"))),
+                    card("Runway по cash-flow, месяцев", str(row.get("Runway, мес.", "не рассчитано"))),
+                    card("Runway по cash-flow, лет", str(row.get("Runway, лет", "не рассчитано"))),
+                    card("Капитал по cash-flow", str(row.get("Капитал по cash-flow", "не задано"))),
                     card("Средний расход/мес", str(row.get("Средний расход", "не задано"))),
                 ],
                 className="d-grid gap-3",
@@ -2036,6 +2037,7 @@ def _debt_input_layout(currency: str, theme: str | None, include_create: bool = 
 
 def _assets_input_layout(year: str, month: str, theme: str | None, load_records: bool = True, read_only: bool = False):
     records = _asset_input_records(year, month) if load_records else []
+    message, message_color = _asset_input_status(year, month)
     return html.Div(
         [
             html.Section(
@@ -2057,8 +2059,8 @@ def _assets_input_layout(year: str, month: str, theme: str | None, load_records:
                     ),
                     dbc.Alert(
                         id="assets-input-message",
-                        children=f"Редактируется snapshot активов за {year}-{str(int(month)).zfill(2)}. Если файла нет, он будет создан копией предыдущего месяца.",
-                        color="secondary",
+                        children=message,
+                        color=message_color,
                         is_open=True,
                         className="mb-3 py-2",
                     ),
@@ -2187,10 +2189,32 @@ def _asset_input_records(year: str, month: str) -> list[dict]:
     data = read_asset_snapshot(year, month).copy(deep=True)
     if data.empty:
         return []
-    data["amount_sort"] = pd.to_numeric(data["amount"], errors="coerce").fillna(0)
+    data["amount_sort"] = data["amount"]
     data = data.sort_values("amount_sort", ascending=False, kind="mergesort")
+    data["amount_sort"] = range(len(data), 0, -1)
     data["amount"] = data["amount"].map(_format_input_amount)
     return _dataframe_records(data)
+
+
+def _asset_input_status(year: str, month: str) -> tuple[str, str]:
+    period = f"{int(year):04d}-{int(month):02d}"
+    target = asset_snapshot_path(year, month)
+    if target.exists():
+        return f"Загружен сохранённый снимок активов за {period}. Файл: {target}", "secondary"
+
+    template = previous_asset_snapshot_path(year, month)
+    if template is not None:
+        template_period = template.stem.replace("_", "-")
+        return (
+            f"Показана несохранённая копия снимка за {template_period}. "
+            f"Проверь значения и нажми Применить, чтобы создать снимок за {period}.",
+            "warning",
+        )
+
+    return (
+        f"Снимка активов за {period} ещё нет. Добавь строки и нажми Применить, чтобы создать его.",
+        "warning",
+    )
 
 
 def _active_debts_grid(currency: str, theme: str | None, debt_type: str):
@@ -2317,12 +2341,12 @@ def _asset_row_key(row: dict) -> tuple[str, str, str]:
 
 
 def _format_input_amount(value) -> str:
-    numeric = pd.to_numeric(value, errors="coerce")
-    if pd.isna(numeric):
-        return "0"
-    if float(numeric).is_integer():
-        return f"{int(numeric):,}".replace(",", " ")
-    return f"{float(numeric):,.2f}".replace(",", " ").rstrip("0").rstrip(".")
+    text = format_money_amount(value)
+    sign = "-" if text.startswith("-") else ""
+    unsigned = text.removeprefix("-")
+    integer, separator, fraction = unsigned.partition(".")
+    grouped_integer = f"{int(integer):,}".replace(",", " ")
+    return f"{sign}{grouped_integer}{separator}{fraction}"
 
 
 def _kaspi_import_column_defs() -> list[dict]:

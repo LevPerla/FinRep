@@ -1,3 +1,4 @@
+from decimal import Decimal
 from pathlib import Path
 
 import pandas as pd
@@ -5,6 +6,7 @@ import pytest
 from flask import Flask, session
 
 from src import config
+from src.data import assets_editor
 from src.data.assets_editor import read_asset_snapshot, write_asset_snapshot
 
 
@@ -72,7 +74,7 @@ def test_missing_required_column_does_not_invent_account_or_zero(assets_root, co
 def test_valid_legacy_formats_are_preserved(assets_root, cell, amount, currency):
     put_snapshot(assets_root, cell)
     row = read_asset_snapshot("2026", "01").iloc[0]
-    assert row["amount"] == amount
+    assert row["amount"] == Decimal(str(amount))
     assert row["currency"] == currency
 
 
@@ -85,11 +87,88 @@ def test_read_then_write_cannot_replace_corrupt_amount_with_zero(assets_root):
     assert files(assets_root.parent) == {str(Path("assets_info")/key):value for key,value in before.items()}
 
 
-def test_valid_previous_snapshot_keeps_existing_live_copy_behavior(assets_root):
+def test_missing_snapshot_previews_previous_without_creating_file(assets_root):
     put_snapshot(assets_root,"12,50|USD")
     row = read_asset_snapshot("2026","02").iloc[0]
     assert row["amount"] == 12.5
-    assert (assets_root/"2026"/"2026_02.csv").exists()
+    assert not (assets_root/"2026"/"2026_02.csv").exists()
+
+
+def test_explicit_write_creates_missing_snapshot_from_preview(assets_root):
+    put_snapshot(assets_root, "12,50|USD")
+    target = assets_root / "2026" / "2026_02.csv"
+
+    rows = read_asset_snapshot("2026", "02").to_dict("records")
+    assert not target.exists()
+
+    result = write_asset_snapshot(rows, "2026", "02")
+
+    assert target.exists()
+    assert result["created"] is True
+    assert result["backup_path"] is None
+    assert Path(result["template_path"]) == assets_root / "2026" / "2026_01.csv"
+    assert read_asset_snapshot("2026", "02").iloc[0].to_dict() == {
+        "account": "Synthetic account",
+        "amount": 12.5,
+        "currency": "USD",
+    }
+
+
+def test_failed_explicit_write_does_not_leave_template_copy(assets_root, monkeypatch):
+    put_snapshot(assets_root, "12,50|USD")
+    target = assets_root / "2026" / "2026_02.csv"
+    rows = read_asset_snapshot("2026", "02").to_dict("records")
+
+    def fail_write(*_args, **_kwargs):
+        raise OSError("synthetic write failure")
+
+    monkeypatch.setattr(assets_editor, "atomic_write_csv", fail_write)
+    with pytest.raises(OSError, match="synthetic write failure"):
+        write_asset_snapshot(rows, "2026", "02")
+
+    assert not target.exists()
+
+
+def test_missing_first_snapshot_read_is_empty_and_does_not_create_file(assets_root):
+    assert read_asset_snapshot("2026", "01").empty
+    assert not (assets_root / "2026" / "2026_01.csv").exists()
+
+
+def test_read_existing_snapshot_does_not_modify_file(assets_root):
+    target = put_snapshot(assets_root, "12,50|USD")
+    before = target.read_bytes()
+
+    row = read_asset_snapshot("2026", "01").iloc[0]
+
+    assert row["amount"] == 12.5
+    assert target.read_bytes() == before
+    assert not (assets_root.parent / "backups").exists()
+
+
+def test_asset_input_marks_previous_snapshot_as_unsaved(assets_root):
+    put_snapshot(assets_root, "12,50|USD")
+    from src.dashboard.app import _asset_input_records, _asset_input_status
+
+    records = _asset_input_records("2026", "02")
+    message, color = _asset_input_status("2026", "02")
+
+    assert records[0]["amount"] == "12.5"
+    assert "несохранённая копия" in message
+    assert "2026-01" in message
+    assert "Применить" in message
+    assert color == "warning"
+    assert not (assets_root / "2026" / "2026_02.csv").exists()
+
+
+def test_month_report_explains_missing_asset_snapshot(assets_root):
+    from src.dashboard.month_data import _asset_snapshot_display
+
+    display = _asset_snapshot_display(pd.DataFrame(), "2026", "02")
+
+    assert display.to_dict("records") == [
+        {"Статус": "Нет снимка активов за выбранный месяц."}
+    ]
+    assert not (assets_root / "2026" / "2026_02.csv").exists()
 
 
 def test_empty_snapshot_with_headers_is_valid(assets_root):

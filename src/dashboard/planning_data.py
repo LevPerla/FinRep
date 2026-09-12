@@ -1,4 +1,4 @@
-import re
+from decimal import Decimal
 
 import pandas as pd
 import plotly.graph_objects as go
@@ -7,7 +7,8 @@ from src import config, utils
 from src.dashboard.main_data import DashboardDataset, _apply_dashboard_chart_layout, _peak_money_labels
 from src.data.get import get_assets
 from src.data.csv_storage import atomic_write_csv
-from src.data.get_finance import get_actual_fx_rate, set_fx_network_enabled
+from src.data.get_finance import fx_network_mode, get_actual_fx_rate, require_fx_rate
+from src.data.money import format_money_amount, parse_money_amount
 from src.model.create_tables import get_balance_by_month
 
 GOALS_COLUMNS = [
@@ -35,12 +36,19 @@ def build_planning_dashboard_data(
     currency: str,
     fx_network_enabled: bool = True,
 ) -> dict[str, DashboardDataset]:
+    with fx_network_mode(fx_network_enabled):
+        return _build_planning_dashboard_data(year, currency)
+
+
+def _build_planning_dashboard_data(
+    year: str,
+    currency: str,
+) -> dict[str, DashboardDataset]:
     currency = currency.upper()
     year = str(year)
     if currency not in config.UNIQUE_TICKERS:
         raise ValueError(f"currency must be one of {tuple(config.UNIQUE_TICKERS)}")
 
-    set_fx_network_enabled(fx_network_enabled)
     balance = get_balance_by_month(currency)
     goals = _load_goals()
     goal_row = _goal_for_year_currency(goals, year, currency)
@@ -66,7 +74,7 @@ def build_planning_dashboard_data(
         ),
         "planning_runway": DashboardDataset(
             id="planning_runway",
-            title="Runway",
+            title="Runway по cash-flow",
             dataframe=runway,
             display_dataframe=_format_runway(runway, currency),
         ),
@@ -84,7 +92,7 @@ def _load_goals() -> pd.DataFrame:
     goals_path = config.active_data_path("plans", "goals.csv")
     if not goals_path.exists():
         return pd.DataFrame(columns=GOALS_COLUMNS)
-    goals = pd.read_csv(goals_path, sep=";")
+    goals = pd.read_csv(goals_path, sep=";", dtype=str, keep_default_na=False)
     for legacy_column, new_column in LEGACY_GOALS_COLUMNS.items():
         if new_column not in goals.columns and legacy_column in goals.columns:
             goals[new_column] = goals[legacy_column]
@@ -95,7 +103,7 @@ def _load_goals() -> pd.DataFrame:
     goals["year"] = goals["year"].astype(str)
     goals["currency"] = goals["currency"].astype(str).str.upper()
     for column in ["target_capital", "target_monthly_income", "target_monthly_expense"]:
-        goals[column] = pd.to_numeric(goals[column], errors="coerce")
+        goals[column] = goals[column].map(lambda value: pd.NA if not str(value).strip() else str(value).strip())
     return goals
 
 
@@ -131,18 +139,7 @@ def _parse_goal_value(value):
     text = str(value).strip()
     if not text:
         return pd.NA
-    normalized = re.sub(r"[^0-9,.-]", "", text.replace(" ", " "))
-    if not normalized or normalized in {"-", ".", ","}:
-        return pd.NA
-    if "," in normalized and "." in normalized:
-        if normalized.rfind(",") > normalized.rfind("."):
-            normalized = normalized.replace(".", "").replace(",", ".")
-        else:
-            normalized = normalized.replace(",", "")
-    else:
-        normalized = normalized.replace(",", ".")
-    parsed = pd.to_numeric(normalized, errors="coerce")
-    return pd.NA if pd.isna(parsed) else float(parsed)
+    return format_money_amount(text, field_name="goal")
 
 
 def _goal_for_year_currency(goals: pd.DataFrame, year: str, currency: str) -> pd.Series:
@@ -173,7 +170,8 @@ def _convert_goal_value(value, source_currency: str, target_currency: str):
     rate = get_actual_fx_rate(source_currency, target_currency)
     if rate is None:
         return pd.NA
-    return float(value) * float(rate)
+    converted = parse_money_amount(value, field_name="goal") * Decimal(str(rate))
+    return format_money_amount(converted, field_name="goal")
 
 
 def _goals_progress(balance: pd.DataFrame, goal: pd.Series, year: str, currency: str) -> pd.DataFrame:
@@ -185,9 +183,9 @@ def _goals_progress(balance: pd.DataFrame, goal: pd.Series, year: str, currency:
     avg_income = actual_income / elapsed_months
     avg_expense = actual_expense / elapsed_months
     rows = [
-        ("Капитал", current_capital, goal.get("target_capital"), "money"),
-        ("Средний доход/мес", avg_income, goal.get("target_monthly_income"), "money"),
-        ("Средний расход/мес", avg_expense, goal.get("target_monthly_expense"), "money"),
+        ("Капитал", current_capital, _goal_number(goal.get("target_capital")), "money"),
+        ("Средний доход/мес", avg_income, _goal_number(goal.get("target_monthly_income")), "money"),
+        ("Средний расход/мес", avg_expense, _goal_number(goal.get("target_monthly_expense")), "money"),
     ]
     result = pd.DataFrame(rows, columns=["Показатель", "Факт", "Цель", "Тип"])
     result["Отклонение"] = result["Факт"] - result["Цель"]
@@ -199,6 +197,12 @@ def _goals_progress(balance: pd.DataFrame, goal: pd.Series, year: str, currency:
     result["Валюта"] = currency
     result["Источник целей"] = goal.get("source_currency", goal.get("currency", currency))
     return result[["Год", "Валюта", "Источник целей", "Показатель", "Факт", "Цель", "Отклонение", "Прогресс (%)", "Тип"]]
+
+
+def _goal_number(value):
+    if pd.isna(value):
+        return pd.NA
+    return float(parse_money_amount(value, field_name="goal"))
 
 
 def _capital_forecast(balance: pd.DataFrame, year: str) -> pd.DataFrame:
@@ -248,7 +252,7 @@ def _forecast_capital_source(balance: pd.DataFrame) -> str:
 
 def _runway(balance: pd.DataFrame) -> pd.DataFrame:
     if balance.empty:
-        return pd.DataFrame(columns=["Капитал", "Средний расход", "Runway, мес.", "Runway, лет", "Статус"])
+        return pd.DataFrame(columns=["Капитал по cash-flow", "Средний расход", "Runway, мес.", "Runway, лет", "Статус"])
 
     current_capital = _latest_value(balance, "Капитал")
     avg_expense = float(pd.to_numeric(balance["Расход"].tail(12), errors="coerce").mean())
@@ -263,7 +267,7 @@ def _runway(balance: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(
         [
             {
-                "Капитал": current_capital,
+                "Капитал по cash-flow": current_capital,
                 "Средний расход": avg_expense,
                 "Runway, мес.": runway_months,
                 "Runway, лет": runway_years,
@@ -296,7 +300,7 @@ def _fx_scenarios(target_currency: str) -> pd.DataFrame:
             asset_currency = str(asset.get("Валюта", target_currency)).upper()
             rate = 1.0 if asset_currency == target_currency else get_actual_fx_rate(asset_currency, target_currency)
             if rate is None:
-                continue
+                require_fx_rate(rate, asset_currency, target_currency)
             shock_multiplier = 1.0 if asset_currency == target_currency else _target_currency_shock_multiplier(shock)
             total += float(amount) * float(rate) * shock_multiplier
         rows.append(
@@ -392,7 +396,7 @@ def _format_money_columns(data: pd.DataFrame, currency: str, not_money_cols: lis
 
 def _format_runway(data: pd.DataFrame, currency: str) -> pd.DataFrame:
     display = data.copy(deep=True)
-    for column in ["Капитал", "Средний расход"]:
+    for column in ["Капитал по cash-flow", "Средний расход"]:
         display[column] = display[column].map(lambda value: _format_money(value, currency))
     display["Runway, мес."] = display["Runway, мес."].map(lambda value: "не рассчитано" if pd.isna(value) else f"{value:,.1f} мес.".replace(",", " "))
     display["Runway, лет"] = display["Runway, лет"].map(lambda value: "не рассчитано" if pd.isna(value) else f"{value:,.1f} лет".replace(",", " "))

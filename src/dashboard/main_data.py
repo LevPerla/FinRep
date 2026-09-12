@@ -7,7 +7,7 @@ import plotly.graph_objects as go
 from src import config, utils
 from src.data.get import get_assets, get_transactions
 from src.data.exchange_rates_info import get_exchange_rates_info
-from src.data.get_finance import get_fallback_rate, get_fx_rates, set_fx_network_enabled
+from src.data.get_finance import fx_network_mode, get_fx_rates, require_fx_rate
 from src.data.proccess import convert_transaction
 from src.model.create_tables import get_balance_by_month
 
@@ -47,11 +47,19 @@ def build_main_dashboard_data(
     year: str | None = None,
     month: str | None = None,
 ) -> dict[str, DashboardDataset]:
+    with fx_network_mode(fx_network_enabled):
+        return _build_main_dashboard_data(currency, year, month)
+
+
+def _build_main_dashboard_data(
+    currency: str,
+    year: str | None,
+    month: str | None,
+) -> dict[str, DashboardDataset]:
     currency = currency.upper()
     if currency not in config.UNIQUE_TICKERS:
         raise ValueError(f"currency must be one of {tuple(config.UNIQUE_TICKERS)}")
 
-    set_fx_network_enabled(fx_network_enabled)
     balance = get_balance_by_month(currency)
 
     cockpit_metrics = _cockpit_metrics(balance, currency, year, month)
@@ -160,9 +168,15 @@ def _cockpit_metrics(
     latest_row = balance.sort_index().tail(1).iloc[0]
     current_capital = _latest_number(balance, "Капитал по активам")
     capital_source = "assets"
+    capital_label = "Капитал по активам"
+    capital_detail = "Последний доступный snapshot активов"
+    runway_label = "Runway по активам"
     if pd.isna(current_capital):
         current_capital = _latest_number(balance, "Капитал")
         capital_source = "cash-flow"
+        capital_label = "Капитал по cash-flow"
+        capital_detail = "Накопленный cash-flow за доступную историю"
+        runway_label = "Runway по cash-flow"
 
     income = _row_number(selected_row, "Доход")
     expense = _row_number(selected_row, "Расход")
@@ -176,12 +190,12 @@ def _cockpit_metrics(
     period_detail = "выбранный месяц" if is_selected_month else "последний доступный месяц"
 
     rows = [
-        ("Капитал", current_capital, capital_source, "Последний доступный капитал по assets или cash-flow", "money"),
+        (capital_label, current_capital, capital_source, capital_detail, "money"),
         ("Доход месяца", income, "ok" if income > 0 else "empty", f"{period_label}, {period_detail}", "money"),
         ("Расход месяца", expense, "watch" if expense > avg_expense * 1.2 and avg_expense > 0 else "ok", f"{period_label}, средний расход 12м: {avg_expense:,.0f} {currency}", "money"),
         ("Cash-flow месяца", delta, "positive" if delta >= 0 else "negative", f"{period_label}: доход минус расход", "money"),
         ("Норма сбережений", savings_rate, _savings_rate_status(savings_rate), f"{period_label}: cash-flow / income", "percent"),
-        ("Runway", runway_months, _runway_status(runway_months), "Капитал / средний расход за последние 12 месяцев", "months"),
+        (runway_label, runway_months, _runway_status(runway_months), f"{capital_label} / средний расход за последние 12 месяцев", "months"),
         ("Расхождение с активами", asset_gap, _asset_gap_status(asset_gap, current_capital), "Последний assets snapshot минус cash-flow капитал", "money"),
         ("FX impact месяца", fx_impact, "positive" if fx_impact >= 0 else "negative", f"{period_label}: валютная переоценка", "money"),
     ]
@@ -530,7 +544,7 @@ def _convert_asset_allocation_values(assets: pd.DataFrame, currency: str) -> pd.
             continue
         rate = _fx_rate_as_of(from_currency, currency, snapshot_date)
         if rate is None:
-            continue
+            require_fx_rate(rate, from_currency, currency, snapshot_date)
         values.loc[index] = values.loc[index] * rate
     return values
 
@@ -538,10 +552,10 @@ def _convert_asset_allocation_values(assets: pd.DataFrame, currency: str) -> pd.
 def _fx_rate_as_of(from_currency: str, to_currency: str, as_of_date) -> float | None:
     rates = get_fx_rates(from_currency, to_currency, as_of_date, as_of_date)
     if rates.empty:
-        return get_fallback_rate(from_currency, to_currency)
+        return None
     values = pd.to_numeric(rates.iloc[:, 0], errors="coerce").dropna()
     if values.empty:
-        return get_fallback_rate(from_currency, to_currency)
+        return None
     return float(values.iloc[-1])
 
 

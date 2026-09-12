@@ -6,8 +6,8 @@ from src import config
 from src.data.get import get_investments, get_transactions, get_assets
 from src.data.debts import active_debt_balances
 from src.data.investment_calculations import current_investment_value
-from src.data.get_finance import get_actual_rates, get_act_moex, get_fallback_rate, get_fx_rates
-from src.data.proccess import convert_transaction
+from src.data.get_finance import get_actual_rates, get_act_moex, get_fx_rates, require_fx_rate
+from src.data.proccess import convert_transaction, round_money_values
 
 
 def create_invest_tbl() -> (pd.DataFrame, pd.DataFrame):
@@ -311,7 +311,10 @@ def _get_asset_capital_by_month_cached(data_root: str, currency: str) -> pd.Data
         investment_value = current_investment_value(currency)
         if investment_value:
             result.loc[result.index.max(), 'Капитал по активам'] += investment_value
-    return result.round(2)
+    result['Капитал по активам'] = round_money_values(
+        result['Капитал по активам'], field_name='Капитал по активам'
+    )
+    return result
 
 
 def get_cost_distribution(currency, year, month=None):
@@ -407,8 +410,7 @@ def get_assets_by_currencies(year, month) -> pd.DataFrame:
         for curr_to in [curr_2 for curr_2 in sml_df.columns if curr_2 not in ['Счет', curr_from]]:
             rate = _get_fx_rate_as_of(curr_from, curr_to, snapshot_date)
             if rate is None:
-                print(f"Warning: No rate available for {curr_from}/{curr_to} as of {snapshot_date}, skipping conversion")
-                continue
+                require_fx_rate(rate, curr_from, curr_to, snapshot_date)
             sml_df[curr_to] = sml_df[curr_from] * rate
         gr_asset_df_.update(sml_df)
 
@@ -521,10 +523,9 @@ def _convert_asset_values_as_of_snapshot(assets_df: pd.DataFrame, currency: str)
             continue
         rate = _get_fx_rate_as_of(from_curr, currency, snapshot_date)
         if rate is None:
-            print(f"Warning: No rate available for {from_curr}/{currency} as of {snapshot_date}, leaving asset value unconverted")
-            continue
+            require_fx_rate(rate, from_curr, currency, snapshot_date)
         values.loc[index] = values.loc[index] * rate
-    return values
+    return round_money_values(values, field_name='Значение')
 
 
 def _get_fx_rate_as_of(from_curr: str, to_curr: str, as_of_date) -> float | None:
@@ -539,13 +540,13 @@ def _get_fx_rate_as_of(from_curr: str, to_curr: str, as_of_date) -> float | None
     lookback_start = as_of - pd.Timedelta(days=7)
     rates = get_fx_rates(from_curr, to_curr, lookback_start, as_of)
     if rates.empty:
-        return get_fallback_rate(from_curr, to_curr)
+        return None
     values = pd.to_numeric(rates.iloc[:, 0], errors='coerce').dropna()
     if values.empty:
-        return get_fallback_rate(from_curr, to_curr)
+        return None
     values = values[values.index <= as_of]
     if values.empty:
-        return get_fallback_rate(from_curr, to_curr)
+        return None
     return float(values.iloc[-1])
 
 

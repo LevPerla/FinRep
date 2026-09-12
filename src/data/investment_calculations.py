@@ -5,7 +5,7 @@ from dataclasses import dataclass
 import pandas as pd
 
 from src.data.crypto import calculate_crypto_positions
-from src.data.get_finance import get_actual_fx_rate, get_fallback_rate
+from src.data.get_finance import get_actual_fx_rate, get_fx_rate_as_of, require_fx_rate
 from src.data.investments import latest_cached_prices, read_investment_transactions
 
 
@@ -94,7 +94,7 @@ def calculate_positions(transactions: pd.DataFrame | None = None, currency: str 
         price_info = price_by_ticker.get(ticker, {})
         latest_price = _to_float(price_info.get("price"), average_cost)
         price_currency = str(price_info.get("currency") or native_currency).upper()
-        native_rate = _conversion_rate(price_currency, currency)
+        native_rate = _conversion_rate(price_currency, currency, price_info.get("date"))
         market_value_native = quantity * latest_price
         unrealized_native = market_value_native - cost_basis
 
@@ -134,10 +134,16 @@ def realized_pnl_by_ticker(transactions: pd.DataFrame | None = None, currency: s
     rows = []
     for ticker, ticker_rows in data.groupby("ticker", sort=True):
         realized_native, native_currency = _calculate_realized_native(ticker_rows)
+        sell_dates = ticker_rows.loc[ticker_rows["operation"].eq("sell"), "date"]
+        rate = 1.0 if realized_native == 0 else _conversion_rate(
+            native_currency,
+            currency,
+            sell_dates.max() if not sell_dates.empty else None,
+        )
         rows.append(
             {
                 "ticker": ticker,
-                "realized_pnl": realized_native * _conversion_rate(native_currency, currency),
+                "realized_pnl": realized_native * rate,
                 "currency": currency,
             }
         )
@@ -220,15 +226,17 @@ def _calculate_realized_native(ticker_rows: pd.DataFrame) -> tuple[float, str]:
     return realized_native, native_currency
 
 
-def _conversion_rate(from_currency: str, to_currency: str) -> float:
+def _conversion_rate(from_currency: str, to_currency: str, as_of_date=None) -> float:
     from_currency = str(from_currency).upper()
     to_currency = str(to_currency).upper()
     if from_currency == to_currency:
         return 1.0
-    rate = get_actual_fx_rate(from_currency, to_currency)
-    if rate is None:
-        rate = get_fallback_rate(from_currency, to_currency)
-    return float(rate) if rate is not None else 1.0
+    rate = (
+        get_actual_fx_rate(from_currency, to_currency)
+        if as_of_date is None or pd.isna(as_of_date)
+        else get_fx_rate_as_of(from_currency, to_currency, as_of_date)
+    )
+    return require_fx_rate(rate, from_currency, to_currency, as_of_date)
 
 
 def _to_float(value, default: float = 0.0) -> float:

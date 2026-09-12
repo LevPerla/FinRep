@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from math import isfinite
+from decimal import Decimal
 from pathlib import Path
 from uuid import uuid4
 
@@ -11,6 +11,7 @@ from src import config
 from src.data.csv_storage import atomic_write_csv
 from src.data.file_commit import commit_file_images, read_commit_receipt
 from src.data.get import get_transactions
+from src.data.money import format_money_amount, parse_money_amount, quantize_money_amount
 from src.data.proccess import convert_transaction
 from src.data import staging
 
@@ -41,6 +42,7 @@ DEBT_TYPES = {"receivable", "liability"}
 DEBT_STATUSES = {"active", "closed"}
 PAYMENT_STATUSES = {"posted"}
 DEBT_DRAFT_SOURCE = "debt"
+ZERO_MONEY = Decimal("0")
 
 
 @dataclass(frozen=True)
@@ -107,7 +109,13 @@ def write_debts(data: pd.DataFrame, path: str | Path | None = None) -> None:
     _raise_if_issues(validate_debt_rows(normalized, read_debt_payments()))
     debt_path = _debt_path(path)
     debt_path.parent.mkdir(parents=True, exist_ok=True)
-    atomic_write_csv(normalized, debt_path, sep=";", index=False, encoding="utf-8-sig")
+    atomic_write_csv(
+        _money_storage_frame(normalized, ["principal_amount", "cash_amount"]),
+        debt_path,
+        sep=";",
+        index=False,
+        encoding="utf-8-sig",
+    )
 
 
 def write_debt_payments(data: pd.DataFrame, path: str | Path | None = None) -> None:
@@ -116,7 +124,13 @@ def write_debt_payments(data: pd.DataFrame, path: str | Path | None = None) -> N
     _raise_if_issues(validate_debt_rows(read_debts(), normalized))
     payment_path = _payment_path(path)
     payment_path.parent.mkdir(parents=True, exist_ok=True)
-    atomic_write_csv(normalized, payment_path, sep=";", index=False, encoding="utf-8-sig")
+    atomic_write_csv(
+        _money_storage_frame(normalized, ["amount", "cash_amount"]),
+        payment_path,
+        sep=";",
+        index=False,
+        encoding="utf-8-sig",
+    )
 
 
 def create_debt(
@@ -141,7 +155,12 @@ def create_debt(
         debts = _read_debts_unlocked()
         payments = _read_debt_payments_unlocked()
         debt_id = f"debt-{uuid4().hex[:12]}"
-        cash_amount_value = principal_amount if cash_amount in {None, ""} else cash_amount
+        principal_amount_value = _to_positive_money(principal_amount, "principal_amount")
+        cash_amount_value = (
+            principal_amount_value
+            if cash_amount in {None, ""}
+            else _to_positive_money(cash_amount, "cash_amount")
+        )
         cash_currency_value = (
             principal_currency
             if cash_amount in {None, ""} or not cash_currency
@@ -152,7 +171,7 @@ def create_debt(
             "type": debt_type,
             "counterparty": counterparty,
             "opened_date": opened_date,
-            "principal_amount": principal_amount,
+            "principal_amount": principal_amount_value,
             "principal_currency": principal_currency,
             "cash_amount": cash_amount_value,
             "cash_currency": cash_currency_value,
@@ -171,7 +190,7 @@ def create_debt(
                 date=debt["opened_date"],
                 category=_debt_category(debt["type"]),
                 currency=debt["cash_currency"],
-                amount=debt["cash_amount"],
+                amount=format_money_amount(debt["cash_amount"]),
                 comment=_debt_comment(debt),
                 source=DEBT_DRAFT_SOURCE,
                 source_id=f"{debt_id}:open",
@@ -212,15 +231,19 @@ def create_debt_payment(
         if debt_rows.empty:
             raise KeyError(f"debt not found: {debt_id}")
         debt = debt_rows.iloc[0]
-        amount_value = _to_positive_float(amount, "amount")
-        cash_amount_value = amount_value if cash_amount in {None, ""} else cash_amount
+        amount_value = _to_positive_money(amount, "amount")
+        cash_amount_value = (
+            amount_value
+            if cash_amount in {None, ""}
+            else _to_positive_money(cash_amount, "cash_amount")
+        )
         cash_currency_value = (
             debt["principal_currency"]
             if cash_amount in {None, ""} or not cash_currency
             else cash_currency
         )
-        outstanding = _outstanding_by_debt(debts, payments).get(str(debt_id), 0.0)
-        if amount_value > outstanding + 0.000001:
+        outstanding = _outstanding_by_debt(debts, payments).get(str(debt_id), ZERO_MONEY)
+        if amount_value > outstanding:
             raise ValueError(
                 f"Погашение больше остатка: {amount_value:g} > "
                 f"{outstanding:g} {debt['principal_currency']}"
@@ -257,7 +280,7 @@ def create_debt_payment(
                 date=payment["date"],
                 category=_payment_category(debt["type"]),
                 currency=payment["cash_currency"],
-                amount=payment["cash_amount"],
+                amount=format_money_amount(payment["cash_amount"]),
                 comment=_payment_comment(debt, payment),
                 source=DEBT_DRAFT_SOURCE,
                 source_id=f"{debt_id}:{payment_id}",
@@ -289,7 +312,7 @@ def create_debt_payment_from_cash(
     if debt_rows.empty:
         raise KeyError(f"debt not found: {debt_id}")
     debt = debt_rows.iloc[0]
-    cash_amount_value = _to_positive_float(cash_amount, "cash_amount")
+    cash_amount_value = _to_positive_money(cash_amount, "cash_amount")
     cash_currency = str(cash_currency).upper()
     debt_amount = _cash_to_debt_amount(
         cash_amount_value,
@@ -324,8 +347,8 @@ def active_debt_balances(debt_type: str, currency: str | None = None) -> pd.Data
     if balances.empty:
         return _active_balance_empty(currency)
 
-    balances["paid_amount"] = balances["paid_amount"].round(2)
-    balances["outstanding_amount"] = balances["outstanding_amount"].round(2)
+    balances["paid_amount"] = balances["paid_amount"].map(quantize_money_amount)
+    balances["outstanding_amount"] = balances["outstanding_amount"].map(quantize_money_amount)
     if currency is not None:
         balances[f"outstanding_{currency}"] = _convert_outstanding(balances, currency)
     return balances.reset_index(drop=True)
@@ -427,7 +450,7 @@ def validate_debt_rows(debts: pd.DataFrame, payments: pd.DataFrame) -> list[Debt
 
     outstanding = _outstanding_by_debt(debts, payments)
     for debt_id, value in outstanding.items():
-        if value < -0.000001:
+        if value.is_finite() and value < ZERO_MONEY:
             index = debts.index[debts["debt_id"].eq(debt_id)][0]
             issues.append(DebtValidationIssue(_debt_path(), index + 2, "payments exceed principal"))
 
@@ -437,45 +460,65 @@ def validate_debt_rows(debts: pd.DataFrame, payments: pd.DataFrame) -> list[Debt
 def _debt_balance_table(debts: pd.DataFrame, payments: pd.DataFrame) -> pd.DataFrame:
     debts = _normalize_debts(debts)
     payments = _normalize_payments(payments)
-    paid = payments.groupby("debt_id")["amount"].sum().rename("paid_amount")
+    if payments.empty:
+        paid = pd.Series(dtype=object, name="paid_amount")
+    else:
+        paid = payments.groupby("debt_id")["amount"].agg(
+            lambda values: sum(values, ZERO_MONEY)
+        ).rename("paid_amount")
     result = debts.merge(paid, left_on="debt_id", right_index=True, how="left")
-    result["paid_amount"] = result["paid_amount"].fillna(0.0)
+    result["paid_amount"] = result["paid_amount"].map(
+        lambda value: ZERO_MONEY if pd.isna(value) else value
+    )
     result["outstanding_amount"] = result["principal_amount"] - result["paid_amount"]
     return result
 
 
-def _outstanding_by_debt(debts: pd.DataFrame, payments: pd.DataFrame) -> dict[str, float]:
+def _outstanding_by_debt(debts: pd.DataFrame, payments: pd.DataFrame) -> dict[str, Decimal]:
     table = _debt_balance_table(debts, payments)
-    return dict(zip(table["debt_id"].astype(str), table["outstanding_amount"].astype(float)))
+    return dict(zip(table["debt_id"].astype(str), table["outstanding_amount"]))
 
 
 def _close_repaid_debts(debts: pd.DataFrame, payments: pd.DataFrame) -> pd.DataFrame:
     updated = _normalize_debts(debts)
     outstanding = _outstanding_by_debt(updated, payments)
     for debt_id, value in outstanding.items():
-        if value <= 0.000001:
+        if value.is_finite() and value <= ZERO_MONEY:
             updated.loc[updated["debt_id"].eq(debt_id), "status"] = "closed"
     return updated
 
 
 def _convert_outstanding(data: pd.DataFrame, currency: str) -> pd.Series:
+    result = data["outstanding_amount"].map(quantize_money_amount)
+    different_currency = data["principal_currency"].ne(currency)
+    if not different_currency.any():
+        return result
     conversion = pd.DataFrame(
         {
             "Дата": pd.Timestamp.today().normalize(),
-            "Валюта": data["principal_currency"],
-            "Значение": data["outstanding_amount"],
+            "Валюта": data.loc[different_currency, "principal_currency"],
+            "Значение": data.loc[different_currency, "outstanding_amount"].map(float),
         },
-        index=data.index,
+        index=data.index[different_currency],
     )
-    converted = convert_transaction(conversion, to_curr=currency, target_col="Значение", use_current_rate=True)
-    return pd.to_numeric(converted["Значение"], errors="coerce").round(2)
+    converted = convert_transaction(
+        conversion,
+        to_curr=currency,
+        target_col="Значение",
+        use_current_rate=True,
+        round_result=False,
+    )
+    result.loc[different_currency] = converted["Значение"].map(quantize_money_amount)
+    return result
 
 
-def _cash_to_debt_amount(cash_amount: float, cash_currency: str, debt_currency: str, date: str) -> float:
+def _cash_to_debt_amount(
+    cash_amount: Decimal, cash_currency: str, debt_currency: str, date: str
+) -> Decimal:
     cash_currency = str(cash_currency).upper()
     debt_currency = str(debt_currency).upper()
     if cash_currency == debt_currency:
-        return round(float(cash_amount), 2)
+        return quantize_money_amount(cash_amount)
 
     conversion = pd.DataFrame(
         {
@@ -484,14 +527,23 @@ def _cash_to_debt_amount(cash_amount: float, cash_currency: str, debt_currency: 
             "Значение": [float(cash_amount)],
         }
     )
-    converted = convert_transaction(conversion, to_curr=debt_currency, target_col="Значение", use_current_rate=False)
+    converted = convert_transaction(
+        conversion,
+        to_curr=debt_currency,
+        target_col="Значение",
+        use_current_rate=False,
+        round_result=False,
+    )
     converted_currency = str(converted.iloc[0]["Валюта"]).upper()
     if converted_currency != debt_currency:
         raise ValueError(f"Не удалось конвертировать {cash_currency} в {debt_currency} для погашения.")
-    value = pd.to_numeric(converted.iloc[0]["Значение"], errors="coerce")
-    if pd.isna(value):
-        raise ValueError(f"Не удалось конвертировать {cash_currency} в {debt_currency} для погашения.")
-    return round(float(value), 2)
+    value = converted.iloc[0]["Значение"]
+    try:
+        return quantize_money_amount(value)
+    except ValueError as exc:
+        raise ValueError(
+            f"Не удалось конвертировать {cash_currency} в {debt_currency} для погашения."
+        ) from exc
 
 
 def _append_debt_draft(date: str, category: str, currency: str, amount, comment: str, source_id: str):
@@ -535,8 +587,8 @@ def _normalize_debts(data: pd.DataFrame) -> pd.DataFrame:
     normalized["principal_currency"] = normalized["principal_currency"].astype(str).str.strip().str.upper()
     normalized["cash_currency"] = normalized["cash_currency"].astype(str).str.strip().str.upper()
     normalized["status"] = normalized["status"].replace("", "active").astype(str).str.strip().str.lower()
-    normalized["principal_amount"] = _number_series(normalized["principal_amount"])
-    normalized["cash_amount"] = _number_series(normalized["cash_amount"])
+    normalized["principal_amount"] = _money_series(normalized["principal_amount"], "principal_amount")
+    normalized["cash_amount"] = _money_series(normalized["cash_amount"], "cash_amount")
     return normalized
 
 
@@ -548,20 +600,38 @@ def _normalize_payments(data: pd.DataFrame) -> pd.DataFrame:
     normalized = normalized[PAYMENT_COLUMNS].fillna("")
     normalized["cash_currency"] = normalized["cash_currency"].astype(str).str.strip().str.upper()
     normalized["status"] = normalized["status"].replace("", "posted").astype(str).str.strip().str.lower()
-    normalized["amount"] = _number_series(normalized["amount"])
-    normalized["cash_amount"] = _number_series(normalized["cash_amount"])
+    normalized["amount"] = _money_series(normalized["amount"], "amount")
+    normalized["cash_amount"] = _money_series(normalized["cash_amount"], "cash_amount")
     return normalized
 
 
-def _number_series(series: pd.Series) -> pd.Series:
-    return pd.to_numeric(series.astype(str).str.replace(" ", "").str.replace(",", "."), errors="coerce")
+def _money_series(series: pd.Series, field_name: str) -> pd.Series:
+    values = []
+    for value in series:
+        try:
+            values.append(parse_money_amount(value, field_name=field_name))
+        except ValueError:
+            values.append(Decimal("NaN"))
+    return pd.Series(values, index=series.index, dtype=object)
 
 
-def _to_positive_float(value, name: str) -> float:
-    parsed = pd.to_numeric(str(value).replace(" ", "").replace(",", "."), errors="coerce")
-    if not isfinite(parsed) or float(parsed) <= 0:
+def _to_positive_money(value, name: str) -> Decimal:
+    try:
+        parsed = quantize_money_amount(value, field_name=name)
+    except ValueError as exc:
+        raise ValueError(f"{name} must be finite and positive") from exc
+    if parsed <= ZERO_MONEY:
         raise ValueError(f"{name} must be finite and positive")
-    return float(parsed)
+    return parsed
+
+
+def _money_storage_frame(data: pd.DataFrame, columns: list[str]) -> pd.DataFrame:
+    result = data.copy(deep=True)
+    for column in columns:
+        result[column] = result[column].map(
+            lambda value: format_money_amount(value, field_name=column)
+        )
+    return result
 
 
 def _validate_debt_row(index: int, row: pd.Series, issues: list[DebtValidationIssue]) -> None:
@@ -573,11 +643,11 @@ def _validate_debt_row(index: int, row: pd.Series, issues: list[DebtValidationIs
         issues.append(DebtValidationIssue(_debt_path(), index + 2, "counterparty is required"))
     if pd.isna(pd.to_datetime(row["opened_date"], errors="coerce")):
         issues.append(DebtValidationIssue(_debt_path(), index + 2, "invalid opened_date"))
-    if not isfinite(row["principal_amount"]) or float(row["principal_amount"]) <= 0:
+    if not _is_positive_money(row["principal_amount"]):
         issues.append(DebtValidationIssue(_debt_path(), index + 2, "principal_amount must be finite and positive"))
     if row["principal_currency"] not in config.UNIQUE_TICKERS:
         issues.append(DebtValidationIssue(_debt_path(), index + 2, f"unsupported principal_currency {row['principal_currency']!r}"))
-    if not isfinite(row["cash_amount"]) or float(row["cash_amount"]) <= 0:
+    if not _is_positive_money(row["cash_amount"]):
         issues.append(DebtValidationIssue(_debt_path(), index + 2, "cash_amount must be finite and positive"))
     if row["cash_currency"] not in config.UNIQUE_TICKERS:
         issues.append(DebtValidationIssue(_debt_path(), index + 2, f"unsupported cash_currency {row['cash_currency']!r}"))
@@ -592,9 +662,9 @@ def _validate_payment_row(index: int, row: pd.Series, known_debt_ids: set[str], 
         issues.append(DebtValidationIssue(_payment_path(), index + 2, f"unknown debt_id {row['debt_id']!r}"))
     if pd.isna(pd.to_datetime(row["date"], errors="coerce")):
         issues.append(DebtValidationIssue(_payment_path(), index + 2, "invalid date"))
-    if not isfinite(row["amount"]) or float(row["amount"]) <= 0:
+    if not _is_positive_money(row["amount"]):
         issues.append(DebtValidationIssue(_payment_path(), index + 2, "amount must be finite and positive"))
-    if not isfinite(row["cash_amount"]) or float(row["cash_amount"]) <= 0:
+    if not _is_positive_money(row["cash_amount"]):
         issues.append(DebtValidationIssue(_payment_path(), index + 2, "cash_amount must be finite and positive"))
     if row["cash_currency"] not in config.UNIQUE_TICKERS:
         issues.append(DebtValidationIssue(_payment_path(), index + 2, f"unsupported cash_currency {row['cash_currency']!r}"))
@@ -605,6 +675,10 @@ def _validate_payment_row(index: int, row: pd.Series, known_debt_ids: set[str], 
 def _missing_columns(path: Path, data: pd.DataFrame, columns: list[str]) -> list[DebtValidationIssue]:
     missing = [column for column in columns if column not in data.columns]
     return [DebtValidationIssue(path, None, f"missing required column {column!r}") for column in missing]
+
+
+def _is_positive_money(value) -> bool:
+    return isinstance(value, Decimal) and value.is_finite() and value > ZERO_MONEY
 
 
 def _active_balance_empty(currency: str | None) -> pd.DataFrame:
