@@ -62,10 +62,8 @@ def read_asset_snapshot(year: str, month: str, assets_root: str | Path | None = 
         template = previous_asset_snapshot_path(year, month, assets_root)
         if template is not None:
             path = template
-        elif config.is_test_mode():
-            return pd.DataFrame(columns=ASSET_EDITOR_COLUMNS)
         else:
-            ensure_asset_snapshot(year, month, assets_root)
+            return pd.DataFrame(columns=ASSET_EDITOR_COLUMNS)
     try:
         data = pd.read_csv(path, sep=";", dtype=str, encoding="utf-8-sig", keep_default_na=False)
     except (pd.errors.ParserError, pd.errors.EmptyDataError, UnicodeError) as exc:
@@ -81,9 +79,6 @@ def read_asset_snapshot(year: str, month: str, assets_root: str | Path | None = 
         except ValueError as exc:
             raise ValueError(f"{path.name}: строка {row_number}, счёт {row['Счет']!r}: {exc}") from exc
         rows.append({"account": str(row["Счет"]), "amount": amount, "currency": currency})
-    # Validate the template before creating a new LIVE snapshot from it.
-    if path != target_path and not config.is_test_mode():
-        ensure_asset_snapshot(year, month, assets_root)
     return pd.DataFrame(rows, columns=ASSET_EDITOR_COLUMNS)
 
 
@@ -91,10 +86,11 @@ def write_asset_snapshot(rows: list[dict], year: str, month: str, assets_root: s
     config.require_writable_mode()
     target_path = asset_snapshot_path(year, month, assets_root)
     data = _normalize_asset_rows(pd.DataFrame(rows))
-    ensure_info = ensure_asset_snapshot(year, month, assets_root)
+    target_existed = target_path.exists()
+    template_path = None if target_existed else previous_asset_snapshot_path(year, month, assets_root)
 
     backup_path = None
-    if target_path.exists():
+    if target_existed:
         backup_root = config.active_data_path("backups", "assets_info", target_path.parent.name)
         backup_path = create_unique_backup(target_path, backup_root)
 
@@ -107,8 +103,8 @@ def write_asset_snapshot(rows: list[dict], year: str, month: str, assets_root: s
         "path": str(target_path),
         "backup_path": None if backup_path is None else str(backup_path),
         "rows": int(len(output)),
-        "created": bool(ensure_info["created"]),
-        "template_path": ensure_info["template_path"],
+        "created": not target_existed,
+        "template_path": None if template_path is None else str(template_path),
     }
 
 

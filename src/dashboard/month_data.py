@@ -6,6 +6,7 @@ from src.dashboard.main_data import DashboardDataset, _apply_dashboard_chart_lay
 from src.dashboard.year_data import _format_cost_distribution
 from src.data.exchange_rates_info import get_exchange_rates_info
 from src.data.get import clear_data_cache, get_transactions
+from src.data.assets_editor import asset_snapshot_path
 from src.data.get_finance import set_fx_network_enabled
 from src.data.proccess import convert_transaction
 from src.data.staging import ensure_monthly_transaction_csv
@@ -42,6 +43,7 @@ def build_month_dashboard_data(
     liabilities = get_act_liabilities(currency)
     cost_distribution = _cost_distribution(year, month, currency)
     assets = _prepare_assets(get_assets_by_currencies(year, month))
+    assets_display = _asset_snapshot_display(assets, year, month)
 
     return {
         "month_transactions": DashboardDataset(
@@ -90,7 +92,7 @@ def build_month_dashboard_data(
             id="month_assets",
             title="Распределение по счетам",
             dataframe=assets,
-            display_dataframe=utils.fill_if_empty(assets.copy(deep=True)),
+            display_dataframe=assets_display,
         ),
     }
 
@@ -211,6 +213,12 @@ def _prepare_assets(data: pd.DataFrame) -> pd.DataFrame:
         kind="mergesort",
     )
     return display.drop(columns=["__priority", "__rub_sort"]).reset_index(drop=True)
+
+
+def _asset_snapshot_display(data: pd.DataFrame, year: str, month: str) -> pd.DataFrame:
+    if not asset_snapshot_path(year, month).exists():
+        return pd.DataFrame({"Статус": ["Нет снимка активов за выбранный месяц."]})
+    return utils.fill_if_empty(data.copy(deep=True))
 
 
 def _to_number(value) -> float:
