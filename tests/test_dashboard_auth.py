@@ -154,7 +154,7 @@ def test_mobile_navigation_has_four_primary_actions_and_a_more_menu():
 
     nav = _mobile_bottom_nav()
     menu = _mobile_more_menu()
-    primary_ids = ["mobile-tab-main", "mobile-tab-month", "mobile-tab-input", "mobile-tab-planning"]
+    primary_ids = ["mobile-tab-main", "mobile-tab-year", "mobile-tab-month", "mobile-tab-planning"]
 
     for component_id in primary_ids + ["mobile-tab-more"]:
         button = _layout_component(nav, component_id)
@@ -162,8 +162,13 @@ def test_mobile_navigation_has_four_primary_actions_and_a_more_menu():
         assert button.type == "button"
     assert getattr(_layout_component(nav, "mobile-tab-main"), "aria-pressed") == "true"
     assert getattr(_layout_component(nav, "mobile-tab-more"), "aria-haspopup") == "dialog"
-    assert _layout_component(nav, "mobile-tab-year") is None
-    for component_id in ("mobile-more-year", "mobile-more-debts", "mobile-more-investments"):
+    labels = [
+        _layout_component(nav, component_id).children[1].children
+        for component_id in primary_ids
+    ]
+    assert labels == ["Основной отчет", "Годовой отчет", "Месячный отчет", "План"]
+    assert _layout_component(nav, "mobile-tab-input") is None
+    for component_id in ("mobile-more-input", "mobile-more-debts", "mobile-more-investments"):
         assert _layout_component(menu, component_id) is not None
     assert _layout_component(menu, "mobile-more-menu").placement == "bottom"
 
@@ -292,7 +297,7 @@ def test_mobile_charts_use_the_actual_container_width_without_css_zoom():
     assert "zoom:" not in css
 
 
-def test_dashboard_chart_does_not_add_a_rangeslider_that_overlaps_mobile_labels():
+def test_dashboard_time_chart_keeps_rangeslider_with_label_clearance():
     from src.dashboard.main_data import _income_expense_figure
 
     data = pd.DataFrame(
@@ -305,7 +310,9 @@ def test_dashboard_chart_does_not_add_a_rangeslider_that_overlaps_mobile_labels(
 
     figure = _income_expense_figure(data, "RUB")
 
-    assert figure.layout.xaxis.rangeslider.visible is None
+    assert figure.layout.xaxis.rangeslider.visible is True
+    assert figure.layout.xaxis.rangeslider.thickness == 0.08
+    assert figure.layout.margin.b == 72
 
 
 def test_month_transaction_rows_are_clickable():

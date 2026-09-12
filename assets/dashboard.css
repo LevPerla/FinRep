@@ -1514,7 +1514,7 @@ body {
     justify-content: center;
     gap: 4px;
     min-width: 0;
-    min-height: 58px;
+    min-height: 64px;
     margin: 0;
     padding: 4px 1px 2px;
     border-radius: 18px;
@@ -1523,7 +1523,7 @@ body {
     font-weight: 650;
     line-height: 1.1;
     text-align: center;
-    white-space: nowrap;
+    white-space: normal;
     cursor: pointer;
     transition: background 160ms ease, color 160ms ease, transform 160ms ease;
     border: 0;
@@ -1548,8 +1548,7 @@ body {
   .mobile-dashboard-tab-label {
     display: block;
     max-width: 100%;
-    overflow: hidden;
-    text-overflow: ellipsis;
+    min-height: 2.1em;
   }
 
   .mobile-dashboard-tab.is-active {

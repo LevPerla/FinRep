@@ -75,13 +75,13 @@ MAIN_DASHBOARD_TABS: list[DashboardTab] = [
 ]
 MAIN_DASHBOARD_TAB_IDS = {tab_id for tab_id, _desktop_label, _mobile_label in MAIN_DASHBOARD_TABS}
 MOBILE_PRIMARY_TABS: list[DashboardTab] = [
-    ("main", "Основной отчет", "Главная"),
-    ("month", "Месячный отчет", "Месяц"),
-    ("input", "Ввод данных", "Ввод"),
+    ("main", "Основной отчет", "Основной отчет"),
+    ("year", "Годовой отчет", "Годовой отчет"),
+    ("month", "Месячный отчет", "Месячный отчет"),
     ("planning", "План и прогноз", "План"),
 ]
 MOBILE_SECONDARY_TABS: list[DashboardTab] = [
-    ("year", "Годовой отчет", "Год"),
+    ("input", "Ввод данных", "Ввод данных"),
     ("debts", "Долги · Beta", "Долги · Beta"),
     ("investments", "Инвестиции · Beta", "Инвестиции · Beta"),
 ]
@@ -763,11 +763,11 @@ def register_callbacks(app: Dash) -> None:
         Output("dashboard-tabs", "active_tab", allow_duplicate=True),
         Output("mobile-more-menu", "is_open"),
         Input("mobile-tab-main", "n_clicks"),
+        Input("mobile-tab-year", "n_clicks"),
         Input("mobile-tab-month", "n_clicks"),
-        Input("mobile-tab-input", "n_clicks"),
         Input("mobile-tab-planning", "n_clicks"),
         Input("mobile-tab-more", "n_clicks"),
-        Input("mobile-more-year", "n_clicks"),
+        Input("mobile-more-input", "n_clicks"),
         Input("mobile-more-debts", "n_clicks"),
         Input("mobile-more-investments", "n_clicks"),
         Input("mobile-more-close", "n_clicks"),
@@ -777,11 +777,11 @@ def register_callbacks(app: Dash) -> None:
     )
     def apply_mobile_tab(
         _main_clicks,
+        _year_clicks,
         _month_clicks,
-        _input_clicks,
         _planning_clicks,
         _more_clicks,
-        _year_clicks,
+        _input_clicks,
         _debts_clicks,
         _investments_clicks,
         _close_clicks,
@@ -805,13 +805,13 @@ def register_callbacks(app: Dash) -> None:
 
     @app.callback(
         Output("mobile-tab-main", "className"),
+        Output("mobile-tab-year", "className"),
         Output("mobile-tab-month", "className"),
-        Output("mobile-tab-input", "className"),
         Output("mobile-tab-planning", "className"),
         Output("mobile-tab-more", "className"),
         Output("mobile-tab-main", "aria-pressed"),
+        Output("mobile-tab-year", "aria-pressed"),
         Output("mobile-tab-month", "aria-pressed"),
-        Output("mobile-tab-input", "aria-pressed"),
         Output("mobile-tab-planning", "aria-pressed"),
         Output("mobile-tab-more", "aria-pressed"),
         Input("dashboard-tabs", "active_tab"),
