@@ -16,11 +16,17 @@ AMOUNT_RE = re.compile(r"(?P<amount>\d[\d ]*,\d{2})")
 
 
 def parse_kaspi_deposit_pdf(path: str | Path) -> pd.DataFrame:
-    return _import_frame_from_rows(_extract_rows_from_pdf(Path(path)), KASPI_DEPOSIT_SOURCE)
+    return parse_kaspi_deposit_pdf_bytes(Path(path).read_bytes())
 
 
 def parse_kaspi_deposit_pdf_bytes(content: bytes) -> pd.DataFrame:
-    return _import_frame_from_rows(_extract_rows_from_pdf(io.BytesIO(content)), KASPI_DEPOSIT_SOURCE)
+    from hashlib import sha256
+
+    return _import_frame_from_rows(
+        _extract_rows_from_pdf(io.BytesIO(content)),
+        KASPI_DEPOSIT_SOURCE,
+        statement_id=sha256(content).hexdigest(),
+    )
 
 
 def is_kaspi_deposit_statement(first_page_text: str | None) -> bool:

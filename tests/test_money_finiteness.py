@@ -41,7 +41,11 @@ def test_transaction_rejection_preserves_files(data_root, bad, action):
             row['amount'] = bad
             staging.merge_transaction_draft_rows([row])
         else:
-            staging.export_monthly_transaction_drafts('2026','01', preview_rows=[{'Дата':'01.01.2026','Прочее':f'{bad}|RUB|invalid'}])
+            preview, preview_state = staging.prepare_monthly_transaction_export('2026', '01')
+            preview.loc[preview['Дата'] == '01.01.2026', 'Прочее'] = f'{bad}|RUB|invalid'
+            staging.export_monthly_transaction_drafts(
+                '2026', '01', preview_rows=preview.to_dict('records'), preview_state=preview_state
+            )
     assert snapshot(data_root) == before
 
 
@@ -149,7 +153,17 @@ def test_legacy_file_validation_rejects_nonfinite_money(bad):
 
 def test_preview_preserves_legacy_comments_and_empty_cells(data_root):
     cell = '80,93|EUR|comment # tag|with pipes#1200|KZT|next'
-    result = staging.export_monthly_transaction_drafts('2026','01',preview_rows=[{'Дата':'01.01.2026','Прочее':cell,'Доход':None}])
+    target = staging.monthly_transaction_csv_path('2026', '01')
+    target.parent.mkdir(parents=True)
+    pd.DataFrame([{'Дата':'01.01.2026', 'Прочее':'0', 'Доход':'0'}]).to_csv(
+        target, sep=';', index=False
+    )
+    preview, preview_state = staging.prepare_monthly_transaction_export('2026', '01')
+    preview.loc[preview['Дата'] == '01.01.2026', 'Прочее'] = cell
+    preview.loc[preview['Дата'] == '01.01.2026', 'Доход'] = None
+    result = staging.export_monthly_transaction_drafts(
+        '2026', '01', preview_rows=preview.to_dict('records'), preview_state=preview_state
+    )
     frame = pd.read_csv(result['target_path'],sep=';')
     assert frame.loc[0,'Прочее'] == cell
     assert frame.loc[0,'Доход'] == 0
@@ -157,9 +171,13 @@ def test_preview_preserves_legacy_comments_and_empty_cells(data_root):
 
 @pytest.mark.parametrize('bad', [float('nan'),float('inf'),pd.NA])
 def test_raw_nonfinite_preview_does_not_turn_into_zero(data_root, bad):
+    preview, preview_state = staging.prepare_monthly_transaction_export('2026', '01')
+    preview.loc[preview['Дата'] == '01.01.2026', 'Прочее'] = bad
     before = snapshot(data_root)
     with pytest.raises(ValueError):
-        staging.export_monthly_transaction_drafts('2026','01',preview_rows=[{'Дата':'01.01.2026','Прочее':bad}])
+        staging.export_monthly_transaction_drafts(
+            '2026', '01', preview_rows=preview.to_dict('records'), preview_state=preview_state
+        )
     assert snapshot(data_root) == before
 
 
@@ -241,7 +259,10 @@ def test_invalid_old_staging_is_detected_before_month_write(data_root):
     raw = pd.read_csv(path,sep=';',dtype=str)
     raw.loc[1,'amount'] = 'inf'
     raw.to_csv(path,sep=';',index=False)
+    preview, preview_state = staging.prepare_monthly_transaction_export('2026', '01')
     before = snapshot(data_root)
     with pytest.raises(ValueError):
-        staging.export_monthly_transaction_drafts('2026','01',preview_rows=[{'Дата':'01.01.2026','Прочее':'10|RUB|valid'}])
+        staging.export_monthly_transaction_drafts(
+            '2026', '01', preview_rows=preview.to_dict('records'), preview_state=preview_state
+        )
     assert snapshot(data_root) == before

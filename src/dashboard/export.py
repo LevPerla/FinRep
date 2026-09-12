@@ -1,6 +1,7 @@
 import os
 import re
 from pathlib import Path
+from threading import Lock
 from urllib.parse import urlencode, urlsplit, urlunsplit
 
 import dash_bootstrap_components as dbc
@@ -14,6 +15,11 @@ EXPORT_VIEWPORT = {"width": 1440, "height": 1200}
 EXPORT_READY_TIMEOUT_MS = 90_000
 EXPORT_SETTLE_MS = 1_000
 EXPORT_TABS = {"main", "year", "month", "planning", "input", "debts", "investments"}
+_EXPORT_LOCK = Lock()
+
+
+class ExportBusyError(RuntimeError):
+    pass
 
 
 def build_dashboard_url(
@@ -81,51 +87,57 @@ def export_dashboard_page(
         raise ValueError("export_format must be 'png' or 'pdf'")
 
     dashboard_url = build_dashboard_url(currency, tab, year, month)
-    origin = urlsplit(dashboard_url)
-    origin_url = f"{origin.scheme}://{origin.netloc}"
-    export_dir = Path(config.REPORTS_PATH) / "dashboard_exports" / currency
-    export_dir.mkdir(parents=True, exist_ok=True)
-    export_path = export_dir / _export_filename(currency, tab, export_format, year, month)
+    if not _EXPORT_LOCK.acquire(blocking=False):
+        raise ExportBusyError("Экспорт уже выполняется. Повторите после завершения.")
 
     try:
-        with sync_playwright() as playwright:
-            browser = playwright.chromium.launch()
-            context = browser.new_context(viewport=EXPORT_VIEWPORT, service_workers="block")
-            context.route("**/*", lambda route: _route_export_request(route, origin_url))
-            # A routed WebSocket stays local unless connect_to_server() is called.
-            context.route_web_socket("**/*", lambda websocket: None)
-            if session_cookie:
-                context.add_cookies([
-                    {
-                        "name": session_cookie_name,
-                        "value": session_cookie,
-                        "url": origin_url,
-                        "httpOnly": True,
-                        "sameSite": "Lax",
-                        "secure": origin.scheme == "https",
-                    }
-                ])
-            page = context.new_page()
-            page.goto(dashboard_url, wait_until="domcontentloaded")
-            _wait_for_dashboard_ready(page)
-            if export_format == "png":
-                page.screenshot(path=export_path, full_page=True)
-            else:
-                page_size = _page_size(page)
-                page.pdf(
-                    path=export_path,
-                    print_background=True,
-                    width=f"{page_size['width']}px",
-                    height=f"{page_size['height']}px",
-                    margin={"top": "0", "right": "0", "bottom": "0", "left": "0"},
-                )
-            browser.close()
-    except PlaywrightError as exc:
-        raise RuntimeError(
-            "Playwright Chromium is not available. Run: uv run playwright install chromium"
-        ) from exc
+        origin = urlsplit(dashboard_url)
+        origin_url = f"{origin.scheme}://{origin.netloc}"
+        export_dir = Path(config.REPORTS_PATH) / "dashboard_exports" / currency
+        export_dir.mkdir(parents=True, exist_ok=True)
+        export_path = export_dir / _export_filename(currency, tab, export_format, year, month)
 
-    return export_path
+        try:
+            with sync_playwright() as playwright:
+                browser = playwright.chromium.launch()
+                context = browser.new_context(viewport=EXPORT_VIEWPORT, service_workers="block")
+                context.route("**/*", lambda route: _route_export_request(route, origin_url))
+                # A routed WebSocket stays local unless connect_to_server() is called.
+                context.route_web_socket("**/*", lambda websocket: None)
+                if session_cookie:
+                    context.add_cookies([
+                        {
+                            "name": session_cookie_name,
+                            "value": session_cookie,
+                            "url": origin_url,
+                            "httpOnly": True,
+                            "sameSite": "Lax",
+                            "secure": origin.scheme == "https",
+                        }
+                    ])
+                page = context.new_page()
+                page.goto(dashboard_url, wait_until="domcontentloaded")
+                _wait_for_dashboard_ready(page)
+                if export_format == "png":
+                    page.screenshot(path=export_path, full_page=True)
+                else:
+                    page_size = _page_size(page)
+                    page.pdf(
+                        path=export_path,
+                        print_background=True,
+                        width=f"{page_size['width']}px",
+                        height=f"{page_size['height']}px",
+                        margin={"top": "0", "right": "0", "bottom": "0", "left": "0"},
+                    )
+                browser.close()
+        except PlaywrightError as exc:
+            raise RuntimeError(
+                "Playwright Chromium is not available. Run: uv run playwright install chromium"
+            ) from exc
+
+        return export_path
+    finally:
+        _EXPORT_LOCK.release()
 
 
 def _wait_for_dashboard_ready(page) -> None:

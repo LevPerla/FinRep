@@ -1,13 +1,12 @@
 from __future__ import annotations
 
-from datetime import datetime
 from math import isfinite
 from pathlib import Path
-from shutil import copy2
 
 import pandas as pd
 
 from src import config
+from src.data.csv_storage import atomic_copy_file, atomic_write_csv, create_unique_backup
 
 ASSET_EDITOR_COLUMNS = ["account", "amount", "currency"]
 
@@ -28,9 +27,15 @@ def ensure_asset_snapshot(year: str, month: str, assets_root: str | Path | None 
     template_path = previous_asset_snapshot_path(year, month, assets_root)
     target_path.parent.mkdir(parents=True, exist_ok=True)
     if template_path is not None:
-        copy2(template_path, target_path)
+        atomic_copy_file(template_path, target_path)
     else:
-        pd.DataFrame(columns=["Счет", "Сумма"]).to_csv(target_path, sep=";", index=False, encoding="utf-8-sig")
+        atomic_write_csv(
+            pd.DataFrame(columns=["Счет", "Сумма"]),
+            target_path,
+            sep=";",
+            index=False,
+            encoding="utf-8-sig",
+        )
 
     return {
         "path": str(target_path),
@@ -90,15 +95,14 @@ def write_asset_snapshot(rows: list[dict], year: str, month: str, assets_root: s
 
     backup_path = None
     if target_path.exists():
-        backup_path = _asset_snapshot_backup_path(target_path)
-        backup_path.parent.mkdir(parents=True, exist_ok=True)
-        copy2(target_path, backup_path)
+        backup_root = config.active_data_path("backups", "assets_info", target_path.parent.name)
+        backup_path = create_unique_backup(target_path, backup_root)
 
     output = pd.DataFrame({
         "Счет": data["account"],
         "Сумма": data.apply(lambda row: f"{_format_asset_amount(row['amount'])}|{row['currency']}", axis=1),
     })
-    output.to_csv(target_path, sep=";", index=False, encoding="utf-8-sig")
+    atomic_write_csv(output, target_path, sep=";", index=False, encoding="utf-8-sig")
     return {
         "path": str(target_path),
         "backup_path": None if backup_path is None else str(backup_path),
@@ -150,10 +154,3 @@ def _format_asset_amount(value: float) -> str:
     if value.is_integer():
         return str(int(value))
     return f"{value:.2f}".rstrip("0").rstrip(".").replace(".", ",")
-
-
-def _asset_snapshot_backup_path(target_path: Path) -> Path:
-    year = target_path.parent.name
-    backup_root = config.active_data_path("backups", "assets_info", year)
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    return backup_root / f"{target_path.stem}.backup_{timestamp}{target_path.suffix}"

@@ -1,17 +1,23 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from contextlib import contextmanager
 from pathlib import Path
 from calendar import monthrange
-from datetime import datetime
+import fcntl
+from hashlib import sha256
+import json
 from math import isfinite
 import re
-from shutil import copy2
+from threading import RLock
+from time import monotonic, sleep
 from uuid import uuid4
 
 import pandas as pd
 
 from src import config
+from src.data.csv_storage import atomic_write_csv, create_unique_backup
+from src.data.file_commit import commit_file_images, read_commit_receipt, recover_file_commit
 
 TRANSACTION_BOUNDARY_RE = re.compile(r'#(?=\s*[+-]?(?:\d+(?:[.,]\d*)?|[.,]\d+)(?:\||#|$))')
 
@@ -23,13 +29,27 @@ DRAFT_COLUMNS = [
     "comment",
     "source",
     "source_id",
+    "direction",
+    "bank_status",
+    "bank_reference",
+    "bank_account_id",
     "status",
 ]
-DRAFT_STATUSES = {"draft", "ready", "exported", "ignored"}
+DRAFT_STATUSES = {"draft", "ready", "exported", "archived", "ignored"}
 EXPORTABLE_STATUSES = {"draft", "ready"}
 DEFAULT_SOURCE = "manual"
 DEFAULT_STATUS = "draft"
 TRANSACTION_COMMENT_SEPARATORS = ("|", "#", ";", "\r", "\n")
+DRAFT_LOCK_TIMEOUT_SECONDS = 5.0
+_DRAFTS_THREAD_LOCK = RLock()
+
+
+class DraftWriteBusyError(RuntimeError):
+    pass
+
+
+class DraftRevisionConflict(ValueError):
+    pass
 
 
 @dataclass(frozen=True)
@@ -44,16 +64,45 @@ class DraftValidationIssue:
 
 def ensure_transaction_drafts_file(path: str | Path | None = None) -> Path:
     draft_path = _draft_path(path)
-    if config.is_test_mode() and not draft_path.exists():
+    if config.is_test_mode():
         return draft_path
+    with _transaction_drafts_lock(draft_path):
+        return _ensure_transaction_drafts_file_unlocked(draft_path)
+
+
+def _ensure_transaction_drafts_file_unlocked(draft_path: Path) -> Path:
     draft_path.parent.mkdir(parents=True, exist_ok=True)
     if not draft_path.exists():
-        pd.DataFrame(columns=DRAFT_COLUMNS).to_csv(draft_path, sep=";", index=False)
+        atomic_write_csv(pd.DataFrame(columns=DRAFT_COLUMNS), draft_path, sep=";", index=False)
     return draft_path
 
 
 def read_transaction_drafts(path: str | Path | None = None) -> pd.DataFrame:
-    draft_path = ensure_transaction_drafts_file(path)
+    draft_path = _draft_path(path)
+    if config.is_test_mode():
+        if not draft_path.exists():
+            return pd.DataFrame(columns=DRAFT_COLUMNS)
+        return _read_transaction_drafts_unlocked(draft_path)
+    with _transaction_drafts_lock(draft_path):
+        return _read_transaction_drafts_unlocked(draft_path)
+
+
+def read_transaction_drafts_snapshot(path: str | Path | None = None) -> tuple[pd.DataFrame, str]:
+    draft_path = _draft_path(path)
+    if config.is_test_mode():
+        data = (
+            _read_transaction_drafts_unlocked(draft_path)
+            if draft_path.exists()
+            else pd.DataFrame(columns=DRAFT_COLUMNS)
+        )
+        return data, _transaction_drafts_revision(data)
+    with _transaction_drafts_lock(draft_path):
+        data = _read_transaction_drafts_unlocked(draft_path)
+        return data, _transaction_drafts_revision(data)
+
+
+def _read_transaction_drafts_unlocked(draft_path: Path) -> pd.DataFrame:
+    draft_path = _ensure_transaction_drafts_file_unlocked(draft_path)
     if not draft_path.exists():
         return pd.DataFrame(columns=DRAFT_COLUMNS)
     data = pd.read_csv(draft_path, sep=";", dtype=str, encoding="utf-8-sig").fillna("")
@@ -68,12 +117,18 @@ def read_transaction_drafts(path: str | Path | None = None) -> pd.DataFrame:
 
 def write_transaction_drafts(data: pd.DataFrame, path: str | Path | None = None) -> None:
     config.require_writable_mode()
+    draft_path = _draft_path(path)
+    with _transaction_drafts_lock(draft_path):
+        _write_transaction_drafts_unlocked(data, draft_path)
+
+
+def _write_transaction_drafts_unlocked(data: pd.DataFrame, draft_path: Path) -> None:
     normalized = _normalize_drafts(data)
     issues = validate_transaction_drafts(normalized)
     if issues:
         raise ValueError(_format_issues(issues))
-    draft_path = ensure_transaction_drafts_file(path)
-    normalized.to_csv(draft_path, sep=";", index=False)
+    draft_path = _ensure_transaction_drafts_file_unlocked(draft_path)
+    atomic_write_csv(normalized, draft_path, sep=";", index=False)
 
 
 def append_transaction_draft(
@@ -87,62 +142,204 @@ def append_transaction_draft(
     status: str = DEFAULT_STATUS,
     path: str | Path | None = None,
 ) -> pd.DataFrame:
-    data = read_transaction_drafts(path)
-    source_id = source_id or _new_source_id(source)
-    new_row = pd.DataFrame([
-        {
-            "date": date,
-            "category": category,
-            "currency": currency,
-            "amount": amount,
-            "comment": comment,
-            "source": source,
-            "source_id": source_id,
-            "status": status,
+    config.require_writable_mode()
+    draft_path = _draft_path(path)
+    with _transaction_drafts_lock(draft_path):
+        data = _read_transaction_drafts_unlocked(draft_path)
+        updated = transaction_drafts_with_appended_row(
+            data,
+            date=date,
+            category=category,
+            currency=currency,
+            amount=amount,
+            comment=comment,
+            source=source,
+            source_id=source_id,
+            status=status,
+        )
+        _write_transaction_drafts_unlocked(updated, draft_path)
+        return _read_transaction_drafts_unlocked(draft_path)
+
+
+def transaction_drafts_with_appended_row(
+    data: pd.DataFrame,
+    *,
+    date: str,
+    category: str,
+    currency: str,
+    amount: float,
+    comment: str = "",
+    source: str = DEFAULT_SOURCE,
+    source_id: str | None = None,
+    status: str = DEFAULT_STATUS,
+) -> pd.DataFrame:
+    new_row = pd.DataFrame(
+        [
+            {
+                "date": date,
+                "category": category,
+                "currency": currency,
+                "amount": amount,
+                "comment": comment,
+                "source": source,
+                "source_id": source_id or _new_source_id(source),
+                "status": status,
+            }
+        ]
+    )
+    updated = _normalize_drafts(pd.concat([data, new_row], ignore_index=True))
+    issues = validate_transaction_drafts(updated)
+    if issues:
+        raise ValueError(_format_issues(issues))
+    return updated
+
+
+def append_transaction_draft_rows(
+    rows: pd.DataFrame,
+    path: str | Path | None = None,
+    *,
+    expected_revision: str | None = None,
+    pending_replacements: dict[tuple[str, str], str] | None = None,
+) -> dict:
+    config.require_writable_mode()
+    incoming = _normalize_drafts(rows)
+    draft_path = _draft_path(path)
+    with _transaction_drafts_lock(draft_path):
+        data = _read_transaction_drafts_unlocked(draft_path)
+        _validate_draft_revision(data, expected_revision)
+        replacements = pending_replacements or {}
+        replaced_keys: set[tuple[str, str]] = set()
+        for (source, new_source_id), old_source_id in replacements.items():
+            incoming_match = incoming["source"].eq(str(source)) & incoming["source_id"].eq(
+                str(new_source_id)
+            )
+            if int(incoming_match.sum()) != 1:
+                raise DraftRevisionConflict(
+                    "Состав импортируемых строк изменился после Preview: построй Preview заново."
+                )
+            old_key = (str(source), str(old_source_id))
+            if old_key in replaced_keys:
+                raise DraftRevisionConflict(
+                    "Несколько операций пытаются заменить один pending: проверь строки вручную."
+                )
+            pending_match = (
+                data["source"].eq(old_key[0])
+                & data["source_id"].eq(old_key[1])
+                & data["bank_status"].eq("pending")
+            )
+            if int(pending_match.sum()) != 1:
+                raise DraftRevisionConflict(
+                    "Pending-операция изменилась после Preview: построй Preview заново."
+                )
+            data = data[~pending_match].reset_index(drop=True)
+            replaced_keys.add(old_key)
+        existing_keys = set(zip(data["source"].astype(str), data["source_id"].astype(str)))
+        incoming_keys = pd.Series(
+            list(zip(incoming["source"].astype(str), incoming["source_id"].astype(str))),
+            index=incoming.index,
+        )
+        duplicate_mask = incoming_keys.isin(existing_keys)
+        duplicate_mask = duplicate_mask | incoming.duplicated(
+            subset=["source", "source_id"], keep="first"
+        )
+        accepted = incoming[~duplicate_mask]
+        if not accepted.empty:
+            updated = pd.concat([data, accepted], ignore_index=True)
+            _write_transaction_drafts_unlocked(updated, draft_path)
+        return {
+            "accepted_rows": int(len(accepted)),
+            "skipped_rows": int(duplicate_mask.sum()),
+            "replaced_pending_rows": len(replaced_keys),
         }
-    ])
-    updated = pd.concat([data, new_row], ignore_index=True)
-    write_transaction_drafts(updated, path)
-    return read_transaction_drafts(path)
 
 
 def update_transaction_draft(source: str, source_id: str, updates: dict, path: str | Path | None = None) -> pd.DataFrame:
-    data = read_transaction_drafts(path)
-    mask = (data["source"] == str(source)) & (data["source_id"] == str(source_id))
-    if not mask.any():
-        raise KeyError(f"draft transaction not found: {source}/{source_id}")
-    allowed_updates = {key: value for key, value in updates.items() if key in DRAFT_COLUMNS}
-    for key, value in allowed_updates.items():
-        data.loc[mask, key] = value
-    write_transaction_drafts(data, path)
-    return read_transaction_drafts(path)
+    config.require_writable_mode()
+    draft_path = _draft_path(path)
+    with _transaction_drafts_lock(draft_path):
+        data = _read_transaction_drafts_unlocked(draft_path)
+        mask = (data["source"] == str(source)) & (data["source_id"] == str(source_id))
+        if not mask.any():
+            raise KeyError(f"draft transaction not found: {source}/{source_id}")
+        if data.loc[mask, "status"].isin({"exported", "archived"}).any():
+            raise ValueError(
+                "Проведённую операцию нельзя изменить через staging. Исправь данные в Preview до подтверждения."
+            )
+        allowed_updates = {key: value for key, value in updates.items() if key in DRAFT_COLUMNS}
+        for key, value in allowed_updates.items():
+            data.loc[mask, key] = value
+        _write_transaction_drafts_unlocked(data, draft_path)
+        return _read_transaction_drafts_unlocked(draft_path)
 
 
-def delete_transaction_drafts(rows: list[dict], path: str | Path | None = None) -> pd.DataFrame:
-    data = read_transaction_drafts(path)
-    if not rows:
-        return data
-    keys = {(str(row.get("source", "")), str(row.get("source_id", ""))) for row in rows}
-    keep_mask = ~data.apply(lambda row: (str(row["source"]), str(row["source_id"])) in keys, axis=1)
-    updated = data[keep_mask].reset_index(drop=True)
-    write_transaction_drafts(updated, path)
-    return read_transaction_drafts(path)
+def delete_transaction_drafts(
+    rows: list[dict], path: str | Path | None = None, expected_revision: str | None = None
+) -> pd.DataFrame:
+    config.require_writable_mode()
+    draft_path = _draft_path(path)
+    with _transaction_drafts_lock(draft_path):
+        data = _read_transaction_drafts_unlocked(draft_path)
+        _validate_draft_revision(data, expected_revision)
+        if not rows:
+            return data
+        keys = {(str(row.get("source", "")), str(row.get("source_id", ""))) for row in rows}
+        selected_mask = data.apply(
+            lambda row: (str(row["source"]), str(row["source_id"])) in keys,
+            axis=1,
+        )
+        archive_mask = selected_mask & data["status"].isin({"exported", "archived"})
+        delete_mask = selected_mask & ~archive_mask
+        updated = data[~delete_mask].reset_index(drop=True)
+        updated.loc[
+            updated.apply(
+                lambda row: (str(row["source"]), str(row["source_id"])) in keys,
+                axis=1,
+            )
+            & updated["status"].isin({"exported", "archived"}),
+            "status",
+        ] = "archived"
+        _write_transaction_drafts_unlocked(updated, draft_path)
+        return _read_transaction_drafts_unlocked(draft_path)
 
 
-def merge_transaction_draft_rows(rows: list[dict], path: str | Path | None = None) -> pd.DataFrame:
-    data = read_transaction_drafts(path)
-    if not rows:
-        return data
-    incoming = _normalize_drafts(pd.DataFrame(rows))
-    existing = data.set_index(["source", "source_id"], drop=False)
+def merge_transaction_draft_rows(
+    rows: list[dict], path: str | Path | None = None, expected_revision: str | None = None
+) -> pd.DataFrame:
+    config.require_writable_mode()
+    draft_path = _draft_path(path)
+    with _transaction_drafts_lock(draft_path):
+        data = _read_transaction_drafts_unlocked(draft_path)
+        _validate_draft_revision(data, expected_revision)
+        if not rows:
+            return data
+        incoming = _normalize_drafts(pd.DataFrame(rows))
+        _validate_protected_drafts_unchanged(data, incoming)
+        existing = data.set_index(["source", "source_id"], drop=False)
+        for _, row in incoming.iterrows():
+            key = (row["source"], row["source_id"])
+            if key in existing.index:
+                for column in DRAFT_COLUMNS:
+                    existing.loc[key, column] = row[column]
+        updated = existing.reset_index(drop=True)
+        _write_transaction_drafts_unlocked(updated, draft_path)
+        return _read_transaction_drafts_unlocked(draft_path)
+
+
+def _validate_protected_drafts_unchanged(
+    current: pd.DataFrame, incoming: pd.DataFrame
+) -> None:
+    current_by_key = current.set_index(["source", "source_id"], drop=False)
     for _, row in incoming.iterrows():
         key = (row["source"], row["source_id"])
-        if key in existing.index:
-            for column in DRAFT_COLUMNS:
-                existing.loc[key, column] = row[column]
-    updated = existing.reset_index(drop=True)
-    write_transaction_drafts(updated, path)
-    return read_transaction_drafts(path)
+        if key not in current_by_key.index:
+            continue
+        saved = current_by_key.loc[key]
+        if str(saved["status"]) not in {"exported", "archived"}:
+            continue
+        if any(str(saved[column]) != str(row[column]) for column in DRAFT_COLUMNS):
+            raise ValueError(
+                "Проведённую операцию нельзя изменить через staging. Исправь данные в Preview до подтверждения."
+            )
 
 
 def ensure_monthly_transaction_csv(year: str, month: str, transactions_root: str | Path | None = None) -> dict:
@@ -154,7 +351,7 @@ def ensure_monthly_transaction_csv(year: str, month: str, transactions_root: str
     template_path = previous_monthly_transaction_csv_path(year, month, transactions_root)
     table = _empty_month_table_from_template(year, month, template_path)
     target_path.parent.mkdir(parents=True, exist_ok=True)
-    table.to_csv(target_path, sep=";", index=False, encoding="utf-8-sig")
+    atomic_write_csv(table, target_path, sep=";", index=False, encoding="utf-8-sig")
     return {
         "path": str(target_path),
         "created": True,
@@ -174,10 +371,62 @@ def preview_monthly_transaction_export(
     path: str | Path | None = None,
     transactions_root: str | Path | None = None,
 ) -> pd.DataFrame:
+    preview, _ = prepare_monthly_transaction_export(year, month, path, transactions_root)
+    return preview
+
+
+def prepare_monthly_transaction_export(
+    year: str,
+    month: str,
+    path: str | Path | None = None,
+    transactions_root: str | Path | None = None,
+) -> tuple[pd.DataFrame, dict]:
+    preview, _, preview_state = _monthly_transaction_export_snapshot(
+        year, month, path, transactions_root
+    )
+    return preview, preview_state
+
+
+def _monthly_transaction_export_snapshot(
+    year: str,
+    month: str,
+    path: str | Path | None = None,
+    transactions_root: str | Path | None = None,
+    draft_data: pd.DataFrame | None = None,
+) -> tuple[pd.DataFrame, pd.DataFrame, dict]:
     target_path = monthly_transaction_csv_path(year, month, transactions_root)
     table = _read_or_create_month_table(year, month, target_path)
-    drafts = _exportable_month_drafts(year, month, path)
-    return _merge_drafts_into_month_table(table, drafts)
+    drafts = _exportable_month_drafts(year, month, path, data=draft_data)
+    preview = _merge_drafts_into_month_table(table, drafts)
+    year_key = str(int(year)).zfill(4)
+    month_key = str(int(month)).zfill(2)
+    revision_payload = {
+        "data_mode": config.get_data_mode(),
+        "year": year_key,
+        "month": month_key,
+        "month_table": _frame_revision_payload(table),
+        "drafts": _frame_revision_payload(drafts[DRAFT_COLUMNS]),
+    }
+    revision = sha256(
+        json.dumps(
+            revision_payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    preview_state = {
+        "version": 1,
+        "data_mode": config.get_data_mode(),
+        "year": year_key,
+        "month": month_key,
+        "revision": revision,
+        "draft_ids": [
+            {"source": str(row["source"]), "source_id": str(row["source_id"])}
+            for _, row in drafts.iterrows()
+        ],
+    }
+    return preview, drafts, preview_state
 
 
 def export_monthly_transaction_drafts(
@@ -186,50 +435,130 @@ def export_monthly_transaction_drafts(
     path: str | Path | None = None,
     transactions_root: str | Path | None = None,
     preview_rows: list[dict] | None = None,
+    preview_state: dict | None = None,
 ) -> dict:
     config.require_writable_mode()
+    draft_path = _draft_path(path)
     target_path = monthly_transaction_csv_path(year, month, transactions_root)
-    rows = preview_rows if preview_rows is not None else preview_monthly_transaction_export(year, month, path, transactions_root).to_dict("records")
-    preview = _preview_rows_to_month_table(rows)
-    drafts = _exportable_month_drafts(year, month, path)
-    if drafts.empty and preview_rows is None:
-        raise ValueError("Нет черновиков со статусом draft/ready для выбранного месяца.")
-    if not drafts.empty:
-        # Marking exported rows validates the whole staging file; check before the month write.
-        issues = validate_transaction_drafts(path=path)
-        if issues:
-            raise ValueError(_format_issues(issues))
+    with _transaction_drafts_lock(draft_path):
+        completed = _completed_monthly_export(
+            preview_state, draft_path, year, month, target_path
+        )
+        if completed is not None:
+            return completed
+        all_drafts = _read_transaction_drafts_unlocked(draft_path)
+        server_preview, drafts, current_state = _monthly_transaction_export_snapshot(
+            year, month, path, transactions_root, draft_data=all_drafts
+        )
+        if preview_rows is not None:
+            _validate_preview_state(preview_state, current_state)
+            expected_columns = server_preview.columns.tolist()
+            received_columns = pd.DataFrame(preview_rows, dtype=object).columns.tolist()
+            if set(received_columns) != set(expected_columns) or len(received_columns) != len(expected_columns):
+                raise ValueError("Структура Preview изменилась: построй Preview заново.")
+            preview = _preview_rows_to_month_table(preview_rows, year, month)
+            preview = preview[expected_columns]
+            if preview["Дата"].astype(str).tolist() != server_preview["Дата"].astype(str).tolist():
+                raise ValueError("Структура дат Preview изменилась: построй Preview заново.")
+        else:
+            preview = _preview_rows_to_month_table(server_preview.to_dict("records"), year, month)
+        if drafts.empty and preview_rows is None:
+            raise ValueError("Нет черновиков со статусом draft/ready для выбранного месяца.")
+        if not drafts.empty:
+            issues = validate_transaction_drafts(all_drafts)
+            if issues:
+                raise ValueError(_format_issues(issues))
 
-    target_path.parent.mkdir(parents=True, exist_ok=True)
-    backup_path = None
-    if target_path.exists():
-        backup_path = _monthly_transaction_backup_path(target_path)
-        backup_path.parent.mkdir(parents=True, exist_ok=True)
-        copy2(target_path, backup_path)
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        backup_path = None
+        if target_path.exists():
+            backup_root = config.active_data_path(
+                "backups", "transactions_info", target_path.parent.name
+            )
+            backup_path = create_unique_backup(target_path, backup_root)
 
-    preview.to_csv(target_path, sep=";", index=False, encoding="utf-8-sig")
-    if not drafts.empty:
-        _mark_month_drafts_exported(drafts, path)
-    return {
-        "target_path": str(target_path),
-        "backup_path": None if backup_path is None else str(backup_path),
-        "exported_rows": int(len(drafts)),
+        updated_drafts = _drafts_with_exported_status(all_drafts, drafts)
+        result = {
+            "target_path": str(target_path),
+            "backup_path": None if backup_path is None else str(backup_path),
+            "exported_rows": int(len(drafts)),
+        }
+        receipt = {
+            "version": 1,
+            "data_mode": current_state["data_mode"],
+            "year": current_state["year"],
+            "month": current_state["month"],
+            "revision": current_state["revision"],
+            "draft_ids": current_state["draft_ids"],
+            "result": result,
+        }
+        commit_file_images(
+            _transaction_export_journal_path(draft_path),
+            {
+                target_path: _csv_bytes(preview, encoding="utf-8-sig"),
+                draft_path: _csv_bytes(updated_drafts),
+            },
+            receipt_path=_transaction_export_receipt_path(draft_path),
+            receipt=receipt,
+        )
+        _clear_transaction_report_caches()
+        return result
+
+
+def _completed_monthly_export(
+    preview_state: dict | None,
+    draft_path: Path,
+    year: str,
+    month: str,
+    target_path: Path,
+) -> dict | None:
+    if not isinstance(preview_state, dict):
+        return None
+    receipt = read_commit_receipt(_transaction_export_receipt_path(draft_path))
+    if receipt is None:
+        return None
+    requested_identity = {
+        "data_mode": config.get_data_mode(),
+        "year": str(int(year)).zfill(4),
+        "month": str(int(month)).zfill(2),
     }
+    identity_fields = ("data_mode", "year", "month", "revision", "draft_ids")
+    if (
+        all(receipt.get(field) == preview_state.get(field) for field in identity_fields)
+        and all(receipt.get(field) == value for field, value in requested_identity.items())
+    ):
+        result = receipt.get("result")
+        if (
+            isinstance(result, dict)
+            and Path(str(result.get("target_path", ""))).resolve() == target_path.resolve()
+        ):
+            return result
+    return None
 
 
-def _monthly_transaction_backup_path(target_path: Path) -> Path:
-    year = target_path.parent.name
-    backup_root = config.active_data_path("backups", "transactions_info", year)
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    return backup_root / f"{target_path.stem}.backup_{timestamp}{target_path.suffix}"
+def _csv_bytes(data: pd.DataFrame, encoding: str = "utf-8") -> bytes:
+    return data.to_csv(sep=";", index=False).encode(encoding)
 
 
-def _preview_rows_to_month_table(preview_rows: list[dict] | None) -> pd.DataFrame:
+def _preview_rows_to_month_table(
+    preview_rows: list[dict] | None,
+    year: str | None = None,
+    month: str | None = None,
+) -> pd.DataFrame:
     if not preview_rows:
         raise ValueError("Preview пустой: сначала нажми Preview или заполни таблицу.")
     data = pd.DataFrame(preview_rows, dtype=object)
     if "Дата" not in data.columns:
         raise ValueError("В preview нет колонки Дата.")
+    if year is not None and month is not None:
+        dates = pd.to_datetime(data["Дата"], format="%d.%m.%Y", errors="coerce")
+        for row_number, date in enumerate(dates, start=2):
+            if pd.isna(date):
+                raise ValueError(f"row {row_number}, column 'Дата': invalid date")
+            if date.year != int(year) or date.month != int(month):
+                raise ValueError(
+                    f"row {row_number}, column 'Дата': дата не относится к {int(year):04d}-{int(month):02d}"
+                )
     for column in data.columns:
         if column == "Дата":
             continue
@@ -245,6 +574,50 @@ def _preview_rows_to_month_table(preview_rows: list[dict] | None) -> pd.DataFram
     data = data.fillna("0")
     ordered_columns = ["Дата", *[column for column in data.columns if column != "Дата"]]
     return data[ordered_columns]
+
+
+def _frame_revision_payload(data: pd.DataFrame) -> dict:
+    frame = data.copy(deep=True)
+    values = [
+        ["" if pd.isna(value) else str(value) for value in row]
+        for row in frame.itertuples(index=False, name=None)
+    ]
+    return {"columns": [str(column) for column in frame.columns], "rows": values}
+
+
+def _transaction_drafts_revision(data: pd.DataFrame) -> str:
+    normalized = _normalize_drafts(data)
+    payload = _frame_revision_payload(normalized[DRAFT_COLUMNS])
+    return sha256(
+        json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+
+def _validate_draft_revision(data: pd.DataFrame, expected_revision: str | None) -> None:
+    if expected_revision is None:
+        return
+    if expected_revision != _transaction_drafts_revision(data):
+        raise DraftRevisionConflict(
+            "Черновики изменились после загрузки таблицы. Сохранение отменено, чтобы не потерять данные."
+        )
+
+
+def _validate_preview_state(preview_state: dict | None, current_state: dict) -> None:
+    if not isinstance(preview_state, dict):
+        raise ValueError("Сначала нажми Preview, затем подтверди экспорт.")
+    if preview_state.get("data_mode") != current_state["data_mode"]:
+        raise ValueError("Preview создан для другого режима данных: построй Preview заново.")
+    if (
+        str(preview_state.get("year", "")) != current_state["year"]
+        or str(preview_state.get("month", "")) != current_state["month"]
+    ):
+        raise ValueError("Preview создан для другого периода: построй Preview заново.")
+    if (
+        preview_state.get("version") != current_state["version"]
+        or preview_state.get("revision") != current_state["revision"]
+        or preview_state.get("draft_ids") != current_state["draft_ids"]
+    ):
+        raise ValueError("Preview устарел: данные изменились, построй Preview заново.")
 
 
 def monthly_transaction_csv_path(year: str, month: str, transactions_root: str | Path | None = None) -> Path:
@@ -272,13 +645,19 @@ def previous_monthly_transaction_csv_path(year: str, month: str, transactions_ro
     return None
 
 
-def _exportable_month_drafts(year: str, month: str, path: str | Path | None = None) -> pd.DataFrame:
-    data = read_transaction_drafts(path)
+def _exportable_month_drafts(
+    year: str,
+    month: str,
+    path: str | Path | None = None,
+    data: pd.DataFrame | None = None,
+) -> pd.DataFrame:
+    data = read_transaction_drafts(path) if data is None else data
     dates = pd.to_datetime(data["date"], errors="coerce")
     mask = (
         dates.dt.year.eq(int(year))
         & dates.dt.month.eq(int(month))
         & data["status"].isin(EXPORTABLE_STATUSES)
+        & data["bank_status"].ne("pending")
     )
     return data[mask].copy(deep=True)
 
@@ -366,11 +745,24 @@ def _format_amount_for_month_cell(value) -> str:
 
 
 def _mark_month_drafts_exported(drafts: pd.DataFrame, path: str | Path | None = None) -> None:
-    data = read_transaction_drafts(path)
+    config.require_writable_mode()
+    draft_path = _draft_path(path)
+    with _transaction_drafts_lock(draft_path):
+        _mark_month_drafts_exported_unlocked(drafts, draft_path)
+
+
+def _mark_month_drafts_exported_unlocked(drafts: pd.DataFrame, draft_path: Path) -> None:
+    data = _read_transaction_drafts_unlocked(draft_path)
+    updated = _drafts_with_exported_status(data, drafts)
+    _write_transaction_drafts_unlocked(updated, draft_path)
+
+
+def _drafts_with_exported_status(data: pd.DataFrame, drafts: pd.DataFrame) -> pd.DataFrame:
+    data = data.copy(deep=True)
     keys = {(str(row["source"]), str(row["source_id"])) for _, row in drafts.iterrows()}
     mask = data.apply(lambda row: (str(row["source"]), str(row["source_id"])) in keys, axis=1)
     data.loc[mask, "status"] = "exported"
-    write_transaction_drafts(data, path)
+    return _normalize_drafts(data)
 
 
 def validate_transaction_drafts(data: pd.DataFrame | None = None, path: str | Path | None = None) -> list[DraftValidationIssue]:
@@ -405,6 +797,14 @@ def validate_transaction_drafts(data: pd.DataFrame | None = None, path: str | Pa
         if str(value) not in DRAFT_STATUSES:
             issues.append(DraftValidationIssue(index, f"unsupported status {value!r}"))
 
+    for index, value in enumerate(data["direction"], start=2):
+        if str(value) not in {"", "debit", "credit"}:
+            issues.append(DraftValidationIssue(index, f"unsupported direction {value!r}"))
+
+    for index, value in enumerate(data["bank_status"], start=2):
+        if str(value) not in {"", "pending", "posted"}:
+            issues.append(DraftValidationIssue(index, f"unsupported bank status {value!r}"))
+
     duplicate_mask = data.duplicated(subset=["source", "source_id"], keep=False) & data["source_id"].ne("")
     for index in data.index[duplicate_mask]:
         issues.append(DraftValidationIssue(index + 2, "duplicate source/source_id"))
@@ -423,12 +823,14 @@ def _normalize_drafts(data: pd.DataFrame) -> pd.DataFrame:
     for column in DRAFT_COLUMNS:
         if column not in normalized.columns:
             normalized[column] = ""
-    normalized = normalized[DRAFT_COLUMNS]
+    normalized = normalized[DRAFT_COLUMNS].fillna("")
     normalized["currency"] = normalized["currency"].astype(str).str.upper()
+    normalized["direction"] = normalized["direction"].astype(str).str.lower()
+    normalized["bank_status"] = normalized["bank_status"].astype(str).str.lower()
     normalized["status"] = normalized["status"].replace("", DEFAULT_STATUS)
     normalized["amount"] = normalized["amount"].astype(str)
     normalized["comment"] = normalized["comment"].map(sanitize_transaction_comment)
-    return normalized.fillna("")
+    return normalized
 
 
 def sanitize_transaction_comment(value) -> str:
@@ -444,8 +846,78 @@ def _draft_path(path: str | Path | None = None) -> Path:
     return Path(path or config.active_data_path("staging", "transaction_drafts.csv"))
 
 
+def _draft_lock_path(draft_path: Path) -> Path:
+    return draft_path.with_name(f".{draft_path.name}.lock")
+
+
+def _transaction_export_journal_path(draft_path: Path) -> Path:
+    return draft_path.with_name(f".{draft_path.name}.export-commit.json")
+
+
+def _transaction_export_receipt_path(draft_path: Path) -> Path:
+    return draft_path.with_name(f".{draft_path.name}.last-export.json")
+
+
+@contextmanager
+def transaction_drafts_commit_lock(path: str | Path | None = None):
+    draft_path = _draft_path(path)
+    with _transaction_drafts_lock(draft_path):
+        yield draft_path
+
+
+@contextmanager
+def _transaction_drafts_lock(draft_path: Path):
+    deadline = monotonic() + DRAFT_LOCK_TIMEOUT_SECONDS
+    remaining = max(0.0, deadline - monotonic())
+    if not _DRAFTS_THREAD_LOCK.acquire(timeout=remaining):
+        raise DraftWriteBusyError("Черновики сейчас сохраняются в другой операции. Повтори попытку.")
+
+    lock_file = None
+    try:
+        lock_path = _draft_lock_path(draft_path)
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        lock_file = lock_path.open("a+b")
+        while True:
+            try:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if monotonic() >= deadline:
+                    raise DraftWriteBusyError(
+                        "Черновики сейчас сохраняются в другом процессе. Повтори попытку."
+                    )
+                sleep(min(0.05, max(0.0, deadline - monotonic())))
+        recovered_transaction_export = False
+        for journal_path in sorted(
+            draft_path.parent.glob(f".{draft_path.name}.*-commit.json")
+        ):
+            recovered = recover_file_commit(journal_path)
+            if recovered is not None and journal_path == _transaction_export_journal_path(
+                draft_path
+            ):
+                recovered_transaction_export = True
+        if recovered_transaction_export:
+            _clear_transaction_report_caches()
+        yield
+    finally:
+        if lock_file is not None:
+            try:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+            finally:
+                lock_file.close()
+        _DRAFTS_THREAD_LOCK.release()
+
+
 def _new_source_id(source: str) -> str:
     return f"{source}-{uuid4().hex}"
+
+
+def _clear_transaction_report_caches() -> None:
+    from src.data.get import clear_data_cache
+    from src.model.create_tables import clear_table_cache
+
+    clear_data_cache()
+    clear_table_cache()
 
 
 def _format_issues(issues: list[DraftValidationIssue]) -> str:

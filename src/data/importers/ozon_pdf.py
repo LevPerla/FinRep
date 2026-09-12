@@ -15,11 +15,17 @@ AMOUNT_RE = re.compile(r"(?P<sign>[+-])(?P<currency>[A-Z]{3})(?P<amount>\d+\.\d{
 
 
 def parse_ozon_pdf(path: str | Path) -> pd.DataFrame:
-    return _import_frame_from_rows(_extract_rows_from_pdf(Path(path)), OZON_SOURCE)
+    return parse_ozon_pdf_bytes(Path(path).read_bytes())
 
 
 def parse_ozon_pdf_bytes(content: bytes) -> pd.DataFrame:
-    return _import_frame_from_rows(_extract_rows_from_pdf(io.BytesIO(content)), OZON_SOURCE)
+    from hashlib import sha256
+
+    return _import_frame_from_rows(
+        _extract_rows_from_pdf(io.BytesIO(content)),
+        OZON_SOURCE,
+        statement_id=sha256(content).hexdigest(),
+    )
 
 
 def _extract_rows_from_pdf(pdf_source) -> list[dict]:

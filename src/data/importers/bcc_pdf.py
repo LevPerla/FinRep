@@ -21,11 +21,17 @@ RU_TRANSACTION_DATE_RE = re.compile(r"^\d{2}\.\d{2}\.\d{4}$")
 
 
 def parse_bcc_pdf(path: str | Path) -> pd.DataFrame:
-    return _import_frame_from_rows(_extract_rows_from_pdf(Path(path)), BCC_SOURCE)
+    return parse_bcc_pdf_bytes(Path(path).read_bytes())
 
 
 def parse_bcc_pdf_bytes(content: bytes) -> pd.DataFrame:
-    return _import_frame_from_rows(_extract_rows_from_pdf(io.BytesIO(content)), BCC_SOURCE)
+    from hashlib import sha256
+
+    return _import_frame_from_rows(
+        _extract_rows_from_pdf(io.BytesIO(content)),
+        BCC_SOURCE,
+        statement_id=sha256(content).hexdigest(),
+    )
 
 
 def _extract_rows_from_pdf(pdf_source) -> list[dict]:
@@ -35,7 +41,8 @@ def _extract_rows_from_pdf(pdf_source) -> list[dict]:
         if not is_bcc_statement(first_page_text):
             raise ValueError("PDF не похож на выписку Bank CenterCredit.")
         if _is_russian_statement(first_page_text):
-            return _russian_rows_from_pages(pdf.pages, first_page_text or "")
+            rows = _russian_rows_from_pages(pdf.pages, first_page_text or "")
+            return _with_account_id(rows, first_page_text)
         for page in pdf.pages:
             for table in page.extract_tables():
                 if not table:
@@ -44,6 +51,14 @@ def _extract_rows_from_pdf(pdf_source) -> list[dict]:
                     rows.extend(_pending_rows_from_table(table[1:]))
                 elif _is_posted_transactions_table(table[0]):
                     rows.extend(_posted_rows_from_table(table[1:]))
+    return _with_account_id(rows, first_page_text)
+
+
+def _with_account_id(rows: list[dict], first_page_text: str | None) -> list[dict]:
+    match = BCC_ACCOUNT_RE.search(first_page_text or "")
+    account_id = match.group(0) if match else ""
+    for row in rows:
+        row["bank_account_id"] = account_id
     return rows
 
 
@@ -107,6 +122,8 @@ def _russian_row_from_cells(date: str, details: str, amount: str, currency: str)
         "signed_amount": float(amount_match.group("amount").replace(" ", "").replace(",", ".")),
         "currency": currency,
         "details": details,
+        "bank_status": "posted",
+        "bank_reference": "",
     }
 
 
@@ -144,6 +161,8 @@ def _posted_rows_from_table(table_rows: list[list[str | None]]) -> list[dict]:
                 "signed_amount": float(amount_match.group("amount")),
                 "currency": amount_match.group("currency"),
                 "details": re.sub(r"\s+", " ", str(row[2] or "")).strip(),
+                "bank_status": "posted",
+                "bank_reference": re.sub(r"\s+", " ", str(row[3] or "")).strip(),
             }
         )
     return rows
@@ -167,6 +186,10 @@ def _pending_rows_from_table(table_rows: list[list[str | None]]) -> list[dict]:
                 "signed_amount": -float(amount_match.group("amount")),
                 "currency": amount_match.group("currency"),
                 "details": f"Pending {details}",
+                "bank_status": "pending",
+                "bank_reference": re.sub(r"\s+", " ", str(row[4] or "")).strip()
+                if len(row) > 4
+                else "",
             }
         )
     return rows

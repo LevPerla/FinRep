@@ -6,6 +6,7 @@ import plotly.graph_objects as go
 from src import config, utils
 from src.dashboard.main_data import DashboardDataset, _apply_dashboard_chart_layout, _peak_money_labels
 from src.data.get import get_assets
+from src.data.csv_storage import atomic_write_csv
 from src.data.get_finance import get_actual_fx_rate, set_fx_network_enabled
 from src.model.create_tables import get_balance_by_month
 
@@ -121,7 +122,7 @@ def save_goal_targets(year: str, currency: str, rows: list[dict]) -> None:
     goals["currency"] = goals["currency"].astype(str).str.upper()
     goals_path = config.active_data_path("plans", "goals.csv")
     goals_path.parent.mkdir(parents=True, exist_ok=True)
-    goals.to_csv(goals_path, sep=";", index=False, encoding="utf-8-sig")
+    atomic_write_csv(goals, goals_path, sep=";", index=False, encoding="utf-8-sig")
 
 
 def _parse_goal_value(value):
