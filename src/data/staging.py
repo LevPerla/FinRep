@@ -189,7 +189,8 @@ def transaction_drafts_with_appended_row(
             }
         ]
     )
-    updated = _normalize_drafts(pd.concat([data, new_row], ignore_index=True))
+    combined = new_row if data.empty else pd.concat([data, new_row], ignore_index=True)
+    updated = _normalize_drafts(combined)
     issues = validate_transaction_drafts(updated)
     if issues:
         raise ValueError(_format_issues(issues))

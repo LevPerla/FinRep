@@ -195,6 +195,7 @@ def _summary_metric_status(name: str, value) -> str:
 
 def _format_summary_metrics(data: pd.DataFrame, currency: str) -> pd.DataFrame:
     display = data.copy(deep=True)
+    display["Значение"] = display["Значение"].astype(object)
     for index, row in data.iterrows():
         display.loc[index, "Значение"] = utils.process_num_cols(
             pd.DataFrame([{"Значение": row["Значение"]}]),
