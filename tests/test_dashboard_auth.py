@@ -175,6 +175,31 @@ def test_planning_goals_grid_does_not_force_empty_row_space():
     assert "min-height: 0 !important;" in css
 
 
+def test_mobile_charts_use_the_actual_container_width_without_css_zoom():
+    css = (Path(__file__).resolve().parents[1] / "assets" / "dashboard.css").read_text(encoding="utf-8")
+
+    assert ".finrep-chart-scroll .finrep-graph {" in css
+    assert "width: 100% !important;" in css
+    assert "width: 720px !important;" not in css
+    assert "zoom:" not in css
+
+
+def test_dashboard_chart_does_not_add_a_rangeslider_that_overlaps_mobile_labels():
+    from src.dashboard.main_data import _income_expense_figure
+
+    data = pd.DataFrame(
+        {
+            "Дата": pd.to_datetime(["2026-01-31", "2026-02-28"]),
+            "Доход": [100_000, 120_000],
+            "Расход": [80_000, 90_000],
+        }
+    )
+
+    figure = _income_expense_figure(data, "RUB")
+
+    assert figure.layout.xaxis.rangeslider.visible is None
+
+
 def test_month_transaction_rows_are_clickable():
     from src.dashboard.app import _report_table_section
     from src.dashboard.main_data import DashboardDataset

@@ -1536,19 +1536,7 @@ body {
   }
 }
 
-@media (max-width: 480px) {
-  .finrep-chart-scroll .finrep-graph {
-    width: 720px !important;
-    min-width: 720px !important;
-    zoom: 0.558;
-  }
-}
-
 @media (max-width: 420px) {
-  .finrep-chart-scroll .finrep-graph {
-    zoom: 0.507;
-  }
-
   .dashboard-toolbar .btn {
     font-size: 0.9rem;
   }
@@ -1564,17 +1552,5 @@ body {
   #export-png,
   #export-pdf {
     grid-column: span 3;
-  }
-}
-
-@media (max-width: 380px) {
-  .finrep-chart-scroll .finrep-graph {
-    zoom: 0.482;
-  }
-}
-
-@media (max-width: 360px) {
-  .finrep-chart-scroll .finrep-graph {
-    zoom: 0.461;
   }
 }

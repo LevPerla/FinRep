@@ -375,7 +375,7 @@ def _income_expense_figure(data: pd.DataFrame, currency: str) -> go.Figure:
             line=dict(color="firebrick", width=2),
         )
     )
-    _apply_dashboard_chart_layout(fig, "Динамика доходов и расходов", range_slider=True)
+    _apply_dashboard_chart_layout(fig, "Динамика доходов и расходов")
     return fig
 
 
@@ -388,7 +388,7 @@ def _delta_figure(data: pd.DataFrame, currency: str) -> go.Figure:
             hovertemplate="%{x|%Y-%m}<br>%{y:,.0f}<extra></extra>",
         )
     )
-    _apply_dashboard_chart_layout(fig, "Дельты", range_slider=True)
+    _apply_dashboard_chart_layout(fig, "Дельты")
     fig.update_layout(annotations=_important_delta_annotations(data, currency, max_labels=6))
     return fig
 
@@ -415,7 +415,7 @@ def _savings_rate_figure(data: pd.DataFrame) -> go.Figure:
     )
     fig.add_hline(y=0, line_dash="dot", line_color="rgba(120,120,120,0.7)")
     fig.add_hline(y=30, line_dash="dash", line_color="rgba(46,139,87,0.55)")
-    _apply_dashboard_chart_layout(fig, "Динамика нормы сбережений", range_slider=True)
+    _apply_dashboard_chart_layout(fig, "Динамика нормы сбережений")
     fig.update_yaxes(ticksuffix="%", range=[0, 100])
     return fig
 
@@ -445,7 +445,7 @@ def _capital_figure(data: pd.DataFrame, currency: str) -> go.Figure:
                 connectgaps=False,
             )
         )
-    _apply_dashboard_chart_layout(fig, "Динамика капитала", range_slider=True)
+    _apply_dashboard_chart_layout(fig, "Динамика капитала")
     max_value = pd.to_numeric(data[["Капитал", "Капитал по активам"]].stack(), errors="coerce").max() if "Капитал по активам" in data.columns else pd.to_numeric(data["Капитал"], errors="coerce").max()
     if pd.notna(max_value) and max_value > 0:
         fig.update_layout(
@@ -473,7 +473,7 @@ def _fx_revaluation_figure(data: pd.DataFrame, currency: str) -> go.Figure:
             hovertemplate="%{x|%Y-%m}<br>%{y:,.0f}<extra></extra>",
         )
     )
-    _apply_dashboard_chart_layout(fig, "Валютная переоценка", range_slider=True)
+    _apply_dashboard_chart_layout(fig, "Валютная переоценка")
     fig.update_layout(yaxis_title=config.UNIQUE_TICKERS[currency])
     return fig
 
@@ -562,7 +562,7 @@ def _fx_rate_as_of(from_currency: str, to_currency: str, as_of_date) -> float | 
 def _asset_currency_allocation_figure(data: pd.DataFrame) -> go.Figure:
     fig = go.Figure()
     if data.empty or "Дата" not in data.columns:
-        _apply_dashboard_chart_layout(fig, "Динамика аллокации активов по валютам", range_slider=True)
+        _apply_dashboard_chart_layout(fig, "Динамика аллокации активов по валютам")
         return fig
 
     x_dates = pd.to_datetime(data["Дата"])
@@ -578,7 +578,7 @@ def _asset_currency_allocation_figure(data: pd.DataFrame) -> go.Figure:
             )
         )
 
-    _apply_dashboard_chart_layout(fig, "Динамика аллокации активов по валютам", range_slider=True)
+    _apply_dashboard_chart_layout(fig, "Динамика аллокации активов по валютам")
     fig.update_layout(barmode="stack", yaxis=dict(range=[0, 100], ticksuffix="%"))
     return fig
 
@@ -586,7 +586,7 @@ def _asset_currency_allocation_figure(data: pd.DataFrame) -> go.Figure:
 def _fx_changes_figure(data: pd.DataFrame, currency: str) -> go.Figure:
     fig = go.Figure()
     if data.empty or "Дата" not in data.columns:
-        _apply_dashboard_chart_layout(fig, "Динамика курсов валют", range_slider=True)
+        _apply_dashboard_chart_layout(fig, "Динамика курсов валют")
         return fig
 
     x_dates = pd.to_datetime(data["Дата"])
@@ -603,7 +603,7 @@ def _fx_changes_figure(data: pd.DataFrame, currency: str) -> go.Figure:
             )
         )
 
-    _apply_dashboard_chart_layout(fig, "Динамика курсов валют", range_slider=True)
+    _apply_dashboard_chart_layout(fig, "Динамика курсов валют")
     fig.update_layout(yaxis_title=f"1 валюта в {currency}")
     return fig
 
@@ -753,16 +753,11 @@ def _important_delta_annotations(data: pd.DataFrame, currency: str, max_labels: 
     return annotations
 
 
-def _apply_dashboard_chart_layout(fig: go.Figure, title: str, range_slider: bool = False) -> None:
+def _apply_dashboard_chart_layout(fig: go.Figure, title: str) -> None:
     xaxis = dict(
         tickfont=dict(size=CHART_FONT_SIZE),
         fixedrange=False,
     )
-    if range_slider:
-        xaxis.update(
-            rangeslider=dict(visible=True, thickness=0.08),
-        )
-
     fig.update_layout(
         title=dict(text=title, font=dict(size=CHART_TITLE_SIZE)),
         autosize=True,
