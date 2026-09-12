@@ -405,7 +405,9 @@ def get_assets_by_currencies(year, month) -> pd.DataFrame:
     # Go by cols to covert
     for curr_from in [curr_1 for curr_1 in gr_asset_df.columns if curr_1 not in ['Счет']]:
         # Get not na cols to convert
-        sml_df = gr_asset_df[(gr_asset_df[curr_from].notna()) & (gr_asset_df['Счет'] != 'Всего в валюте')]
+        sml_df = gr_asset_df[
+            (gr_asset_df[curr_from].notna()) & (gr_asset_df['Счет'] != 'Всего в валюте')
+        ].copy()
 
         # Go by another cols
         for curr_to in [curr_2 for curr_2 in sml_df.columns if curr_2 not in ['Счет', curr_from]]:
