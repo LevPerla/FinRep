@@ -476,6 +476,11 @@ def create_layout():
                 storage_type="session",
             ),
             dcc.Store(
+                id="debt-payment-request-id",
+                data=uuid4().hex,
+                storage_type="session",
+            ),
+            dcc.Store(
                 id="crypto-refresh-status",
                 data={
                     "message": "Crypto refresh отправляет включенные wallet addresses в публичные blockchain API и обновляет локальный cache.",
@@ -1153,6 +1158,7 @@ def register_callbacks(app: Dash) -> None:
         Output("debt-input-message", "children"),
         Output("debt-input-message", "color"),
         Output("debt-create-request-id", "data"),
+        Output("debt-payment-request-id", "data"),
         Output("dashboard-refresh-token", "data", allow_duplicate=True),
         Input("debt-add-button", "n_clicks", allow_optional=True),
         Input("debt-payment-button", "n_clicks", allow_optional=True),
@@ -1172,6 +1178,7 @@ def register_callbacks(app: Dash) -> None:
         State("debt-payment-cash-currency", "value", allow_optional=True),
         State("debt-payment-comment", "value", allow_optional=True),
         State("debt-create-request-id", "data"),
+        State("debt-payment-request-id", "data"),
         State("dashboard-refresh-token", "data"),
         prevent_initial_call=True,
     )
@@ -1194,6 +1201,7 @@ def register_callbacks(app: Dash) -> None:
         payment_cash_currency,
         payment_comment,
         create_request_id,
+        payment_request_id,
         current_token,
     ):
         trigger = ctx.triggered_id
@@ -1201,6 +1209,7 @@ def register_callbacks(app: Dash) -> None:
         color = "secondary"
         token = int(current_token or 0)
         next_create_request_id = create_request_id or uuid4().hex
+        next_payment_request_id = payment_request_id or uuid4().hex
 
         try:
             if trigger in {"debt-add-button", "debt-payment-button", "debt-migrate-button"}:
@@ -1236,7 +1245,9 @@ def register_callbacks(app: Dash) -> None:
                     cash_amount=payment_amount,
                     cash_currency=payment_cash_currency,
                     comment=payment_comment or "",
+                    operation_id=next_payment_request_id,
                 )
+                next_payment_request_id = uuid4().hex
                 clear_data_cache()
                 clear_table_cache()
                 clear_main_dashboard_cache()
@@ -1270,6 +1281,7 @@ def register_callbacks(app: Dash) -> None:
             message,
             color,
             next_create_request_id,
+            next_payment_request_id,
             token,
         )
 

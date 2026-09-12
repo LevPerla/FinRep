@@ -147,6 +147,7 @@ def test_dashboard_retry_with_same_request_id_does_not_duplicate_debt(
         "debt-payment-cash-currency": "RUB",
         "debt-payment-comment": "",
         "debt-create-request-id": "browser-request-A",
+        "debt-payment-request-id": "browser-payment-A",
         "dashboard-refresh-token": 0,
     }
     payload = {
