@@ -292,7 +292,7 @@ def test_mobile_charts_use_the_actual_container_width_without_css_zoom():
     assert "zoom:" not in css
 
 
-def test_dashboard_chart_does_not_add_a_rangeslider_that_overlaps_mobile_labels():
+def test_dashboard_time_chart_keeps_rangeslider_with_label_clearance():
     from src.dashboard.main_data import _income_expense_figure
 
     data = pd.DataFrame(
@@ -305,7 +305,9 @@ def test_dashboard_chart_does_not_add_a_rangeslider_that_overlaps_mobile_labels(
 
     figure = _income_expense_figure(data, "RUB")
 
-    assert figure.layout.xaxis.rangeslider.visible is None
+    assert figure.layout.xaxis.rangeslider.visible is True
+    assert figure.layout.xaxis.rangeslider.thickness == 0.08
+    assert figure.layout.margin.b == 72
 
 
 def test_month_transaction_rows_are_clickable():
