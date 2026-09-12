@@ -164,6 +164,14 @@ def save_kaspi_import_to_staging(import_rows: list[dict], path: str | Path | Non
     accepted = incoming[~duplicate_mask].copy(deep=True)
     if accepted.empty:
         return {"accepted_rows": 0, "skipped_rows": int(len(incoming))}
+    invalid_credit_category = (
+        accepted["direction"].astype(str).str.lower().eq("credit")
+        & ~accepted["category"].astype(str).isin(config.NOT_COST_COLS)
+    )
+    if invalid_credit_category.any():
+        raise ValueError(
+            "Банковское поступление нельзя сохранить как расход: выбери «Сбережения», «Доход» или другую категорию поступления."
+        )
 
     draft_rows = accepted[DRAFT_COLUMNS].copy(deep=True)
     revisions = set(incoming["staging_revision"].astype(str))
@@ -218,14 +226,22 @@ def _categorize(details: str, amount: float, history_categories: dict[str, str] 
         return INTERNAL_TRANSFER_CATEGORY
     history_category = (history_categories or {}).get(_normalize_text(_clean_comment(details)))
     if history_category:
-        return history_category
+        return _category_for_direction(history_category, amount)
     rules = _load_rules()
     normalized = _normalize_text(details)
     for _, rule in rules.iterrows():
         pattern = _normalize_text(rule.get("pattern", ""))
         if pattern and pattern in normalized:
-            return str(rule.get("category", DEFAULT_EXPENSE_CATEGORY))
+            return _category_for_direction(
+                str(rule.get("category", DEFAULT_EXPENSE_CATEGORY)), amount
+            )
     return DEFAULT_INCOME_CATEGORY if amount > 0 else DEFAULT_EXPENSE_CATEGORY
+
+
+def _category_for_direction(category: str, signed_amount: float) -> str:
+    if signed_amount > 0 and category not in config.NOT_COST_COLS:
+        return "Сбережения"
+    return category
 
 
 def _history_category_lookup() -> dict[str, str]:
