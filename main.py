@@ -10,17 +10,28 @@ MONTH = '04'
 FX_NETWORK_ENABLED = True
 VALIDATE_DATA = True
 
-if VALIDATE_DATA:
-    validate_all_data()
-
 # Run manually only when you want to compare providers and curate data/rates/fx_rates.csv.
 # update_fx_cache_interactive(['RUB', 'KZT', 'EUR', 'GBP'], '2026-01-01', '2026-04-28')
- 
-create_main_report(currency=CURRENCY, fx_network_enabled=FX_NETWORK_ENABLED)
-create_year_report(year=YEAR, currency=CURRENCY, fx_network_enabled=FX_NETWORK_ENABLED)
-create_month_report(year=YEAR, currency=CURRENCY, month=MONTH, fx_network_enabled=FX_NETWORK_ENABLED)
+
+
+def main() -> None:
+    if VALIDATE_DATA:
+        validate_all_data()
+
+    create_main_report(currency=CURRENCY, fx_network_enabled=FX_NETWORK_ENABLED)
+    create_year_report(year=YEAR, currency=CURRENCY, fx_network_enabled=FX_NETWORK_ENABLED)
+    create_month_report(
+        year=YEAR,
+        currency=CURRENCY,
+        month=MONTH,
+        fx_network_enabled=FX_NETWORK_ENABLED,
+    )
 
 
 # create_year_report(year='2025', currency=CURRENCY)
 # create_year_report(year='2024', currency=CURRENCY)
 # create_year_report(year='2023', currency=CURRENCY)
+
+
+if __name__ == '__main__':
+    main()
