@@ -1138,6 +1138,11 @@ body {
   width: 100%;
 }
 
+.finrep-import-grid-shell {
+  width: 100%;
+  min-width: 0;
+}
+
 .finrep-grid-scroll.is-limited {
   overflow: auto;
 }

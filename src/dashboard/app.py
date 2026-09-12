@@ -1802,7 +1802,7 @@ def _transaction_input_layout(
                         "Ctrl/Cmd+клик — несколько; Ctrl/Cmd+C и Ctrl/Cmd+V — копировать и вставить.",
                         className="small opacity-75 mb-2",
                     ),
-                    _ag_grid_scroll(
+                    html.Div(
                         dag.AgGrid(
                             id="kaspi-import-grid",
                             rowData=[],
@@ -1814,9 +1814,10 @@ def _transaction_input_layout(
                                 "cellKeyDown": ["finrepCategoryClipboard(params)"],
                                 "rowDataUpdated": ["finrepCategorySelectionReset(params)"],
                             },
-                            className=_ag_grid_class_name(theme),
+                            className=f"{_ag_grid_class_name(theme)} finrep-import-grid",
                             style=_ag_grid_style("420px"),
-                        )
+                        ),
+                        className="finrep-import-grid-shell",
                     ),
                 ],
                 style=_section_style(theme),
@@ -2441,11 +2442,11 @@ def _kaspi_import_column_defs() -> list[dict]:
         {"field": "category", "headerName": "Категория", "editable": True, "cellEditor": "agSelectCellEditor", "cellEditorParams": {"values": categories}, "width": 190, "sort": "asc", "cellClassRules": category_class_rules},
         {"field": "date", "headerName": "Дата", "width": 120, "sort": "asc", "sortIndex": 1},
         {"field": "amount", "headerName": "Сумма", "width": 120},
+        {"field": "import_action", "headerName": "Действие", "editable": True, "cellEditor": "agSelectCellEditor", "cellEditorParams": {"values": ["import", "skip"]}, "width": 120, "cellClassRules": {"text-warning": "params.value == 'review'"}},
         {"field": "currency", "headerName": "Валюта", "width": 100},
         {"field": "direction", "headerName": "Направление", "hide": True},
         {"field": "bank_status", "headerName": "Статус банка", "width": 130},
         {"field": "comment", "headerName": "Комментарий", "editable": True, "flex": 1, "minWidth": 220},
-        {"field": "import_action", "headerName": "Действие", "editable": True, "cellEditor": "agSelectCellEditor", "cellEditorParams": {"values": ["import", "skip"]}, "width": 120, "cellClassRules": {"text-warning": "params.value == 'review'"}},
         {"field": "skip_reason", "headerName": "Причина skip", "width": 170},
         {"field": "duplicate_in_source", "headerName": "Дубль в CSV", "width": 130},
         {"field": "duplicate_in_staging", "headerName": "Дубль в staging", "width": 150},

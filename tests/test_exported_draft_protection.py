@@ -133,6 +133,13 @@ def test_staging_controls_are_absent_but_import_rows_can_be_excluded(exported_ca
     assert _component(layout, "transaction-drafts-grid") is None
     assert _component(layout, "kaspi-save-button") is None
     assert _component(layout, "transaction-delete-button") is None
+    assert "finrep-import-grid" in import_grid.className
+    assert [column["field"] for column in import_grid.columnDefs[:4]] == [
+        "category",
+        "date",
+        "amount",
+        "import_action",
+    ]
     action_column = next(
         column for column in import_grid.columnDefs if column["field"] == "import_action"
     )
