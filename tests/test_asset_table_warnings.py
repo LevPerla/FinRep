@@ -51,7 +51,13 @@ def test_asset_currency_conversion_uses_owned_slice_without_chained_assignment(
         for warning in caught
         if issubclass(warning.category, pd.errors.SettingWithCopyWarning)
     ]
+    dtype_warnings = [
+        warning
+        for warning in caught
+        if "incompatible dtype" in str(warning.message).lower()
+    ]
     assert copy_warnings == []
+    assert dtype_warnings == []
 
     total = result.set_index("Счет").loc["Всего"]
     assert total["EUR"] == "25.00€"

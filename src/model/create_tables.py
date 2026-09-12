@@ -426,16 +426,17 @@ def get_assets_by_currencies(year, month) -> pd.DataFrame:
         gr_asset_df_.loc['Всего'] = gr_asset_df_[total_rows].sum(axis=0, min_count=1)
     gr_asset_df_ = gr_asset_df_
 
-    # Format table
-    for col_name in gr_asset_df_:
+    # Format a display copy after all numeric calculations are complete.
+    display_asset_df = gr_asset_df_.astype(object)
+    for col_name in display_asset_df:
         # print(gr_asset_df_.loc[gr_asset_df_.index != 'Всего в валюте,%'])
         
         if col_name not in ['Счет']:
-            gr_asset_df_.loc[gr_asset_df_.index != 'Всего в валюте,%', col_name] = (gr_asset_df_.loc[gr_asset_df_.index != 'Всего в валюте,%', col_name]
+            display_asset_df.loc[display_asset_df.index != 'Всего в валюте,%', col_name] = (display_asset_df.loc[display_asset_df.index != 'Всего в валюте,%', col_name]
                                                                                           .astype(float).map('{:,.2f}'.format).str.replace(',', ' ') + config.UNIQUE_TICKERS[col_name])
-            gr_asset_df_.loc[gr_asset_df_.index == 'Всего в валюте,%', col_name] = (gr_asset_df_.loc[gr_asset_df_.index == 'Всего в валюте,%', col_name]
+            display_asset_df.loc[display_asset_df.index == 'Всего в валюте,%', col_name] = (display_asset_df.loc[display_asset_df.index == 'Всего в валюте,%', col_name]
                                                                                           .astype(float).map('{:,.2f}'.format).str.replace(',', ' ') + "%")
-    return gr_asset_df_.reset_index().round(2)
+    return display_asset_df.reset_index().round(2)
 
 
 def get_month_transactions(currency, year, month):
