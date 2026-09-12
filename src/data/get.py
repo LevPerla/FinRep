@@ -46,8 +46,7 @@ def _get_transactions_cached(transactions_root: str):
                                    decimal=',',
                                    parse_dates=True,
                                    dayfirst=True,
-                                   index_col='Дата',
-                                   infer_datetime_format=True)
+                                   index_col='Дата')
             month_df = month_df.rename(columns={'Долги (у меня)': 'Дебиторская задолженность',
                                                 'Крупные покупки/ Поездки': 'Поездки'},
                                        errors='ignore')
