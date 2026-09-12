@@ -172,20 +172,27 @@ def test_main_metrics_are_grouped_by_decision_priority():
     from src.dashboard.app import _cockpit_section
     from src.dashboard.main_data import DashboardDataset
 
-    names = [
-        "Капитал по активам",
-        "Доход месяца",
-        "Расход месяца",
-        "Cash-flow месяца",
-        "Норма сбережений",
-        "Runway по активам",
-        "Расхождение с активами",
-        "FX impact месяца",
+    metrics_data = [
+        ("capital", "Название капитала можно менять"),
+        ("monthly_income", "Название дохода можно менять"),
+        ("monthly_expense", "Название расхода можно менять"),
+        ("monthly_cash_flow", "Название потока можно менять"),
+        ("savings_rate", "Название нормы можно менять"),
+        ("runway", "Название запаса можно менять"),
+        ("asset_gap", "Название сверки можно менять"),
+        ("monthly_fx_revaluation", "Название переоценки можно менять"),
     ]
     metrics = pd.DataFrame(
         [
-            {"Показатель": name, "Значение": str(index), "Статус": "ok", "Детали": "detail"}
-            for index, name in enumerate(names)
+            {
+                "ID": metric_id,
+                "Показатель": name,
+                "Значение": str(index),
+                "Статус ID": "ok",
+                "Статус": "В норме",
+                "Детали": "detail",
+            }
+            for index, (metric_id, name) in enumerate(metrics_data)
         ]
     )
     dataset = DashboardDataset(
@@ -201,10 +208,11 @@ def test_main_metrics_are_grouped_by_decision_priority():
     stability = _layout_component(section, "main-metrics-stability")
 
     assert len(primary.children) == 4
-    assert [card.children[0].children for card in primary.children] == names[:4]
-    assert [card.children[0].children for card in reconciliation.children[1].children] == names[6:]
-    assert [card.children[0].children for card in stability.children[1].children] == names[4:6]
+    assert [card.children[0].children for card in primary.children] == [name for _, name in metrics_data[:4]]
+    assert [card.children[0].children for card in reconciliation.children[1].children] == [name for _, name in metrics_data[6:]]
+    assert [card.children[0].children for card in stability.children[1].children] == [name for _, name in metrics_data[4:6]]
     assert all("finrep-cockpit-card-compact" in card.className for card in reconciliation.children[1].children)
+    assert all("finrep-cockpit-ok" in card.className for card in primary.children)
 
 
 def test_month_summary_is_split_into_logical_groups():

@@ -1505,21 +1505,22 @@ def _cockpit_section(dataset: DashboardDataset, theme: str | None = None):
     if data.empty:
         return _empty_section(dataset)
 
-    rows_by_metric = {str(row.get("Показатель", "")): row for _, row in data.iterrows()}
-    capital_metric = next((name for name in rows_by_metric if name.startswith("Капитал по ")), None)
-    runway_metric = next((name for name in rows_by_metric if name.startswith("Runway по ")), None)
+    rows_by_metric = {
+        str(row.get("ID") or row.get("Показатель", "")): row
+        for _, row in data.iterrows()
+    }
     primary_metrics = [
         metric
-        for metric in (capital_metric, "Доход месяца", "Расход месяца", "Cash-flow месяца")
+        for metric in ("capital", "monthly_income", "monthly_expense", "monthly_cash_flow")
         if metric in rows_by_metric
     ]
     reconciliation_metrics = [
-        metric for metric in ("Расхождение с активами", "FX impact месяца") if metric in rows_by_metric
+        metric for metric in ("asset_gap", "monthly_fx_revaluation") if metric in rows_by_metric
     ]
     grouped_metrics = set(primary_metrics + reconciliation_metrics)
     stability_metrics = [
         metric
-        for metric in ("Норма сбережений", runway_metric)
+        for metric in ("savings_rate", "runway")
         if metric in rows_by_metric and metric not in grouped_metrics
     ]
     grouped_metrics.update(stability_metrics)
@@ -1578,7 +1579,7 @@ def _cockpit_card(row, compact: bool = False):
             html.Div(str(row.get("Статус", "")), className="finrep-cockpit-status"),
             html.Div(str(row.get("Детали", "")), className="finrep-cockpit-detail"),
         ],
-        className=f"finrep-cockpit-card finrep-cockpit-{_cockpit_status_class(row.get('Статус', ''))}{compact_class}",
+        className=f"finrep-cockpit-card finrep-cockpit-{_cockpit_status_class(row.get('Статус ID', row.get('Статус', '')))}{compact_class}",
     )
 
 
@@ -1725,9 +1726,9 @@ def _runway_section(dataset: DashboardDataset, theme: str | None = None):
             _section_header(dataset),
             html.Div(
                 [
-                    card("Runway по cash-flow, месяцев", str(row.get("Runway, мес.", "не рассчитано"))),
-                    card("Runway по cash-flow, лет", str(row.get("Runway, лет", "не рассчитано"))),
-                    card("Капитал по cash-flow", str(row.get("Капитал по cash-flow", "не задано"))),
+                    card("Финансовый запас по денежному потоку, месяцев", str(row.get("Runway, мес.", "не рассчитано"))),
+                    card("Финансовый запас по денежному потоку, лет", str(row.get("Runway, лет", "не рассчитано"))),
+                    card("Капитал по денежному потоку", str(row.get("Капитал по cash-flow", "не задано"))),
                     card("Средний расход/мес", str(row.get("Средний расход", "не задано"))),
                 ],
                 className="d-grid gap-3",
