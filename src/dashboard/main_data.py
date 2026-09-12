@@ -7,7 +7,7 @@ import plotly.graph_objects as go
 from src import config, utils
 from src.data.get import get_assets, get_transactions
 from src.data.exchange_rates_info import get_exchange_rates_info
-from src.data.get_finance import get_fallback_rate, get_fx_rates, set_fx_network_enabled
+from src.data.get_finance import get_fallback_rate, get_fx_rates, require_fx_rate, set_fx_network_enabled
 from src.data.proccess import convert_transaction
 from src.model.create_tables import get_balance_by_month
 
@@ -530,7 +530,7 @@ def _convert_asset_allocation_values(assets: pd.DataFrame, currency: str) -> pd.
             continue
         rate = _fx_rate_as_of(from_currency, currency, snapshot_date)
         if rate is None:
-            continue
+            require_fx_rate(rate, from_currency, currency, snapshot_date)
         values.loc[index] = values.loc[index] * rate
     return values
 

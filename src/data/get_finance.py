@@ -34,6 +34,23 @@ _CBR_VALUTE_IDS = {
 }
 
 
+class FXRateUnavailableError(ValueError):
+    """Raised when a monetary value cannot be converted without guessing a rate."""
+
+
+def require_fx_rate(rate, from_curr: str, to_curr: str, as_of_date=None) -> float:
+    parsed = pd.to_numeric(rate, errors='coerce')
+    if pd.isna(parsed) or not np.isfinite(parsed) or float(parsed) <= 0:
+        date_suffix = ""
+        if as_of_date is not None and not pd.isna(as_of_date):
+            date_suffix = f" на {pd.Timestamp(as_of_date).date().isoformat()}"
+        raise FXRateUnavailableError(
+            f"Нет курса {str(from_curr).upper()} → {str(to_curr).upper()}{date_suffix}. "
+            "Зависимый итог недоступен."
+        )
+    return float(parsed)
+
+
 def _build_retry_session():
     session = requests.Session()
     retries = Retry(

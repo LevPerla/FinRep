@@ -7,7 +7,7 @@ from src import config, utils
 from src.dashboard.main_data import DashboardDataset, _apply_dashboard_chart_layout, _peak_money_labels
 from src.data.get import get_assets
 from src.data.csv_storage import atomic_write_csv
-from src.data.get_finance import get_actual_fx_rate, set_fx_network_enabled
+from src.data.get_finance import get_actual_fx_rate, require_fx_rate, set_fx_network_enabled
 from src.model.create_tables import get_balance_by_month
 
 GOALS_COLUMNS = [
@@ -296,7 +296,7 @@ def _fx_scenarios(target_currency: str) -> pd.DataFrame:
             asset_currency = str(asset.get("Валюта", target_currency)).upper()
             rate = 1.0 if asset_currency == target_currency else get_actual_fx_rate(asset_currency, target_currency)
             if rate is None:
-                continue
+                require_fx_rate(rate, asset_currency, target_currency)
             shock_multiplier = 1.0 if asset_currency == target_currency else _target_currency_shock_multiplier(shock)
             total += float(amount) * float(rate) * shock_multiplier
         rows.append(

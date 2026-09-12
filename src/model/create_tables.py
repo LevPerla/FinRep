@@ -6,7 +6,7 @@ from src import config
 from src.data.get import get_investments, get_transactions, get_assets
 from src.data.debts import active_debt_balances
 from src.data.investment_calculations import current_investment_value
-from src.data.get_finance import get_actual_rates, get_act_moex, get_fallback_rate, get_fx_rates
+from src.data.get_finance import get_actual_rates, get_act_moex, get_fallback_rate, get_fx_rates, require_fx_rate
 from src.data.proccess import convert_transaction
 
 
@@ -407,8 +407,7 @@ def get_assets_by_currencies(year, month) -> pd.DataFrame:
         for curr_to in [curr_2 for curr_2 in sml_df.columns if curr_2 not in ['Счет', curr_from]]:
             rate = _get_fx_rate_as_of(curr_from, curr_to, snapshot_date)
             if rate is None:
-                print(f"Warning: No rate available for {curr_from}/{curr_to} as of {snapshot_date}, skipping conversion")
-                continue
+                require_fx_rate(rate, curr_from, curr_to, snapshot_date)
             sml_df[curr_to] = sml_df[curr_from] * rate
         gr_asset_df_.update(sml_df)
 
@@ -521,8 +520,7 @@ def _convert_asset_values_as_of_snapshot(assets_df: pd.DataFrame, currency: str)
             continue
         rate = _get_fx_rate_as_of(from_curr, currency, snapshot_date)
         if rate is None:
-            print(f"Warning: No rate available for {from_curr}/{currency} as of {snapshot_date}, leaving asset value unconverted")
-            continue
+            require_fx_rate(rate, from_curr, currency, snapshot_date)
         values.loc[index] = values.loc[index] * rate
     return values
 

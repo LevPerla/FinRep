@@ -5,7 +5,7 @@ from dataclasses import dataclass
 import pandas as pd
 
 from src.data.crypto import calculate_crypto_positions
-from src.data.get_finance import get_actual_fx_rate, get_fallback_rate
+from src.data.get_finance import get_actual_fx_rate, get_fallback_rate, require_fx_rate
 from src.data.investments import latest_cached_prices, read_investment_transactions
 
 
@@ -228,7 +228,7 @@ def _conversion_rate(from_currency: str, to_currency: str) -> float:
     rate = get_actual_fx_rate(from_currency, to_currency)
     if rate is None:
         rate = get_fallback_rate(from_currency, to_currency)
-    return float(rate) if rate is not None else 1.0
+    return require_fx_rate(rate, from_currency, to_currency)
 
 
 def _to_float(value, default: float = 0.0) -> float:

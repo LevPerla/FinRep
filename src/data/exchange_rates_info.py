@@ -80,15 +80,15 @@ def get_currency_conversion_summary(target_currency='RUB'):
             total_amount = currency_transactions['Значение'].sum()
             transaction_count = len(currency_transactions)
             
-            rate = get_actual_fx_rate(currency, target_currency) or 1.0
-            converted_amount = total_amount * rate
+            rate = get_actual_fx_rate(currency, target_currency)
+            converted_amount = total_amount * rate if rate is not None else None
             
             summary_info.append({
                 'Валюта': currency,
                 'Количество транзакций': transaction_count,
                 f'Сумма в {currency}': f"{total_amount:,.2f}",
-                f'Сумма в {target_currency}': f"{converted_amount:,.2f}",
-                'Курс конвертации': f"{rate:.4f}"
+                f'Сумма в {target_currency}': f"{converted_amount:,.2f}" if converted_amount is not None else "Недоступно",
+                'Курс конвертации': f"{rate:.4f}" if rate is not None else "Недоступно"
             })
         
         return pd.DataFrame(summary_info)
