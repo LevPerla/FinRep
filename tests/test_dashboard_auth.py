@@ -57,6 +57,7 @@ def test_authentication_protects_dash_but_not_healthcheck():
     assert b'id="toggle-password"' in login_html
     assert b'id="password-help-button"' in login_html
     assert b'id="password-help-modal"' in login_html
+    assert b"main { box-sizing: border-box;" in login_html
     assert b"FINREP_DASH_PASSWORD" in login_html
     assert b"FINREP_DASH_SECRET_KEY" in login_html
 

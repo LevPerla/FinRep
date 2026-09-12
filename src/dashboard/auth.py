@@ -19,7 +19,7 @@ LOGIN_TEMPLATE = """
   <style>
     :root { color-scheme: dark; font-family: system-ui, sans-serif; }
     body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: #111827; color: #e5e7eb; }
-    main { width: min(360px, calc(100% - 32px)); padding: 28px; border: 1px solid #374151; border-radius: 14px; background: #1f2937; box-shadow: 0 20px 45px #0005; }
+    main { box-sizing: border-box; width: min(360px, calc(100% - 32px)); padding: 28px; border: 1px solid #374151; border-radius: 14px; background: #1f2937; box-shadow: 0 20px 45px #0005; }
     h1 { margin: 0 0 22px; font-size: 1.5rem; }
     label { display: block; font-weight: 600; }
     .password-label-row { display: flex; align-items: center; gap: 7px; margin: 14px 0 6px; }
