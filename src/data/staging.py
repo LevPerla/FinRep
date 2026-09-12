@@ -4,7 +4,6 @@ from dataclasses import dataclass
 from contextlib import contextmanager
 from pathlib import Path
 from calendar import monthrange
-from datetime import datetime
 import fcntl
 from hashlib import sha256
 import json
@@ -17,7 +16,7 @@ from uuid import uuid4
 import pandas as pd
 
 from src import config
-from src.data.csv_storage import atomic_copy_file, atomic_write_csv
+from src.data.csv_storage import atomic_write_csv, create_unique_backup
 
 TRANSACTION_BOUNDARY_RE = re.compile(r'#(?=\s*[+-]?(?:\d+(?:[.,]\d*)?|[.,]\d+)(?:\||#|$))')
 
@@ -366,9 +365,10 @@ def export_monthly_transaction_drafts(
         target_path.parent.mkdir(parents=True, exist_ok=True)
         backup_path = None
         if target_path.exists():
-            backup_path = _monthly_transaction_backup_path(target_path)
-            backup_path.parent.mkdir(parents=True, exist_ok=True)
-            atomic_copy_file(target_path, backup_path)
+            backup_root = config.active_data_path(
+                "backups", "transactions_info", target_path.parent.name
+            )
+            backup_path = create_unique_backup(target_path, backup_root)
 
         atomic_write_csv(preview, target_path, sep=";", index=False, encoding="utf-8-sig")
         if not drafts.empty:
@@ -378,13 +378,6 @@ def export_monthly_transaction_drafts(
             "backup_path": None if backup_path is None else str(backup_path),
             "exported_rows": int(len(drafts)),
         }
-
-
-def _monthly_transaction_backup_path(target_path: Path) -> Path:
-    year = target_path.parent.name
-    backup_root = config.active_data_path("backups", "transactions_info", year)
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    return backup_root / f"{target_path.stem}.backup_{timestamp}{target_path.suffix}"
 
 
 def _preview_rows_to_month_table(

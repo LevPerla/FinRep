@@ -1,13 +1,12 @@
 from __future__ import annotations
 
-from datetime import datetime
 from math import isfinite
 from pathlib import Path
 
 import pandas as pd
 
 from src import config
-from src.data.csv_storage import atomic_copy_file, atomic_write_csv
+from src.data.csv_storage import atomic_copy_file, atomic_write_csv, create_unique_backup
 
 ASSET_EDITOR_COLUMNS = ["account", "amount", "currency"]
 
@@ -96,9 +95,8 @@ def write_asset_snapshot(rows: list[dict], year: str, month: str, assets_root: s
 
     backup_path = None
     if target_path.exists():
-        backup_path = _asset_snapshot_backup_path(target_path)
-        backup_path.parent.mkdir(parents=True, exist_ok=True)
-        atomic_copy_file(target_path, backup_path)
+        backup_root = config.active_data_path("backups", "assets_info", target_path.parent.name)
+        backup_path = create_unique_backup(target_path, backup_root)
 
     output = pd.DataFrame({
         "Счет": data["account"],
@@ -156,10 +154,3 @@ def _format_asset_amount(value: float) -> str:
     if value.is_integer():
         return str(int(value))
     return f"{value:.2f}".rstrip("0").rstrip(".").replace(".", ",")
-
-
-def _asset_snapshot_backup_path(target_path: Path) -> Path:
-    year = target_path.parent.name
-    backup_root = config.active_data_path("backups", "assets_info", year)
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    return backup_root / f"{target_path.stem}.backup_{timestamp}{target_path.suffix}"
