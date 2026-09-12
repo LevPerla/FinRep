@@ -1,5 +1,6 @@
 import logging
 import os
+from decimal import Decimal
 from datetime import datetime
 from io import BytesIO
 from pathlib import Path
@@ -51,7 +52,7 @@ from src.dashboard.main_data import DashboardDataset, build_main_dashboard_data,
 from src.dashboard.month_data import build_month_dashboard_data, get_day_transaction_details
 from src.dashboard.planning_data import build_planning_dashboard_data, save_goal_targets
 from src.dashboard.year_data import build_year_dashboard_data
-from src.model.create_tables import clear_table_cache
+from src.model.create_tables import clear_table_cache, get_balance_by_month
 from src import utils
 
 
@@ -440,6 +441,7 @@ def create_layout():
             dcc.Location(id="dashboard-location"),
             dcc.Store(id="dashboard-theme", data="dark"),
             dcc.Store(id="dashboard-refresh-token", data=0),
+            dcc.Store(id="transaction-save-result", storage_type="session"),
             dcc.Store(
                 id="transaction-add-request-id",
                 data=uuid4().hex,
@@ -708,9 +710,10 @@ def register_callbacks(app: Dash) -> None:
         Input("dashboard-theme", "data"),
         Input("dashboard-refresh-token", "data"),
         Input("refresh-fx-rates", "n_clicks"),
+        Input("transaction-save-result", "data"),
         State("crypto-refresh-status", "data"),
     )
-    def render_dashboard_content(currency: str, year: str, month: str, active_tab: str, theme: str, refresh_token: int, fx_refresh_clicks: int | None, crypto_status: dict | None):
+    def render_dashboard_content(currency: str, year: str, month: str, active_tab: str, theme: str, refresh_token: int, fx_refresh_clicks: int | None, transaction_save_result: dict | None, crypto_status: dict | None):
         fx_network_enabled = ctx.triggered_id == "refresh-fx-rates" and not config.is_test_mode()
         if fx_network_enabled:
             clear_table_cache()
@@ -772,7 +775,14 @@ def register_callbacks(app: Dash) -> None:
             return _debt_report_layout(currency, theme, read_only=config.is_test_mode())
 
         if active_tab == "input":
-            return _input_report_layout(currency, year, month, theme, read_only=config.is_test_mode())
+            return _input_report_layout(
+                currency,
+                year,
+                month,
+                theme,
+                read_only=config.is_test_mode(),
+                transaction_save_result=transaction_save_result,
+            )
 
         try:
             datasets = build_main_dashboard_data(
@@ -1013,8 +1023,10 @@ def register_callbacks(app: Dash) -> None:
         Output("transaction-export-message", "children"),
         Output("transaction-export-message", "color"),
         Output("transaction-export-preview-state", "data"),
+        Output("transaction-save-result", "data"),
         Input("transaction-preview-export-button", "n_clicks", allow_optional=True),
         Input("transaction-confirm-export-button", "n_clicks", allow_optional=True),
+        State("dashboard-currency", "value"),
         State("dashboard-year", "value"),
         State("dashboard-month", "value"),
         State("kaspi-import-grid", "rowData", allow_optional=True),
@@ -1026,6 +1038,7 @@ def register_callbacks(app: Dash) -> None:
     def preview_or_export_transaction_month(
         preview_clicks,
         export_clicks,
+        currency,
         year,
         month,
         import_rows,
@@ -1048,12 +1061,21 @@ def register_callbacks(app: Dash) -> None:
                     preview_state=preview_state,
                 )
                 preview = read_monthly_transaction_csv(year, month)
-                message = (
-                    f"Экспортировано строк: {result['exported_rows']}. "
-                    f"Файл: {result['target_path']}. "
-                    f"Backup: {result['backup_path'] or 'не создавался'}."
+                save_result = _transaction_save_result(
+                    year,
+                    month,
+                    currency,
+                    result["exported_rows"],
+                    preview_state.get("import_summary"),
                 )
-                return _dataframe_records(preview), _simple_column_defs(preview), message, "success", None
+                return (
+                    _dataframe_records(preview),
+                    _simple_column_defs(preview),
+                    f"Месяц {year}-{str(month).zfill(2)} сохранён.",
+                    "success",
+                    None,
+                    save_result,
+                )
 
             import_result = None
             if import_rows:
@@ -1069,6 +1091,10 @@ def register_callbacks(app: Dash) -> None:
                 import_result = save_kaspi_import_to_staging(import_rows)
 
             preview, preview_state = prepare_monthly_transaction_export(year, month)
+            if import_result is not None:
+                preview_state["import_summary"] = _transaction_import_summary(
+                    import_rows, import_result
+                )
             message = f"Preview построен для {year}-{str(month).zfill(2)}."
             if import_result is not None:
                 message += (
@@ -1078,7 +1104,14 @@ def register_callbacks(app: Dash) -> None:
                 if import_result.get("replaced_pending_rows"):
                     message += f" Заменено pending: {import_result['replaced_pending_rows']}."
             message += " Месячный CSV ещё не изменён."
-            return _dataframe_records(preview), _simple_column_defs(preview), message, "secondary", preview_state
+            return (
+                _dataframe_records(preview),
+                _simple_column_defs(preview),
+                message,
+                "secondary",
+                preview_state,
+                no_update,
+            )
         except Exception as exc:
             if trigger == "transaction-confirm-export-button" and preview_rows:
                 failed_preview = pd.DataFrame(preview_rows)
@@ -1088,9 +1121,10 @@ def register_callbacks(app: Dash) -> None:
                     str(exc),
                     "danger",
                     preview_state,
+                    no_update,
                 )
             empty = pd.DataFrame()
-            return [], _simple_column_defs(empty), str(exc), "danger", preview_state
+            return [], _simple_column_defs(empty), str(exc), "danger", preview_state, no_update
 
     @app.callback(
         Output("active-receivable-debts-grid", "rowData"),
@@ -1635,10 +1669,29 @@ def _debt_report_layout(currency: str, theme: str | None, read_only: bool = Fals
     return _debt_input_layout(currency, theme, include_create=True, read_only=read_only)
 
 
-def _input_report_layout(currency: str, year: str, month: str, theme: str | None, load_asset_records: bool = True, read_only: bool = False):
+def _input_report_layout(
+    currency: str,
+    year: str,
+    month: str,
+    theme: str | None,
+    load_asset_records: bool = True,
+    read_only: bool = False,
+    transaction_save_result: dict | None = None,
+):
     return dbc.Tabs(
         [
-            dbc.Tab(_transaction_input_layout(currency, year, month, theme, read_only=read_only), label="Транзакции", tab_id="input-transactions"),
+            dbc.Tab(
+                _transaction_input_layout(
+                    currency,
+                    year,
+                    month,
+                    theme,
+                    read_only=read_only,
+                    transaction_save_result=transaction_save_result,
+                ),
+                label="Транзакции",
+                tab_id="input-transactions",
+            ),
             dbc.Tab(_assets_input_layout(year, month, theme, load_records=load_asset_records, read_only=read_only), label="Активы", tab_id="input-assets"),
         ],
         id="input-inner-tabs",
@@ -1682,7 +1735,14 @@ def _ag_grid_limited_scroll(grid, max_height: str):
     return html.Div(grid, className="finrep-grid-scroll is-limited", style={"maxHeight": max_height})
 
 
-def _transaction_input_layout(currency: str, year: str, month: str, theme: str | None, read_only: bool = False):
+def _transaction_input_layout(
+    currency: str,
+    year: str,
+    month: str,
+    theme: str | None,
+    read_only: bool = False,
+    transaction_save_result: dict | None = None,
+):
     category_options = _transaction_category_options()
     currency_options = [{"label": ticker, "value": ticker} for ticker in config.UNIQUE_TICKERS]
     month_value = f"{year}-{str(month).zfill(2)}"
@@ -1764,6 +1824,10 @@ def _transaction_input_layout(currency: str, year: str, month: str, theme: str |
             html.Section(
                 [
                     dcc.Store(id="transaction-export-preview-state"),
+                    html.Div(
+                        id="transaction-save-result-panel",
+                        children=_transaction_save_result_panel(transaction_save_result),
+                    ),
                     html.Div(
                         [
                             html.H2("Проверка и сохранение месяца", className="h5 mb-0"),
@@ -2039,6 +2103,159 @@ def _import_period_selection(rows) -> tuple[list[dict], str | None]:
     periods = _import_periods(rows)
     options = [{"label": period, "value": period} for period in periods]
     return options, periods[0] if len(periods) == 1 else None
+
+
+def _transaction_import_summary(rows: list[dict], result: dict) -> dict:
+    reason_labels = {
+        "internal_transfer": "внутренние переводы",
+        "duplicate_in_staging": "уже добавлены ранее",
+        "possible_duplicate": "возможные дубли сохранённых операций",
+        "possible_pending_match": "неоднозначные pending-операции",
+        "manual_skip": "исключены вручную",
+        "already_processed": "уже обработаны",
+    }
+    reason_counts: dict[str, int] = {}
+    for row in rows or []:
+        action = str(row.get("import_action", "")).lower()
+        skip_reason = str(row.get("skip_reason", ""))
+        if skip_reason == "internal_transfer":
+            reason = "internal_transfer"
+        elif _is_truthy(row.get("duplicate_in_staging")):
+            reason = "duplicate_in_staging"
+        elif action == "skip":
+            reason = skip_reason if skip_reason in reason_labels else "manual_skip"
+        else:
+            continue
+        reason_counts[reason] = reason_counts.get(reason, 0) + 1
+
+    skipped_rows = int(result.get("skipped_rows", 0))
+    unclassified = skipped_rows - sum(reason_counts.values())
+    if unclassified > 0:
+        reason_counts["already_processed"] = unclassified
+    return {
+        "accepted_rows": int(result.get("accepted_rows", 0)),
+        "skipped_rows": skipped_rows,
+        "skip_reasons": [
+            {"label": reason_labels[reason], "count": count}
+            for reason, count in reason_counts.items()
+        ],
+    }
+
+
+def _is_truthy(value) -> bool:
+    return str(value).strip().lower() in {"true", "1", "yes"}
+
+
+def _transaction_save_result(
+    year: str,
+    month: str,
+    currency: str,
+    exported_rows: int,
+    import_summary: dict | None,
+) -> dict:
+    result = {
+        "data_mode": config.get_data_mode(),
+        "year": str(int(year)).zfill(4),
+        "month": str(int(month)).zfill(2),
+        "currency": str(currency).upper(),
+        "exported_rows": int(exported_rows),
+        "import_summary": import_summary,
+    }
+    try:
+        monthly = get_balance_by_month(result["currency"]).loc[
+            f"{result['year']}-{result['month']}"
+        ]
+        row = monthly.iloc[0] if isinstance(monthly, pd.DataFrame) else monthly
+        result["metrics"] = {
+            name: _format_saved_month_amount(row.get(name, 0), result["currency"])
+            for name in ("Доход", "Расход", "Сбережения", "Баланс")
+        }
+    except Exception:
+        logger.exception(
+            "Month was saved but result metrics could not be built: period=%s-%s currency=%s",
+            result["year"],
+            result["month"],
+            result["currency"],
+        )
+        result["metrics_unavailable"] = True
+    return result
+
+
+def _format_saved_month_amount(value, currency: str) -> str:
+    amount = Decimal(format_money_amount(value))
+    return f"{amount:,.2f}".replace(",", " ") + config.UNIQUE_TICKERS[currency]
+
+
+def _transaction_save_result_panel(result: dict | None):
+    if not result or result.get("data_mode") != config.get_data_mode():
+        return []
+    period = f"{result['year']}-{result['month']}"
+    metrics = result.get("metrics") or {}
+    import_summary = result.get("import_summary") or {}
+    skip_reasons = import_summary.get("skip_reasons") or []
+    children = [
+        html.Div(f"Месяц {period} сохранён", className="fw-semibold mb-1"),
+        html.Div(
+            f"Проведено операций: {int(result.get('exported_rows', 0))}.",
+            className="mb-2",
+        ),
+    ]
+    if metrics:
+        children.append(
+            dbc.Row(
+                [
+                    dbc.Col(
+                        html.Div(
+                            [
+                                html.Div(name, className="small opacity-75"),
+                                html.Div(value, className="fw-semibold"),
+                            ],
+                            className="border rounded px-3 py-2 h-100",
+                        ),
+                        xs=6,
+                        md=3,
+                    )
+                    for name, value in metrics.items()
+                ],
+                className="g-2 mb-2",
+            )
+        )
+    elif result.get("metrics_unavailable"):
+        children.append(
+            html.Div(
+                "Месяц сохранён, но итоговые показатели сейчас недоступны. Открой сверку, чтобы повторить расчёт.",
+                className="small mb-2",
+            )
+        )
+    if import_summary:
+        children.append(
+            html.Div(
+                f"Текущая выписка: принято {int(import_summary.get('accepted_rows', 0))}, "
+                f"пропущено {int(import_summary.get('skipped_rows', 0))}.",
+                className="small",
+            )
+        )
+    if skip_reasons:
+        children.append(
+            html.Div(
+                "Причины пропуска: "
+                + "; ".join(f"{item['label']} — {item['count']}" for item in skip_reasons)
+                + ".",
+                className="small mb-2",
+            )
+        )
+    children.append(
+        dbc.Button(
+            "Перейти к сверке",
+            color="success",
+            size="sm",
+            href=(
+                f"/?tab=month&year={result['year']}&month={result['month']}"
+                f"&currency={result['currency']}"
+            ),
+        )
+    )
+    return dbc.Alert(children, color="success", className="mb-3")
 
 
 def _asset_input_records(year: str, month: str) -> list[dict]:
