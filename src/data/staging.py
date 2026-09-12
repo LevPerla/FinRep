@@ -4,6 +4,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from calendar import monthrange
 from datetime import datetime
+from hashlib import sha256
+import json
 from math import isfinite
 import re
 from shutil import copy2
@@ -174,10 +176,61 @@ def preview_monthly_transaction_export(
     path: str | Path | None = None,
     transactions_root: str | Path | None = None,
 ) -> pd.DataFrame:
+    preview, _ = prepare_monthly_transaction_export(year, month, path, transactions_root)
+    return preview
+
+
+def prepare_monthly_transaction_export(
+    year: str,
+    month: str,
+    path: str | Path | None = None,
+    transactions_root: str | Path | None = None,
+) -> tuple[pd.DataFrame, dict]:
+    preview, _, preview_state = _monthly_transaction_export_snapshot(
+        year, month, path, transactions_root
+    )
+    return preview, preview_state
+
+
+def _monthly_transaction_export_snapshot(
+    year: str,
+    month: str,
+    path: str | Path | None = None,
+    transactions_root: str | Path | None = None,
+) -> tuple[pd.DataFrame, pd.DataFrame, dict]:
     target_path = monthly_transaction_csv_path(year, month, transactions_root)
     table = _read_or_create_month_table(year, month, target_path)
     drafts = _exportable_month_drafts(year, month, path)
-    return _merge_drafts_into_month_table(table, drafts)
+    preview = _merge_drafts_into_month_table(table, drafts)
+    year_key = str(int(year)).zfill(4)
+    month_key = str(int(month)).zfill(2)
+    revision_payload = {
+        "data_mode": config.get_data_mode(),
+        "year": year_key,
+        "month": month_key,
+        "month_table": _frame_revision_payload(table),
+        "drafts": _frame_revision_payload(drafts[DRAFT_COLUMNS]),
+    }
+    revision = sha256(
+        json.dumps(
+            revision_payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    preview_state = {
+        "version": 1,
+        "data_mode": config.get_data_mode(),
+        "year": year_key,
+        "month": month_key,
+        "revision": revision,
+        "draft_ids": [
+            {"source": str(row["source"]), "source_id": str(row["source_id"])}
+            for _, row in drafts.iterrows()
+        ],
+    }
+    return preview, drafts, preview_state
 
 
 def export_monthly_transaction_drafts(
@@ -186,12 +239,25 @@ def export_monthly_transaction_drafts(
     path: str | Path | None = None,
     transactions_root: str | Path | None = None,
     preview_rows: list[dict] | None = None,
+    preview_state: dict | None = None,
 ) -> dict:
     config.require_writable_mode()
     target_path = monthly_transaction_csv_path(year, month, transactions_root)
-    rows = preview_rows if preview_rows is not None else preview_monthly_transaction_export(year, month, path, transactions_root).to_dict("records")
-    preview = _preview_rows_to_month_table(rows)
-    drafts = _exportable_month_drafts(year, month, path)
+    server_preview, drafts, current_state = _monthly_transaction_export_snapshot(
+        year, month, path, transactions_root
+    )
+    if preview_rows is not None:
+        _validate_preview_state(preview_state, current_state)
+        expected_columns = server_preview.columns.tolist()
+        received_columns = pd.DataFrame(preview_rows, dtype=object).columns.tolist()
+        if set(received_columns) != set(expected_columns) or len(received_columns) != len(expected_columns):
+            raise ValueError("Структура Preview изменилась: построй Preview заново.")
+        preview = _preview_rows_to_month_table(preview_rows, year, month)
+        preview = preview[expected_columns]
+        if preview["Дата"].astype(str).tolist() != server_preview["Дата"].astype(str).tolist():
+            raise ValueError("Структура дат Preview изменилась: построй Preview заново.")
+    else:
+        preview = _preview_rows_to_month_table(server_preview.to_dict("records"), year, month)
     if drafts.empty and preview_rows is None:
         raise ValueError("Нет черновиков со статусом draft/ready для выбранного месяца.")
     if not drafts.empty:
@@ -224,12 +290,25 @@ def _monthly_transaction_backup_path(target_path: Path) -> Path:
     return backup_root / f"{target_path.stem}.backup_{timestamp}{target_path.suffix}"
 
 
-def _preview_rows_to_month_table(preview_rows: list[dict] | None) -> pd.DataFrame:
+def _preview_rows_to_month_table(
+    preview_rows: list[dict] | None,
+    year: str | None = None,
+    month: str | None = None,
+) -> pd.DataFrame:
     if not preview_rows:
         raise ValueError("Preview пустой: сначала нажми Preview или заполни таблицу.")
     data = pd.DataFrame(preview_rows, dtype=object)
     if "Дата" not in data.columns:
         raise ValueError("В preview нет колонки Дата.")
+    if year is not None and month is not None:
+        dates = pd.to_datetime(data["Дата"], format="%d.%m.%Y", errors="coerce")
+        for row_number, date in enumerate(dates, start=2):
+            if pd.isna(date):
+                raise ValueError(f"row {row_number}, column 'Дата': invalid date")
+            if date.year != int(year) or date.month != int(month):
+                raise ValueError(
+                    f"row {row_number}, column 'Дата': дата не относится к {int(year):04d}-{int(month):02d}"
+                )
     for column in data.columns:
         if column == "Дата":
             continue
@@ -245,6 +324,33 @@ def _preview_rows_to_month_table(preview_rows: list[dict] | None) -> pd.DataFram
     data = data.fillna("0")
     ordered_columns = ["Дата", *[column for column in data.columns if column != "Дата"]]
     return data[ordered_columns]
+
+
+def _frame_revision_payload(data: pd.DataFrame) -> dict:
+    frame = data.copy(deep=True)
+    values = [
+        ["" if pd.isna(value) else str(value) for value in row]
+        for row in frame.itertuples(index=False, name=None)
+    ]
+    return {"columns": [str(column) for column in frame.columns], "rows": values}
+
+
+def _validate_preview_state(preview_state: dict | None, current_state: dict) -> None:
+    if not isinstance(preview_state, dict):
+        raise ValueError("Сначала нажми Preview, затем подтверди экспорт.")
+    if preview_state.get("data_mode") != current_state["data_mode"]:
+        raise ValueError("Preview создан для другого режима данных: построй Preview заново.")
+    if (
+        str(preview_state.get("year", "")) != current_state["year"]
+        or str(preview_state.get("month", "")) != current_state["month"]
+    ):
+        raise ValueError("Preview создан для другого периода: построй Preview заново.")
+    if (
+        preview_state.get("version") != current_state["version"]
+        or preview_state.get("revision") != current_state["revision"]
+        or preview_state.get("draft_ids") != current_state["draft_ids"]
+    ):
+        raise ValueError("Preview устарел: данные изменились, построй Preview заново.")
 
 
 def monthly_transaction_csv_path(year: str, month: str, transactions_root: str | Path | None = None) -> Path:

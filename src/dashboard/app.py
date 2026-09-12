@@ -35,7 +35,7 @@ from src.data.staging import (
     delete_transaction_drafts,
     export_monthly_transaction_drafts,
     merge_transaction_draft_rows,
-    preview_monthly_transaction_export,
+    prepare_monthly_transaction_export,
     read_monthly_transaction_csv,
     read_transaction_drafts,
 )
@@ -1036,33 +1036,53 @@ def register_callbacks(app: Dash) -> None:
         Output("transaction-export-preview-grid", "columnDefs"),
         Output("transaction-export-message", "children"),
         Output("transaction-export-message", "color"),
+        Output("transaction-export-preview-state", "data"),
         Input("transaction-preview-export-button", "n_clicks", allow_optional=True),
         Input("transaction-confirm-export-button", "n_clicks", allow_optional=True),
         State("dashboard-year", "value"),
         State("dashboard-month", "value"),
         State("transaction-export-preview-grid", "rowData", allow_optional=True),
+        State("transaction-export-preview-state", "data", allow_optional=True),
         prevent_initial_call=True,
     )
-    def preview_or_export_transaction_month(preview_clicks, export_clicks, year, month, preview_rows):
+    def preview_or_export_transaction_month(
+        preview_clicks, export_clicks, year, month, preview_rows, preview_state
+    ):
         trigger = ctx.triggered_id
         try:
             if trigger == "transaction-confirm-export-button":
                 config.require_writable_mode()
-                result = export_monthly_transaction_drafts(year, month, preview_rows=preview_rows or None)
+                if not preview_rows or not preview_state:
+                    raise ValueError("Сначала нажми Preview, затем подтверди экспорт.")
+                result = export_monthly_transaction_drafts(
+                    year,
+                    month,
+                    preview_rows=preview_rows,
+                    preview_state=preview_state,
+                )
                 preview = read_monthly_transaction_csv(year, month)
                 message = (
                     f"Экспортировано строк: {result['exported_rows']}. "
                     f"Файл: {result['target_path']}. "
                     f"Backup: {result['backup_path'] or 'не создавался'}."
                 )
-                return _dataframe_records(preview), _simple_column_defs(preview), message, "success"
+                return _dataframe_records(preview), _simple_column_defs(preview), message, "success", None
 
-            preview = preview_monthly_transaction_export(year, month)
+            preview, preview_state = prepare_monthly_transaction_export(year, month)
             message = f"Preview построен для {year}-{str(month).zfill(2)}. Запись в source CSV еще не выполнена."
-            return _dataframe_records(preview), _simple_column_defs(preview), message, "secondary"
+            return _dataframe_records(preview), _simple_column_defs(preview), message, "secondary", preview_state
         except Exception as exc:
+            if trigger == "transaction-confirm-export-button" and preview_rows:
+                failed_preview = pd.DataFrame(preview_rows)
+                return (
+                    preview_rows,
+                    _simple_column_defs(failed_preview),
+                    str(exc),
+                    "danger",
+                    preview_state,
+                )
             empty = pd.DataFrame()
-            return [], _simple_column_defs(empty), str(exc), "danger"
+            return [], _simple_column_defs(empty), str(exc), "danger", preview_state
 
 
     @app.callback(
@@ -1795,6 +1815,7 @@ def _transaction_input_layout(currency: str, year: str, month: str, theme: str |
             ),
             html.Section(
                 [
+                    dcc.Store(id="transaction-export-preview-state"),
                     html.Div(
                         [
                             html.H2("Экспорт в месячный CSV", className="h5 mb-0"),
@@ -1981,7 +2002,15 @@ def _dataframe_records(data: pd.DataFrame) -> list[dict]:
 def _simple_column_defs(data: pd.DataFrame) -> list[dict]:
     if data.empty:
         return []
-    return [{"field": column, "minWidth": 120, "flex": 1 if column != "Дата" else 0} for column in data.columns]
+    return [
+        {
+            "field": column,
+            "minWidth": 120,
+            "flex": 1 if column != "Дата" else 0,
+            "editable": column != "Дата",
+        }
+        for column in data.columns
+    ]
 
 
 def _form_control_style(theme: str | None) -> dict:
