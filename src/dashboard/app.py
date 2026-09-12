@@ -74,6 +74,19 @@ MAIN_DASHBOARD_TABS: list[DashboardTab] = [
     ("investments", "Инвестиции · Beta", "Инвест β"),
 ]
 MAIN_DASHBOARD_TAB_IDS = {tab_id for tab_id, _desktop_label, _mobile_label in MAIN_DASHBOARD_TABS}
+MOBILE_PRIMARY_TABS: list[DashboardTab] = [
+    ("main", "Основной отчет", "Главная"),
+    ("month", "Месячный отчет", "Месяц"),
+    ("input", "Ввод данных", "Ввод"),
+    ("planning", "План и прогноз", "План"),
+]
+MOBILE_SECONDARY_TABS: list[DashboardTab] = [
+    ("year", "Годовой отчет", "Год"),
+    ("debts", "Долги · Beta", "Долги · Beta"),
+    ("investments", "Инвестиции · Beta", "Инвестиции · Beta"),
+]
+MOBILE_PRIMARY_TAB_IDS = {tab_id for tab_id, _desktop_label, _mobile_label in MOBILE_PRIMARY_TABS}
+MOBILE_SECONDARY_TAB_IDS = {tab_id for tab_id, _desktop_label, _mobile_label in MOBILE_SECONDARY_TABS}
 MOBILE_TAB_ICONS = {
     "main": "⌂",
     "year": "Y",
@@ -82,6 +95,7 @@ MOBILE_TAB_ICONS = {
     "planning": "↗",
     "investments": "%",
     "input": "+",
+    "more": "•••",
 }
 
 
@@ -401,28 +415,67 @@ def _dashboard_tabs() -> dbc.Tabs:
 
 def _mobile_bottom_nav() -> html.Nav:
     return html.Nav(
-        dcc.RadioItems(
-            id="mobile-dashboard-tabs",
-            options=[
-                {
-                    "label": html.Span(
-                        [
-                            html.Span(MOBILE_TAB_ICONS[tab_id], className="mobile-dashboard-tab-icon", **{"aria-hidden": "true"}),
-                            html.Span(mobile_label, className="mobile-dashboard-tab-label"),
-                        ],
-                        className="mobile-dashboard-tab-content",
-                    ),
-                    "value": tab_id,
-                }
-                for tab_id, _desktop_label, mobile_label in MAIN_DASHBOARD_TABS
+        html.Div(
+            [
+                html.Button(
+                    [
+                        html.Span(MOBILE_TAB_ICONS[tab_id], className="mobile-dashboard-tab-icon", **{"aria-hidden": "true"}),
+                        html.Span(mobile_label, className="mobile-dashboard-tab-label"),
+                    ],
+                    id=f"mobile-tab-{tab_id}",
+                    type="button",
+                    className="mobile-dashboard-tab",
+                    **{"aria-pressed": "true" if tab_id == "main" else "false"},
+                )
+                for tab_id, _desktop_label, mobile_label in MOBILE_PRIMARY_TABS
+            ]
+            + [
+                html.Button(
+                    [
+                        html.Span(MOBILE_TAB_ICONS["more"], className="mobile-dashboard-tab-icon", **{"aria-hidden": "true"}),
+                        html.Span("Ещё", className="mobile-dashboard-tab-label"),
+                    ],
+                    id="mobile-tab-more",
+                    type="button",
+                    className="mobile-dashboard-tab",
+                    **{"aria-haspopup": "dialog", "aria-controls": "mobile-more-menu", "aria-pressed": "false"},
+                )
             ],
-            value="main",
             className="mobile-dashboard-tabs-control",
-            labelClassName="mobile-dashboard-tab",
-            inputClassName="mobile-dashboard-tab-input",
         ),
         className="mobile-bottom-tabs",
-        **{"aria-label": "Основные разделы dashboard"},
+        **{"aria-label": "Основные разделы"},
+    )
+
+
+def _mobile_more_menu(theme: str = "dark") -> dbc.Offcanvas:
+    return dbc.Offcanvas(
+        [
+            html.Div(
+                [
+                    dbc.Button(
+                        [
+                            html.Span(MOBILE_TAB_ICONS[tab_id], className="mobile-more-item-icon", **{"aria-hidden": "true"}),
+                            html.Span(mobile_label),
+                        ],
+                        id=f"mobile-more-{tab_id}",
+                        color="secondary",
+                        outline=True,
+                        className="mobile-more-item",
+                    )
+                    for tab_id, _desktop_label, mobile_label in MOBILE_SECONDARY_TABS
+                ],
+                className="mobile-more-list",
+            ),
+            dbc.Button("Закрыть", id="mobile-more-close", color="secondary", className="mt-3 w-100"),
+        ],
+        id="mobile-more-menu",
+        title="Другие разделы",
+        placement="bottom",
+        is_open=False,
+        scrollable=False,
+        backdrop=True,
+        className=f"finrep-mobile-more finrep-mobile-more-{theme}",
     )
 
 
@@ -572,6 +625,7 @@ def create_layout():
                 size="lg",
             ),
             _mobile_bottom_nav(),
+            _mobile_more_menu(),
         ],
         id="dashboard-shell",
         className="finrep-shell finrep-theme-dark",
@@ -661,6 +715,7 @@ def register_callbacks(app: Dash) -> None:
         Output("dashboard-shell", "style"),
         Output("theme-toggle", "children"),
         Output("month-transaction-modal", "className"),
+        Output("mobile-more-menu", "className"),
         Input("theme-toggle", "n_clicks"),
         State("dashboard-theme", "data"),
     )
@@ -670,14 +725,20 @@ def register_callbacks(app: Dash) -> None:
             theme = "dark" if theme == "light" else "light"
         label = "Светлая" if theme == "dark" else "Темная"
         shell_style = _theme_shell_style(theme)
-        return theme, f"finrep-shell finrep-theme-{theme}", shell_style, label, _transaction_modal_class(theme)
+        return (
+            theme,
+            f"finrep-shell finrep-theme-{theme}",
+            shell_style,
+            label,
+            _transaction_modal_class(theme),
+            f"finrep-mobile-more finrep-mobile-more-{theme}",
+        )
 
     @app.callback(
         Output("dashboard-currency", "value"),
         Output("dashboard-year", "value"),
         Output("dashboard-month", "value"),
         Output("dashboard-tabs", "active_tab"),
-        Output("mobile-dashboard-tabs", "value"),
         Input("dashboard-location", "search"),
     )
     def apply_url_state(search: str):
@@ -696,29 +757,78 @@ def register_callbacks(app: Dash) -> None:
             month = default_month
         if tab not in MAIN_DASHBOARD_TAB_IDS:
             tab = "main"
-        return currency, year, month, tab, tab
+        return currency, year, month, tab
 
     @app.callback(
         Output("dashboard-tabs", "active_tab", allow_duplicate=True),
-        Input("mobile-dashboard-tabs", "value"),
+        Output("mobile-more-menu", "is_open"),
+        Input("mobile-tab-main", "n_clicks"),
+        Input("mobile-tab-month", "n_clicks"),
+        Input("mobile-tab-input", "n_clicks"),
+        Input("mobile-tab-planning", "n_clicks"),
+        Input("mobile-tab-more", "n_clicks"),
+        Input("mobile-more-year", "n_clicks"),
+        Input("mobile-more-debts", "n_clicks"),
+        Input("mobile-more-investments", "n_clicks"),
+        Input("mobile-more-close", "n_clicks"),
         State("dashboard-tabs", "active_tab"),
+        State("mobile-more-menu", "is_open"),
         prevent_initial_call=True,
     )
-    def apply_mobile_tab(active_mobile_tab: str | None, active_desktop_tab: str | None):
-        if not active_mobile_tab or active_mobile_tab == active_desktop_tab:
+    def apply_mobile_tab(
+        _main_clicks,
+        _month_clicks,
+        _input_clicks,
+        _planning_clicks,
+        _more_clicks,
+        _year_clicks,
+        _debts_clicks,
+        _investments_clicks,
+        _close_clicks,
+        active_desktop_tab: str | None,
+        more_is_open: bool,
+    ):
+        triggered_id = ctx.triggered_id
+        if triggered_id == "mobile-tab-more":
+            return no_update, not more_is_open
+        if triggered_id == "mobile-more-close":
+            return no_update, False
+
+        target_by_button = {
+            **{f"mobile-tab-{tab_id}": tab_id for tab_id in MOBILE_PRIMARY_TAB_IDS},
+            **{f"mobile-more-{tab_id}": tab_id for tab_id in MOBILE_SECONDARY_TAB_IDS},
+        }
+        target = target_by_button.get(triggered_id)
+        if not target:
             raise PreventUpdate
-        return active_mobile_tab
+        return no_update if target == active_desktop_tab else target, False
 
     @app.callback(
-        Output("mobile-dashboard-tabs", "value", allow_duplicate=True),
+        Output("mobile-tab-main", "className"),
+        Output("mobile-tab-month", "className"),
+        Output("mobile-tab-input", "className"),
+        Output("mobile-tab-planning", "className"),
+        Output("mobile-tab-more", "className"),
+        Output("mobile-tab-main", "aria-pressed"),
+        Output("mobile-tab-month", "aria-pressed"),
+        Output("mobile-tab-input", "aria-pressed"),
+        Output("mobile-tab-planning", "aria-pressed"),
+        Output("mobile-tab-more", "aria-pressed"),
         Input("dashboard-tabs", "active_tab"),
-        State("mobile-dashboard-tabs", "value"),
-        prevent_initial_call=True,
     )
-    def sync_mobile_tab(active_desktop_tab: str | None, active_mobile_tab: str | None):
-        if not active_desktop_tab or active_desktop_tab == active_mobile_tab:
-            raise PreventUpdate
-        return active_desktop_tab
+    def sync_mobile_tab(active_desktop_tab: str | None):
+        active_button = (
+            active_desktop_tab
+            if active_desktop_tab in MOBILE_PRIMARY_TAB_IDS
+            else "more" if active_desktop_tab in MOBILE_SECONDARY_TAB_IDS else "main"
+        )
+        button_ids = [tab_id for tab_id, _desktop_label, _mobile_label in MOBILE_PRIMARY_TABS] + ["more"]
+        classes = [
+            "mobile-dashboard-tab is-active" if tab_id == active_button else "mobile-dashboard-tab"
+            for tab_id in button_ids
+        ]
+        pressed = ["true" if tab_id == active_button else "false" for tab_id in button_ids]
+        return tuple(classes + pressed)
 
     @app.callback(
         Output("dashboard-content", "children"),

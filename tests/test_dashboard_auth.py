@@ -149,6 +149,25 @@ def test_dashboard_filters_and_actions_are_inside_collapsible_settings():
         assert _layout_component(settings, component_id) is not None
 
 
+def test_mobile_navigation_has_four_primary_actions_and_a_more_menu():
+    from src.dashboard.app import _mobile_bottom_nav, _mobile_more_menu
+
+    nav = _mobile_bottom_nav()
+    menu = _mobile_more_menu()
+    primary_ids = ["mobile-tab-main", "mobile-tab-month", "mobile-tab-input", "mobile-tab-planning"]
+
+    for component_id in primary_ids + ["mobile-tab-more"]:
+        button = _layout_component(nav, component_id)
+        assert button is not None
+        assert button.type == "button"
+    assert getattr(_layout_component(nav, "mobile-tab-main"), "aria-pressed") == "true"
+    assert getattr(_layout_component(nav, "mobile-tab-more"), "aria-haspopup") == "dialog"
+    assert _layout_component(nav, "mobile-tab-year") is None
+    for component_id in ("mobile-more-year", "mobile-more-debts", "mobile-more-investments"):
+        assert _layout_component(menu, component_id) is not None
+    assert _layout_component(menu, "mobile-more-menu").placement == "bottom"
+
+
 def test_main_metrics_are_grouped_by_decision_priority():
     from src.dashboard.app import _cockpit_section
     from src.dashboard.main_data import DashboardDataset
