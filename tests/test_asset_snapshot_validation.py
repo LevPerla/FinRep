@@ -1,3 +1,4 @@
+from decimal import Decimal
 from pathlib import Path
 
 import pandas as pd
@@ -73,7 +74,7 @@ def test_missing_required_column_does_not_invent_account_or_zero(assets_root, co
 def test_valid_legacy_formats_are_preserved(assets_root, cell, amount, currency):
     put_snapshot(assets_root, cell)
     row = read_asset_snapshot("2026", "01").iloc[0]
-    assert row["amount"] == amount
+    assert row["amount"] == Decimal(str(amount))
     assert row["currency"] == currency
 
 

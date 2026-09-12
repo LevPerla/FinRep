@@ -34,6 +34,7 @@ from src.data.importers.bank_pdf import (
     parse_bank_upload_contents,
 )
 from src.data.importers.kaspi_pdf import save_kaspi_import_to_staging
+from src.data.money import format_money_amount
 from src.data.staging import (
     DRAFT_COLUMNS,
     DRAFT_STATUSES,
@@ -2188,10 +2189,20 @@ def _asset_input_records(year: str, month: str) -> list[dict]:
     data = read_asset_snapshot(year, month).copy(deep=True)
     if data.empty:
         return []
-    data["amount_sort"] = pd.to_numeric(data["amount"], errors="coerce").fillna(0)
+    data["amount_sort"] = data["amount"]
     data = data.sort_values("amount_sort", ascending=False, kind="mergesort")
-    data["amount"] = data["amount"].map(_format_input_amount)
+    data["amount_sort"] = range(len(data), 0, -1)
+    data["amount"] = data["amount"].map(_format_asset_input_amount)
     return _dataframe_records(data)
+
+
+def _format_asset_input_amount(value) -> str:
+    text = format_money_amount(value)
+    sign = "-" if text.startswith("-") else ""
+    unsigned = text.removeprefix("-")
+    integer, separator, fraction = unsigned.partition(".")
+    grouped_integer = f"{int(integer):,}".replace(",", " ")
+    return f"{sign}{grouped_integer}{separator}{fraction}"
 
 
 def _asset_input_status(year: str, month: str) -> tuple[str, str]:

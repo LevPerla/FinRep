@@ -1,12 +1,13 @@
 from __future__ import annotations
 
-from math import isfinite
+from decimal import Decimal
 from pathlib import Path
 
 import pandas as pd
 
 from src import config
 from src.data.csv_storage import atomic_copy_file, atomic_write_csv, create_unique_backup
+from src.data.money import format_money_amount, parse_money_amount
 
 ASSET_EDITOR_COLUMNS = ["account", "amount", "currency"]
 
@@ -120,33 +121,35 @@ def _normalize_asset_rows(data: pd.DataFrame) -> pd.DataFrame:
     invalid_currencies = sorted(set(normalized["currency"]) - set(config.UNIQUE_TICKERS))
     if invalid_currencies:
         raise ValueError(f"Недопустимые валюты активов: {', '.join(invalid_currencies)}")
-    amounts = pd.to_numeric(normalized["amount"].astype(str).str.replace(" ", "").str.replace(",", "."), errors="coerce")
-    invalid_amounts = ~amounts.map(isfinite)
-    if invalid_amounts.any():
-        bad_accounts = normalized.loc[invalid_amounts, "account"].tolist()
+    amounts = []
+    bad_accounts = []
+    for _, row in normalized.iterrows():
+        try:
+            amounts.append(parse_money_amount(row["amount"], field_name="asset amount"))
+        except ValueError:
+            bad_accounts.append(row["account"])
+    if bad_accounts:
         raise ValueError(f"Некорректная сумма у активов: {', '.join(bad_accounts[:5])}")
-    normalized["amount"] = amounts.astype(float)
+    normalized["amount"] = pd.Series(amounts, index=normalized.index, dtype=object)
     return normalized.reset_index(drop=True)
 
 
-def _parse_asset_cell(value) -> tuple[float, str]:
-    parts = str(value).replace("\xa0", "").replace(" ", "").split("|")
+def _parse_asset_cell(value) -> tuple[Decimal, str]:
+    parts = str(value).split("|")
     if len(parts) > 2:
         raise ValueError("Некорректный формат суммы актива: ожидается сумма или сумма|валюта.")
     # Preserve legacy defaults for empty cells and an omitted currency.
-    amount = parts[0] if parts and parts[0] else "0"
-    currency = parts[1] if len(parts) > 1 and parts[1] else "RUB"
-    parsed_amount = pd.to_numeric(str(amount).replace(",", "."), errors="coerce")
-    if not isfinite(parsed_amount):
-        raise ValueError("Некорректная сумма актива: требуется конечное число.")
-    currency = str(currency).upper()
+    amount = parts[0].strip() if parts else ""
+    currency = parts[1].strip() if len(parts) > 1 else ""
+    try:
+        parsed_amount = parse_money_amount(amount or "0", field_name="asset amount")
+    except ValueError as exc:
+        raise ValueError(f"Некорректная сумма актива: {exc}") from exc
+    currency = str(currency or "RUB").upper()
     if currency not in config.UNIQUE_TICKERS:
         raise ValueError(f"Недопустимая валюта актива: {currency!r}.")
-    return float(parsed_amount), currency
+    return parsed_amount, currency
 
 
-def _format_asset_amount(value: float) -> str:
-    value = float(value)
-    if value.is_integer():
-        return str(int(value))
-    return f"{value:.2f}".rstrip("0").rstrip(".").replace(".", ",")
+def _format_asset_amount(value) -> str:
+    return format_money_amount(value, decimal_separator=",", field_name="asset amount")
