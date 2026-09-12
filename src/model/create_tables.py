@@ -298,6 +298,7 @@ def _get_asset_capital_by_month_cached(data_root: str, currency: str) -> pd.Data
 
     assets_df = assets_df.copy(deep=True)
     assets_df['Дата'] = _asset_snapshot_dates(assets_df)
+    assets_df['Дата оценки'] = asset_valuation_dates(assets_df)
     assets_df['Значение'] = _convert_asset_values_as_of_snapshot(assets_df, currency)
     result = (
         assets_df
@@ -379,7 +380,7 @@ def get_assets_by_currencies(year, month) -> pd.DataFrame:
     assets_df = assets_df[(assets_df['Год'].isin(list(np.array(year).flat))) &
                           (assets_df['Месяц'].isin(list(np.array(month).astype(int).astype(str).flat)))
                           ].reset_index(drop=True)
-    snapshot_date = _asset_snapshot_dates(assets_df).max() if not assets_df.empty else None
+    snapshot_date = asset_valuation_dates(assets_df).max() if not assets_df.empty else None
     assets_df.drop(['Год', 'Месяц', 'Квартал'], axis=1, inplace=True)
 
     investment_value = current_investment_value('RUB') if _is_latest_asset_snapshot(year, month) else 0
@@ -515,9 +516,26 @@ def _asset_snapshot_dates(assets_df: pd.DataFrame) -> pd.Series:
     return periods.to_timestamp(how='end').normalize()
 
 
+def _current_asset_valuation_date() -> pd.Timestamp:
+    return pd.Timestamp.today().normalize()
+
+
+def asset_valuation_dates(assets_df: pd.DataFrame) -> pd.Series:
+    periods = pd.PeriodIndex(
+        year=assets_df['Год'].astype(int),
+        month=assets_df['Месяц'].astype(int),
+        freq='M',
+    )
+    dates = pd.Series(periods.to_timestamp(how='end').normalize(), index=assets_df.index)
+    current_date = _current_asset_valuation_date()
+    dates.loc[periods == current_date.to_period('M')] = current_date
+    return dates
+
+
 def _convert_asset_values_as_of_snapshot(assets_df: pd.DataFrame, currency: str) -> pd.Series:
     values = pd.to_numeric(assets_df['Значение'], errors='coerce').copy()
-    for (from_curr, snapshot_date), index in assets_df.groupby(['Валюта', 'Дата']).groups.items():
+    valuation_column = 'Дата оценки' if 'Дата оценки' in assets_df.columns else 'Дата'
+    for (from_curr, snapshot_date), index in assets_df.groupby(['Валюта', valuation_column]).groups.items():
         from_curr = str(from_curr).upper()
         if from_curr == currency:
             continue
