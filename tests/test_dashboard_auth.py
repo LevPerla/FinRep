@@ -217,6 +217,16 @@ def test_month_transaction_rows_are_clickable():
 
     assert row is not None
     assert "finrep-report-row-clickable" in row.className
+    assert row.role == "button"
+    assert row.tabIndex == 0
+    assert row.title == "Открыть детализацию транзакций за день"
+
+    project_root = Path(__file__).resolve().parents[1]
+    keyboard_handler = (project_root / "assets" / "dashboardA11y.js").read_text(encoding="utf-8")
+    css = (project_root / "assets" / "dashboard.css").read_text(encoding="utf-8")
+    assert 'event.key === "Enter"' in keyboard_handler
+    assert 'event.code === "Space"' in keyboard_handler
+    assert ".finrep-report-row-clickable:focus" in css
 
 
 def test_day_transaction_details_include_native_amount_and_comment(monkeypatch):

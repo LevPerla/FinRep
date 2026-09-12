@@ -592,6 +592,15 @@ body {
   box-shadow: inset 0 0 0 9999px rgba(104, 151, 187, 0.1);
 }
 
+.finrep-report-row-clickable:focus {
+  outline: 3px solid #2563eb;
+  outline-offset: -3px;
+}
+
+.finrep-theme-dark .finrep-report-row-clickable:focus {
+  outline-color: #62a8ff;
+}
+
 .finrep-transaction-detail-table td:last-child,
 .finrep-transaction-detail-table th:last-child {
   min-width: 240px;
