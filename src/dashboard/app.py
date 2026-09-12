@@ -3365,13 +3365,13 @@ def _merge_total_style(style: dict, theme: str | None = None) -> dict:
 def _level_palette(palette: str, theme: str | None = None) -> tuple[dict[int, str], str]:
     if theme == "dark" and palette == "green":
         colors = {1: "#2f3d2f", 2: "#3d5a3a", 3: "#4f714b"}
-        text_color = "#b6d7a8"
+        text_color = "#e2f4da"
     elif theme == "dark" and palette == "blue":
         colors = {1: "#2f3d4a", 2: "#38546b", 3: "#4a6f8a"}
-        text_color = "#a9b7c6"
+        text_color = "#e6f2ff"
     elif theme == "dark":
         colors = {1: "#3f2d2d", 2: "#5a3838", 3: "#704444"}
-        text_color = "#d99694"
+        text_color = "#f1b8b6"
     elif palette == "green":
         colors = {1: "#edf8ef", 2: "#d7efd9", 3: "#bde5c0"}
         text_color = "#214d2c"
