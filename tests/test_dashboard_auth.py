@@ -229,6 +229,32 @@ def test_month_transaction_rows_are_clickable():
     assert ".finrep-report-row-clickable:focus" in css
 
 
+def test_manual_transaction_fields_have_persistent_labels_and_error_description():
+    from src.dashboard.app import _transaction_input_layout
+
+    layout = _transaction_input_layout("RUB", "2026", "05", "dark")
+    native_fields = {
+        "transaction-input-date": "Дата",
+        "transaction-input-amount": "Сумма",
+        "transaction-input-comment": "Комментарий",
+    }
+    for field_id, label_text in native_fields.items():
+        field = _layout_component(layout, field_id)
+        label = next(
+            component
+            for component in layout._traverse()
+            if getattr(component, "html_for", None) == field_id
+        )
+        assert label.children == label_text
+
+    assert _layout_component(layout, "transaction-input-category-label").children == "Категория"
+    assert _layout_component(layout, "transaction-input-currency-label").children == "Валюта"
+    adapter = (Path(__file__).resolve().parents[1] / "assets" / "dashboardA11y.js").read_text(encoding="utf-8")
+    assert 'setAttribute("aria-describedby", "transaction-input-message")' in adapter
+    assert 'control.setAttribute("aria-labelledby", `${id}-label${valueId}`)' in adapter
+    assert 'control.setAttribute("aria-describedby", "transaction-input-message")' in adapter
+
+
 def test_day_transaction_details_include_native_amount_and_comment(monkeypatch):
     from src.dashboard import month_data
 

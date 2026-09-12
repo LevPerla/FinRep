@@ -1754,12 +1754,47 @@ def _transaction_input_layout(
                     html.H2("Ручной ввод транзакции", className="h5 mb-3"),
                     dbc.Row(
                         [
-                            dbc.Col(dbc.Input(id="transaction-input-date", type="date", value=datetime.now().date().isoformat(), className="finrep-native-input", style=_form_control_style(theme)), xs=12, md=2),
-                            dbc.Col(dcc.Dropdown(id="transaction-input-category", options=category_options, value=category_options[0]["value"] if category_options else None, clearable=False, className="dash-dropdown"), xs=12, md=2),
-                            dbc.Col(dcc.Dropdown(id="transaction-input-currency", options=currency_options, value=currency, clearable=False, className="dash-dropdown"), xs=12, md=2),
-                            dbc.Col(dbc.Input(id="transaction-input-amount", type="number", placeholder="Сумма", step="any", className="finrep-native-input", style=_form_control_style(theme)), xs=12, md=2),
-                            dbc.Col(dbc.Input(id="transaction-input-comment", type="text", placeholder="Комментарий", className="finrep-native-input", style=_form_control_style(theme)), xs=12, md=3),
-                            dbc.Col(dbc.Button("Добавить", id="transaction-add-button", color="primary", className="w-100", disabled=read_only), xs=12, md=1),
+                            dbc.Col(
+                                [
+                                    dbc.Label("Дата", html_for="transaction-input-date", className="small mb-1"),
+                                    dbc.Input(id="transaction-input-date", type="date", value=datetime.now().date().isoformat(), className="finrep-native-input", style=_form_control_style(theme)),
+                                ],
+                                xs=12,
+                                md=2,
+                            ),
+                            dbc.Col(
+                                [
+                                    dbc.Label("Категория", id="transaction-input-category-label", className="small mb-1"),
+                                    dcc.Dropdown(id="transaction-input-category", options=category_options, value=category_options[0]["value"] if category_options else None, clearable=False, className="dash-dropdown"),
+                                ],
+                                xs=12,
+                                md=2,
+                            ),
+                            dbc.Col(
+                                [
+                                    dbc.Label("Валюта", id="transaction-input-currency-label", className="small mb-1"),
+                                    dcc.Dropdown(id="transaction-input-currency", options=currency_options, value=currency, clearable=False, className="dash-dropdown"),
+                                ],
+                                xs=12,
+                                md=2,
+                            ),
+                            dbc.Col(
+                                [
+                                    dbc.Label("Сумма", html_for="transaction-input-amount", className="small mb-1"),
+                                    dbc.Input(id="transaction-input-amount", type="number", step="any", className="finrep-native-input", style=_form_control_style(theme)),
+                                ],
+                                xs=12,
+                                md=2,
+                            ),
+                            dbc.Col(
+                                [
+                                    dbc.Label("Комментарий", html_for="transaction-input-comment", className="small mb-1"),
+                                    dbc.Input(id="transaction-input-comment", type="text", className="finrep-native-input", style=_form_control_style(theme)),
+                                ],
+                                xs=12,
+                                md=3,
+                            ),
+                            dbc.Col(dbc.Button("Добавить", id="transaction-add-button", color="primary", className="w-100", disabled=read_only), xs=12, md=1, className="d-flex align-items-end"),
                         ],
                         className="g-2",
                     ),
