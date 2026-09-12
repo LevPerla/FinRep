@@ -17,6 +17,7 @@ import pandas as pd
 
 from src import config
 from src.data.csv_storage import atomic_write_csv, create_unique_backup
+from src.data.file_commit import commit_file_images, read_commit_receipt, recover_file_commit
 
 TRANSACTION_BOUNDARY_RE = re.compile(r'#(?=\s*[+-]?(?:\d+(?:[.,]\d*)?|[.,]\d+)(?:\||#|$))')
 
@@ -337,9 +338,14 @@ def export_monthly_transaction_drafts(
 ) -> dict:
     config.require_writable_mode()
     draft_path = _draft_path(path)
+    target_path = monthly_transaction_csv_path(year, month, transactions_root)
     with _transaction_drafts_lock(draft_path):
+        completed = _completed_monthly_export(
+            preview_state, draft_path, year, month, target_path
+        )
+        if completed is not None:
+            return completed
         all_drafts = _read_transaction_drafts_unlocked(draft_path)
-        target_path = monthly_transaction_csv_path(year, month, transactions_root)
         server_preview, drafts, current_state = _monthly_transaction_export_snapshot(
             year, month, path, transactions_root, draft_data=all_drafts
         )
@@ -370,14 +376,66 @@ def export_monthly_transaction_drafts(
             )
             backup_path = create_unique_backup(target_path, backup_root)
 
-        atomic_write_csv(preview, target_path, sep=";", index=False, encoding="utf-8-sig")
-        if not drafts.empty:
-            _mark_month_drafts_exported_unlocked(drafts, draft_path)
-        return {
+        updated_drafts = _drafts_with_exported_status(all_drafts, drafts)
+        result = {
             "target_path": str(target_path),
             "backup_path": None if backup_path is None else str(backup_path),
             "exported_rows": int(len(drafts)),
         }
+        receipt = {
+            "version": 1,
+            "data_mode": current_state["data_mode"],
+            "year": current_state["year"],
+            "month": current_state["month"],
+            "revision": current_state["revision"],
+            "draft_ids": current_state["draft_ids"],
+            "result": result,
+        }
+        commit_file_images(
+            _transaction_export_journal_path(draft_path),
+            {
+                target_path: _csv_bytes(preview, encoding="utf-8-sig"),
+                draft_path: _csv_bytes(updated_drafts),
+            },
+            receipt_path=_transaction_export_receipt_path(draft_path),
+            receipt=receipt,
+        )
+        return result
+
+
+def _completed_monthly_export(
+    preview_state: dict | None,
+    draft_path: Path,
+    year: str,
+    month: str,
+    target_path: Path,
+) -> dict | None:
+    if not isinstance(preview_state, dict):
+        return None
+    receipt = read_commit_receipt(_transaction_export_receipt_path(draft_path))
+    if receipt is None:
+        return None
+    requested_identity = {
+        "data_mode": config.get_data_mode(),
+        "year": str(int(year)).zfill(4),
+        "month": str(int(month)).zfill(2),
+    }
+    identity_fields = ("data_mode", "year", "month", "revision", "draft_ids")
+    if (
+        all(receipt.get(field) == preview_state.get(field) for field in identity_fields)
+        and all(receipt.get(field) == value for field, value in requested_identity.items())
+    ):
+        result = receipt.get("result")
+        if (
+            isinstance(result, dict)
+            and Path(str(result.get("target_path", ""))).resolve() == target_path.resolve()
+        ):
+            return result
+    return None
+
+
+def _csv_bytes(data: pd.DataFrame, encoding: str = "utf-8") -> bytes:
+    return data.to_csv(sep=";", index=False).encode(encoding)
 
 
 def _preview_rows_to_month_table(
@@ -592,10 +650,16 @@ def _mark_month_drafts_exported(drafts: pd.DataFrame, path: str | Path | None = 
 
 def _mark_month_drafts_exported_unlocked(drafts: pd.DataFrame, draft_path: Path) -> None:
     data = _read_transaction_drafts_unlocked(draft_path)
+    updated = _drafts_with_exported_status(data, drafts)
+    _write_transaction_drafts_unlocked(updated, draft_path)
+
+
+def _drafts_with_exported_status(data: pd.DataFrame, drafts: pd.DataFrame) -> pd.DataFrame:
+    data = data.copy(deep=True)
     keys = {(str(row["source"]), str(row["source_id"])) for _, row in drafts.iterrows()}
     mask = data.apply(lambda row: (str(row["source"]), str(row["source_id"])) in keys, axis=1)
     data.loc[mask, "status"] = "exported"
-    _write_transaction_drafts_unlocked(data, draft_path)
+    return _normalize_drafts(data)
 
 
 def validate_transaction_drafts(data: pd.DataFrame | None = None, path: str | Path | None = None) -> list[DraftValidationIssue]:
@@ -673,6 +737,14 @@ def _draft_lock_path(draft_path: Path) -> Path:
     return draft_path.with_name(f".{draft_path.name}.lock")
 
 
+def _transaction_export_journal_path(draft_path: Path) -> Path:
+    return draft_path.with_name(f".{draft_path.name}.export-commit.json")
+
+
+def _transaction_export_receipt_path(draft_path: Path) -> Path:
+    return draft_path.with_name(f".{draft_path.name}.last-export.json")
+
+
 @contextmanager
 def _transaction_drafts_lock(draft_path: Path):
     deadline = monotonic() + DRAFT_LOCK_TIMEOUT_SECONDS
@@ -695,6 +767,7 @@ def _transaction_drafts_lock(draft_path: Path):
                         "Черновики сейчас сохраняются в другом процессе. Повтори попытку."
                     )
                 sleep(min(0.05, max(0.0, deadline - monotonic())))
+        recover_file_commit(_transaction_export_journal_path(draft_path))
         yield
     finally:
         if lock_file is not None:
