@@ -11,7 +11,7 @@ import pdfplumber
 
 from src import config
 from src.data.get import get_transactions
-from src.data.staging import DRAFT_COLUMNS, read_transaction_drafts, write_transaction_drafts
+from src.data.staging import DRAFT_COLUMNS, append_transaction_draft_rows, read_transaction_drafts
 
 KASPI_SOURCE = "kaspi_pdf"
 TRANSACTION_RE = re.compile(
@@ -103,17 +103,10 @@ def save_kaspi_import_to_staging(import_rows: list[dict], path: str | Path | Non
         if column not in incoming.columns:
             incoming[column] = ""
     incoming = incoming[_import_columns()].copy(deep=True)
-    drafts = read_transaction_drafts(path)
-    existing_source_ids = set(zip(drafts["source"].astype(str), drafts["source_id"].astype(str)))
     source_keys = _existing_source_keys()
 
     duplicate_mask = _as_bool_series(incoming["duplicate_in_staging"]) | _as_bool_series(incoming["duplicate_in_source"])
-    duplicate_mask = duplicate_mask | pd.Series(
-        list(zip(incoming["source"].astype(str), incoming["source_id"].astype(str))),
-        index=incoming.index,
-    ).isin(existing_source_ids)
     duplicate_mask = duplicate_mask | incoming.apply(lambda row: _source_key(row) in source_keys, axis=1)
-    duplicate_mask = duplicate_mask | incoming.duplicated(subset=["source", "source_id"], keep="first")
     if "skip_reason" in incoming.columns:
         duplicate_mask = duplicate_mask | incoming["skip_reason"].astype(str).eq("internal_transfer")
     if "import_action" in incoming.columns:
@@ -123,9 +116,11 @@ def save_kaspi_import_to_staging(import_rows: list[dict], path: str | Path | Non
         return {"accepted_rows": 0, "skipped_rows": int(len(incoming))}
 
     draft_rows = accepted[DRAFT_COLUMNS].copy(deep=True)
-    updated = pd.concat([drafts, draft_rows], ignore_index=True)
-    write_transaction_drafts(updated, path)
-    return {"accepted_rows": int(len(accepted)), "skipped_rows": int(duplicate_mask.sum())}
+    result = append_transaction_draft_rows(draft_rows, path)
+    return {
+        "accepted_rows": result["accepted_rows"],
+        "skipped_rows": int(duplicate_mask.sum()) + result["skipped_rows"],
+    }
 
 
 

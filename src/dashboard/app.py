@@ -31,6 +31,7 @@ from src.data.importers.kaspi_pdf import save_kaspi_import_to_staging
 from src.data.staging import (
     DRAFT_COLUMNS,
     DRAFT_STATUSES,
+    DraftRevisionConflict,
     append_transaction_draft,
     delete_transaction_drafts,
     export_monthly_transaction_drafts,
@@ -38,6 +39,7 @@ from src.data.staging import (
     prepare_monthly_transaction_export,
     read_monthly_transaction_csv,
     read_transaction_drafts,
+    read_transaction_drafts_snapshot,
 )
 from src.dashboard.export import ExportBusyError, export_dashboard_page
 from src.dashboard.auth import configure_auth
@@ -937,6 +939,7 @@ def register_callbacks(app: Dash) -> None:
         Output("kaspi-import-message", "children", allow_duplicate=True),
         Output("kaspi-import-message", "color", allow_duplicate=True),
         Output("transaction-drafts-grid", "rowData", allow_duplicate=True),
+        Output("transaction-drafts-revision", "data", allow_duplicate=True),
         Input("kaspi-save-button", "n_clicks", allow_optional=True),
         State("kaspi-import-grid", "rowData", allow_optional=True),
         State("transaction-filter-month", "value", allow_optional=True),
@@ -956,14 +959,20 @@ def register_callbacks(app: Dash) -> None:
         except Exception as exc:
             message = str(exc)
             color = "danger"
-        return message, color, _transaction_draft_records(month_filter, category_filter, status_filter, source_filter)
+        records, revision = _transaction_draft_snapshot_records(
+            month_filter, category_filter, status_filter, source_filter
+        )
+        return message, color, records, revision
 
 
     @app.callback(
         Output("transaction-drafts-grid", "rowData"),
         Output("transaction-input-message", "children"),
         Output("transaction-input-message", "color"),
+        Output("transaction-drafts-message", "children"),
+        Output("transaction-drafts-message", "color"),
         Output("transaction-filter-month", "value"),
+        Output("transaction-drafts-revision", "data"),
         Input("transaction-add-button", "n_clicks", allow_optional=True),
         Input("transaction-save-grid-button", "n_clicks", allow_optional=True),
         Input("transaction-delete-button", "n_clicks", allow_optional=True),
@@ -971,6 +980,7 @@ def register_callbacks(app: Dash) -> None:
         Input("transaction-filter-category", "value", allow_optional=True),
         Input("transaction-filter-status", "value", allow_optional=True),
         Input("transaction-filter-source", "value", allow_optional=True),
+        Input("transaction-reload-grid-button", "n_clicks", allow_optional=True),
         State("transaction-input-date", "value", allow_optional=True),
         State("transaction-input-category", "value", allow_optional=True),
         State("transaction-input-currency", "value", allow_optional=True),
@@ -978,6 +988,7 @@ def register_callbacks(app: Dash) -> None:
         State("transaction-input-comment", "value", allow_optional=True),
         State("transaction-drafts-grid", "rowData", allow_optional=True),
         State("transaction-drafts-grid", "selectedRows", allow_optional=True),
+        State("transaction-drafts-revision", "data", allow_optional=True),
     )
     def sync_transaction_drafts(
         add_clicks,
@@ -987,6 +998,7 @@ def register_callbacks(app: Dash) -> None:
         category_filter,
         status_filter,
         source_filter,
+        reload_clicks,
         input_date,
         input_category,
         input_currency,
@@ -994,6 +1006,7 @@ def register_callbacks(app: Dash) -> None:
         input_comment,
         row_data,
         selected_rows,
+        expected_revision,
     ):
         trigger = ctx.triggered_id
         message = ""
@@ -1016,20 +1029,44 @@ def register_callbacks(app: Dash) -> None:
                 message = "Черновик добавлен."
                 color = "success"
             elif trigger == "transaction-save-grid-button":
-                merge_transaction_draft_rows(row_data or [])
+                if not expected_revision:
+                    raise DraftRevisionConflict
+                merge_transaction_draft_rows(row_data or [], expected_revision=expected_revision)
                 message = "Правки в таблице сохранены."
                 color = "success"
             elif trigger == "transaction-delete-button":
                 if not selected_rows:
                     raise ValueError("Выбери строки для удаления.")
-                delete_transaction_drafts(selected_rows)
+                if not expected_revision:
+                    raise DraftRevisionConflict
+                delete_transaction_drafts(selected_rows, expected_revision=expected_revision)
                 message = f"Удалено строк: {len(selected_rows)}."
                 color = "warning"
+            elif trigger == "transaction-reload-grid-button":
+                message = "Таблица обновлена из staging."
+                color = "secondary"
+        except DraftRevisionConflict:
+            message = (
+                "Черновики изменились после загрузки таблицы. Сохранение отменено, чтобы не потерять данные. "
+                "Нажми «Обновить таблицу»."
+            )
+            return (
+                row_data or [],
+                message,
+                "warning",
+                message,
+                "warning",
+                month_filter,
+                expected_revision,
+            )
         except Exception as exc:
             message = str(exc)
             color = "danger"
 
-        return _transaction_draft_records(month_filter, category_filter, status_filter, source_filter), message, color, month_filter
+        records, revision = _transaction_draft_snapshot_records(
+            month_filter, category_filter, status_filter, source_filter
+        )
+        return records, message, color, message, color, month_filter, revision
 
     @app.callback(
         Output("transaction-export-preview-grid", "rowData"),
@@ -1686,6 +1723,9 @@ def _transaction_input_layout(currency: str, year: str, month: str, theme: str |
     category_options = _transaction_category_options()
     currency_options = [{"label": ticker, "value": ticker} for ticker in config.UNIQUE_TICKERS]
     month_value = f"{year}-{str(month).zfill(2)}"
+    draft_records, draft_revision = _transaction_draft_snapshot_records(
+        month_value, None, None, None
+    )
 
     return html.Div(
         [
@@ -1774,6 +1814,7 @@ def _transaction_input_layout(currency: str, year: str, month: str, theme: str |
                             html.H2("Черновики транзакций", className="h5 mb-0"),
                             html.Div(
                                 [
+                                    dbc.Button("Обновить таблицу", id="transaction-reload-grid-button", color="secondary", outline=True, size="sm"),
                                     dbc.Button("Сохранить правки", id="transaction-save-grid-button", color="primary", outline=True, size="sm", disabled=read_only),
                                     dbc.Button("Удалить выбранные", id="transaction-delete-button", color="danger", outline=True, size="sm", disabled=read_only),
                                     dbc.Button("CSV", id="transaction-export-csv-button", color="secondary", outline=True, size="sm"),
@@ -1793,10 +1834,17 @@ def _transaction_input_layout(currency: str, year: str, month: str, theme: str |
                         ],
                         className="g-2 mb-3",
                     ),
+                    dbc.Alert(
+                        id="transaction-drafts-message",
+                        children="",
+                        color="secondary",
+                        is_open=True,
+                        className="mb-3 py-2",
+                    ),
                     _ag_grid_scroll(
                         dag.AgGrid(
                             id="transaction-drafts-grid",
-                            rowData=_transaction_draft_records(month_value, None, None, None),
+                            rowData=draft_records,
                             columnDefs=_transaction_draft_column_defs(category_options, list(config.UNIQUE_TICKERS)),
                             defaultColDef=_ag_grid_default_col_def(editable=not read_only),
                             dashGridOptions={
@@ -1810,6 +1858,7 @@ def _transaction_input_layout(currency: str, year: str, month: str, theme: str |
                             style=_ag_grid_style("640px"),
                         )
                     ),
+                    dcc.Store(id="transaction-drafts-revision", data=draft_revision),
                 ],
                 style=_section_style(theme),
             ),
@@ -2068,7 +2117,16 @@ def _transaction_month_options(selected_month: str | None = None) -> list[dict]:
 
 
 def _transaction_draft_records(month_filter, category_filter, status_filter, source_filter) -> list[dict]:
-    data = read_transaction_drafts()
+    records, _ = _transaction_draft_snapshot_records(
+        month_filter, category_filter, status_filter, source_filter
+    )
+    return records
+
+
+def _transaction_draft_snapshot_records(
+    month_filter, category_filter, status_filter, source_filter
+) -> tuple[list[dict], str]:
+    data, revision = read_transaction_drafts_snapshot()
     category_filter = None if category_filter in {None, "", "__all__"} else category_filter
     status_filter = None if status_filter in {None, "", "__all__"} else status_filter
     source_filter = None if source_filter in {None, "", "__all__"} else source_filter
@@ -2081,7 +2139,8 @@ def _transaction_draft_records(month_filter, category_filter, status_filter, sou
         data = data[data["status"] == str(status_filter)]
     if source_filter:
         data = data[data["source"] == str(source_filter)]
-    return data.sort_values(["date", "category", "comment"], kind="mergesort").to_dict("records")
+    records = data.sort_values(["date", "category", "comment"], kind="mergesort").to_dict("records")
+    return records, revision
 
 
 def _asset_input_records(year: str, month: str) -> list[dict]:
