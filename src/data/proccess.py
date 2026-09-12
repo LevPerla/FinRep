@@ -1,6 +1,15 @@
 import pandas as pd
 
 from src.data.get_finance import get_actual_fx_rate, get_rates, require_fx_rate
+from src.data.money import quantize_money_amount
+
+
+def round_money_values(values: pd.Series, *, field_name: str = "amount") -> pd.Series:
+    return values.map(
+        lambda value: value
+        if pd.isna(value)
+        else float(quantize_money_amount(value, field_name=field_name))
+    )
 
 
 def convert_transaction(
@@ -26,7 +35,7 @@ def convert_transaction(
     currency_to_convert = set(df_to_convert['Валюта'].unique()) - {to_curr}
 
     for curr_name in currency_to_convert:
-        curr_smpl = df_to_convert[df_to_convert['Валюта'] == curr_name]
+        curr_smpl = df_to_convert[df_to_convert['Валюта'] == curr_name].copy(deep=True)
         smpl_index = curr_smpl.index
         ticker = f'{curr_name}{to_curr}=X'
 
@@ -59,7 +68,11 @@ def convert_transaction(
         curr_smpl.index = smpl_index
         df_to_convert.loc[df_to_convert['Валюта'] == curr_name] = curr_smpl
             
-    return df_to_convert.round(2) if round_result else df_to_convert
+    if round_result:
+        df_to_convert[target_col] = round_money_values(
+            df_to_convert[target_col], field_name=target_col
+        )
+    return df_to_convert
 
 
 def _latest_rate(rates: pd.DataFrame | None, ticker: str):

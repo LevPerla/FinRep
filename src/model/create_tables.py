@@ -7,7 +7,7 @@ from src.data.get import get_investments, get_transactions, get_assets
 from src.data.debts import active_debt_balances
 from src.data.investment_calculations import current_investment_value
 from src.data.get_finance import get_actual_rates, get_act_moex, get_fx_rates, require_fx_rate
-from src.data.proccess import convert_transaction
+from src.data.proccess import convert_transaction, round_money_values
 
 
 def create_invest_tbl() -> (pd.DataFrame, pd.DataFrame):
@@ -311,7 +311,10 @@ def _get_asset_capital_by_month_cached(data_root: str, currency: str) -> pd.Data
         investment_value = current_investment_value(currency)
         if investment_value:
             result.loc[result.index.max(), 'Капитал по активам'] += investment_value
-    return result.round(2)
+    result['Капитал по активам'] = round_money_values(
+        result['Капитал по активам'], field_name='Капитал по активам'
+    )
+    return result
 
 
 def get_cost_distribution(currency, year, month=None):
@@ -522,7 +525,7 @@ def _convert_asset_values_as_of_snapshot(assets_df: pd.DataFrame, currency: str)
         if rate is None:
             require_fx_rate(rate, from_curr, currency, snapshot_date)
         values.loc[index] = values.loc[index] * rate
-    return values
+    return round_money_values(values, field_name='Значение')
 
 
 def _get_fx_rate_as_of(from_curr: str, to_curr: str, as_of_date) -> float | None:
