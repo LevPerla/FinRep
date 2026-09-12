@@ -118,7 +118,7 @@ def _get_balance_by_month_cached(data_root: str, currency: str) -> pd.DataFrame:
         # sell_df = convert_transaction(sell_df, to_curr=currency, target_col='Прибыль/убыток')
 
     all_stats_df = (transactions_df[transactions_df.Категория.isin(config.NOT_COST_COLS)]
-                    .pivot_table(values='Значение', index=['Дата'], columns=['Категория'], aggfunc=np.sum)
+                    .pivot_table(values='Значение', index=['Дата'], columns=['Категория'], aggfunc='sum')
                     .fillna(0)
                     .resample('M').sum()
                     )
@@ -463,7 +463,7 @@ def _get_month_transactions_cached(data_root, currency, year, month):
     
 
     month_tr_df = (smpl_tr_df
-                    .pivot_table(values='Значение', index=['Дата'], columns=['Категория'], aggfunc=np.sum)
+                    .pivot_table(values='Значение', index=['Дата'], columns=['Категория'], aggfunc='sum')
                     .fillna(0)
                     .resample('D').sum()
                     .reset_index()

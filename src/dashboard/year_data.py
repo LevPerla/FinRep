@@ -1,4 +1,3 @@
-import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 
@@ -200,8 +199,8 @@ def _income_cost_stats(year_balance: pd.DataFrame) -> pd.DataFrame:
         year_balance[["Доход", "Расход"]]
         .agg(
             {
-                "Доход": ["sum", "mean", np.median, np.std, np.min, np.max],
-                "Расход": ["sum", "mean", np.median, np.std, np.min, np.max],
+                "Доход": ["sum", "mean", "median", "std", "min", "max"],
+                "Расход": ["sum", "mean", "median", "std", "min", "max"],
             },
             axis=0,
         )
@@ -211,8 +210,8 @@ def _income_cost_stats(year_balance: pd.DataFrame) -> pd.DataFrame:
                 "mean": "Среднее",
                 "median": "Медиана",
                 "std": "Ст. отклонение",
-                "amin": "Минимум",
-                "amax": "Максимум",
+                "min": "Минимум",
+                "max": "Максимум",
             }
         )
         .reset_index()
