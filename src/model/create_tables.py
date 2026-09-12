@@ -6,7 +6,7 @@ from src import config
 from src.data.get import get_investments, get_transactions, get_assets
 from src.data.debts import active_debt_balances
 from src.data.investment_calculations import current_investment_value
-from src.data.get_finance import get_actual_rates, get_act_moex, get_fallback_rate, get_fx_rates, require_fx_rate
+from src.data.get_finance import get_actual_rates, get_act_moex, get_fx_rates, require_fx_rate
 from src.data.proccess import convert_transaction
 
 
@@ -537,13 +537,13 @@ def _get_fx_rate_as_of(from_curr: str, to_curr: str, as_of_date) -> float | None
     lookback_start = as_of - pd.Timedelta(days=7)
     rates = get_fx_rates(from_curr, to_curr, lookback_start, as_of)
     if rates.empty:
-        return get_fallback_rate(from_curr, to_curr)
+        return None
     values = pd.to_numeric(rates.iloc[:, 0], errors='coerce').dropna()
     if values.empty:
-        return get_fallback_rate(from_curr, to_curr)
+        return None
     values = values[values.index <= as_of]
     if values.empty:
-        return get_fallback_rate(from_curr, to_curr)
+        return None
     return float(values.iloc[-1])
 
 

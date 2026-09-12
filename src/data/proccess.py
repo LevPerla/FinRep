@@ -1,6 +1,6 @@
 import pandas as pd
 
-from src.data.get_finance import get_fallback_rate, get_rates, require_fx_rate
+from src.data.get_finance import get_actual_fx_rate, get_rates, require_fx_rate
 
 
 def convert_transaction(df_to_convert: pd.DataFrame, to_curr: str, target_col: str, use_current_rate: bool = False):
@@ -23,39 +23,28 @@ def convert_transaction(df_to_convert: pd.DataFrame, to_curr: str, target_col: s
         smpl_index = curr_smpl.index
         ticker = f'{curr_name}{to_curr}=X'
 
-        curr_rates = None
-        try:
-            curr_rates = get_rates(tickers=[ticker],
-                                   min_date=curr_smpl['Дата'].min(),
-                                   max_date=curr_smpl['Дата'].max())
-        except Exception as e:
-            logger.warning(f"Failed to get FX rates for {curr_name} to {to_curr}: {e}")
-
-        fallback_rate = get_fallback_rate(curr_name, to_curr)
         if use_current_rate:
-            latest_rate = _latest_rate(curr_rates, ticker)
-            rate_to_apply = latest_rate if latest_rate is not None else fallback_rate
-            if rate_to_apply is None:
-                require_fx_rate(rate_to_apply, curr_name, to_curr, curr_smpl['Дата'].max())
-            if latest_rate is None and fallback_rate is not None:
-                logger.warning(f"Using fallback rate for {curr_name} to {to_curr}: {fallback_rate}")
+            current_rate = get_actual_fx_rate(curr_name, to_curr)
+            rate_to_apply = require_fx_rate(current_rate, curr_name, to_curr)
             curr_smpl[target_col] = curr_smpl[target_col] * rate_to_apply
         else:
+            curr_rates = None
+            try:
+                curr_rates = get_rates(tickers=[ticker],
+                                       min_date=curr_smpl['Дата'].min(),
+                                       max_date=curr_smpl['Дата'].max())
+            except Exception as e:
+                logger.warning(f"Failed to get FX rates for {curr_name} to {to_curr}: {e}")
             if curr_rates is not None and not curr_rates.empty and ticker in curr_rates.columns:
                 curr_smpl = (curr_smpl.merge(curr_rates.reset_index().rename(columns={"index": "Дата",
                                                                                     "Date": "Дата"},
                                                                             errors='ignore'),
                                             on='Дата', how='left'))
-                if fallback_rate is not None:
-                    curr_smpl[ticker] = curr_smpl[ticker].fillna(fallback_rate)
                 if curr_smpl[ticker].isna().any():
                     missing_date = curr_smpl.loc[curr_smpl[ticker].isna(), 'Дата'].min()
                     require_fx_rate(None, curr_name, to_curr, missing_date)
                 curr_smpl[target_col] = curr_smpl[target_col] * curr_smpl[ticker]
                 curr_smpl.drop(ticker, axis=1, inplace=True)
-            elif fallback_rate is not None:
-                logger.warning(f"Using fallback rate for {curr_name} to {to_curr}: {fallback_rate}")
-                curr_smpl[target_col] = curr_smpl[target_col] * fallback_rate
             else:
                 require_fx_rate(None, curr_name, to_curr, curr_smpl['Дата'].min())
         

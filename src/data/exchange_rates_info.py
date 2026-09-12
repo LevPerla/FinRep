@@ -30,7 +30,7 @@ def get_exchange_rates_info(target_currency='RUB'):
                 rate_info = get_fx_rate_info(currency, target_currency)
                 rate = rate_info['rate']
                 if rate is None:
-                    rate_source = 'Недоступно'
+                    rate_source = rate_info['source']
                     rate_change = None
                 else:
                     rate_source = rate_info['source']

@@ -12,7 +12,7 @@ import requests
 from src import config
 from src.data.cache_invalidation import clear_valuation_caches
 from src.data.csv_storage import atomic_write_csv
-from src.data.get_finance import get_actual_fx_rate, get_fallback_rate, require_fx_rate
+from src.data.get_finance import get_actual_fx_rate, get_fx_rate_as_of, require_fx_rate
 from src.data.investments import latest_cached_prices, read_price_cache, write_price_cache
 
 
@@ -415,7 +415,11 @@ def calculate_crypto_positions(currency: str) -> pd.DataFrame:
         if pd.isna(latest_price):
             latest_price = 0.0
         price_currency = str(price_info.get("currency") or "USD").upper()
-        market_value = float(quantity) * float(latest_price) * _conversion_rate(price_currency, currency)
+        market_value = float(quantity) * float(latest_price) * _conversion_rate(
+            price_currency,
+            currency,
+            price_info.get("date"),
+        )
         rows.append(
             {
                 "ticker": ticker,
@@ -624,13 +628,15 @@ def _evm_rpc(chain: str, method: str, params: list, timeout: int):
     raise ValueError("all EVM RPC providers failed: " + " | ".join(errors))
 
 
-def _conversion_rate(from_currency: str, to_currency: str) -> float:
+def _conversion_rate(from_currency: str, to_currency: str, as_of_date=None) -> float:
     if from_currency == to_currency:
         return 1.0
-    rate = get_actual_fx_rate(from_currency, to_currency)
-    if rate is None:
-        rate = get_fallback_rate(from_currency, to_currency)
-    return require_fx_rate(rate, from_currency, to_currency)
+    rate = (
+        get_actual_fx_rate(from_currency, to_currency)
+        if as_of_date is None or pd.isna(as_of_date)
+        else get_fx_rate_as_of(from_currency, to_currency, as_of_date)
+    )
+    return require_fx_rate(rate, from_currency, to_currency, as_of_date)
 
 
 def _normalize_wallet_rows(data: pd.DataFrame) -> pd.DataFrame:

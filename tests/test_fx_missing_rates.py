@@ -18,7 +18,6 @@ def test_transaction_conversion_rejects_missing_rate(monkeypatch):
         ]
     )
     monkeypatch.setattr(proccess, "get_rates", lambda **_: pd.DataFrame())
-    monkeypatch.setattr(proccess, "get_fallback_rate", lambda *_: None)
 
     with pytest.raises(ValueError, match="Нет курса USD → RUB"):
         proccess.convert_transaction(transactions, "RUB", "Значение")
@@ -36,7 +35,6 @@ def test_monthly_balance_never_mixes_unconverted_currency(tmp_path, monkeypatch)
     monkeypatch.setattr(config, "DATA_PATH", str(tmp_path))
     monkeypatch.setattr(config, "DEBUG", False)
     monkeypatch.setattr(proccess, "get_rates", lambda **_: pd.DataFrame())
-    monkeypatch.setattr(proccess, "get_fallback_rate", lambda *_: None)
     clear_data_cache()
     create_tables.clear_table_cache()
 
@@ -60,7 +58,6 @@ def test_asset_capital_rejects_missing_rate(monkeypatch):
 @pytest.mark.parametrize("module", [investment_calculations, crypto])
 def test_portfolio_conversion_rejects_missing_rate(module, monkeypatch):
     monkeypatch.setattr(module, "get_actual_fx_rate", lambda *_: None)
-    monkeypatch.setattr(module, "get_fallback_rate", lambda *_: None)
 
     with pytest.raises(ValueError, match="Нет курса USD → RUB"):
         module._conversion_rate("USD", "RUB")

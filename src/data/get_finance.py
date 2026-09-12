@@ -20,6 +20,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 FX_CACHE_COLUMNS = ['date', 'currency', 'usd_rate', 'source', 'fetched_at']
+FX_MAX_AGE_DAYS = 7
 _FX_NETWORK_ENABLED = ContextVar("finrep_fx_network_enabled", default=False)
 _FX_CACHE_DF: dict[str, pd.DataFrame] = {}
 _CBR_SERIES_CACHE = {}
@@ -124,32 +125,54 @@ def get_fx_rates(from_curr, to_curr, min_date, max_date) -> pd.DataFrame:
     with np.errstate(divide='ignore', invalid='ignore'):
         rates = pd.DataFrame({ticker: usd_rates[from_curr] / usd_rates[to_curr]}, index=usd_rates.index)
     rates.index.name = 'Дата'
-    return rates.replace([np.inf, -np.inf], np.nan).ffill().bfill()
+    return rates.replace([np.inf, -np.inf], np.nan)
 
 
 def get_actual_fx_rate(from_curr, to_curr):
     """
     Return the latest known FX rate for a pair.
     """
-    today = pd.Timestamp(datetime.now().date())
-    rates = get_fx_rates(from_curr, to_curr, today, today)
+    return get_fx_rate_as_of(from_curr, to_curr, _current_fx_date())
+
+
+def get_fx_rate_as_of(from_curr, to_curr, as_of_date):
+    """Return the exact or last previous rate within the allowed seven-day window."""
+    as_of = _to_timestamp(as_of_date)
+    rates = get_fx_rates(from_curr, to_curr, as_of, as_of)
     if rates.empty:
         return None
     values = pd.to_numeric(rates.iloc[:, 0], errors='coerce').dropna()
     return float(values.iloc[-1]) if not values.empty else None
 
 
-def get_fx_rate_info(from_curr, to_curr, as_of_date=None, lookback_days=7) -> dict:
+def _current_fx_date() -> pd.Timestamp:
+    active_root = Path(config.active_data_path()).resolve()
+    sample_root = Path(config.SAMPLE_DATA_PATH).resolve()
+    if active_root == sample_root:
+        cache = _read_cache()
+        if not cache.empty:
+            return pd.Timestamp(cache['date'].max()).normalize()
+    return pd.Timestamp(datetime.now().date())
+
+
+def get_fx_rate_info(from_curr, to_curr, as_of_date=None, lookback_days=FX_MAX_AGE_DAYS) -> dict:
     """
     Return a cross-rate plus cache/provider metadata used to calculate it.
     """
-    as_of = _to_timestamp(as_of_date or datetime.now().date())
+    as_of = _to_timestamp(as_of_date) if as_of_date is not None else _current_fx_date()
     start = as_of - timedelta(days=lookback_days)
     from_curr = str(from_curr).upper()
     to_curr = str(to_curr).upper()
 
     rates = get_fx_rates(from_curr, to_curr, start, as_of)
+    legs = [
+        _usd_rate_metadata(from_curr, as_of, lookback_days),
+        _usd_rate_metadata(to_curr, as_of, lookback_days),
+    ]
+    source = _format_fx_source(legs)
     rate_series = pd.to_numeric(rates.iloc[:, 0], errors='coerce').dropna() if not rates.empty else pd.Series(dtype=float)
+    if any(leg.get('usd_rate') is None for leg in legs):
+        rate_series = pd.Series(dtype=float)
     if rate_series.empty:
         return {
             'from_currency': from_curr,
@@ -159,8 +182,8 @@ def get_fx_rate_info(from_curr, to_curr, as_of_date=None, lookback_days=7) -> di
             'previous_rate': None,
             'previous_rate_date': None,
             'change_pct': None,
-            'source': 'Недоступно',
-            'legs': [],
+            'source': source,
+            'legs': legs,
         }
 
     latest_date = pd.Timestamp(rate_series.index[-1]).normalize()
@@ -171,12 +194,6 @@ def get_fx_rate_info(from_curr, to_curr, as_of_date=None, lookback_days=7) -> di
     change_pct = None
     if previous_rate not in (None, 0):
         change_pct = (latest_rate - previous_rate) / previous_rate * 100
-
-    legs = [
-        _usd_rate_metadata(from_curr, latest_date),
-        _usd_rate_metadata(to_curr, latest_date),
-    ]
-    source = _format_fx_source(legs)
 
     return {
         'from_currency': from_curr,
@@ -586,7 +603,12 @@ def _series_from_cache(currency: str, min_date: pd.Timestamp, max_date: pd.Times
         return pd.Series(np.nan, index=full_index, dtype=float)
     values_for_fill = in_range[~in_range.index.duplicated(keep='last')]
     fill_index = values_for_fill.index.union(full_index).sort_values()
-    return values_for_fill.reindex(fill_index).ffill().bfill().reindex(full_index)
+    filled_values = values_for_fill.reindex(fill_index).ffill()
+    source_dates = pd.Series(values_for_fill.index, index=values_for_fill.index)
+    filled_dates = source_dates.reindex(fill_index).ffill()
+    ages = pd.Series(fill_index, index=fill_index) - filled_dates
+    fresh = ages <= pd.Timedelta(days=FX_MAX_AGE_DAYS)
+    return filled_values.where(fresh).reindex(full_index)
 
 
 def _missing_dates(currency: str, min_date: pd.Timestamp, max_date: pd.Timestamp) -> list[pd.Timestamp]:
@@ -640,7 +662,7 @@ def _latest_cached_usd_rate(currency: str):
     return float(values.iloc[-1]) if not values.empty else None
 
 
-def _usd_rate_metadata(currency: str, as_of_date: pd.Timestamp) -> dict:
+def _usd_rate_metadata(currency: str, as_of_date: pd.Timestamp, max_age_days=FX_MAX_AGE_DAYS) -> dict:
     currency = str(currency).upper()
     as_of = _to_timestamp(as_of_date)
     if currency == config.FX_BASE_CURRENCY:
@@ -673,10 +695,19 @@ def _usd_rate_metadata(currency: str, as_of_date: pd.Timestamp) -> dict:
         }
 
     row = currency_cache.iloc[-1]
+    rate_date = pd.Timestamp(row['date']).normalize()
+    if as_of - rate_date > pd.Timedelta(days=max_age_days):
+        return {
+            'currency': currency,
+            'usd_rate': None,
+            'rate_date': rate_date,
+            'source': f"stale:{row['source']}",
+            'fetched_at': str(row['fetched_at']) if pd.notna(row['fetched_at']) else '',
+        }
     return {
         'currency': currency,
         'usd_rate': float(row['usd_rate']),
-        'rate_date': pd.Timestamp(row['date']).normalize(),
+        'rate_date': rate_date,
         'source': str(row['source']),
         'fetched_at': str(row['fetched_at']) if pd.notna(row['fetched_at']) else '',
     }
