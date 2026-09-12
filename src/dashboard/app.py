@@ -1,3 +1,4 @@
+import logging
 import os
 from datetime import datetime
 from io import BytesIO
@@ -31,6 +32,7 @@ from src.data.debts import (
 from src.data.importers.bank_pdf import (
     BANK_PDF_UPLOAD_LIMIT_LABEL,
     MAX_BANK_PDF_REQUEST_BYTES,
+    BankPdfError,
     parse_bank_upload_contents,
 )
 from src.data.importers.kaspi_pdf import save_kaspi_import_to_staging
@@ -65,6 +67,7 @@ DEFAULT_MONTH = datetime.now().strftime("%m")
 DEFAULT_FX_NETWORK_ENABLED = False
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 ASSETS_FOLDER = PROJECT_ROOT / "assets"
+logger = logging.getLogger(__name__)
 DashboardTab = tuple[str, str, str]
 MAIN_DASHBOARD_TABS: list[DashboardTab] = [
     ("main", "Основной отчет", "Главная"),
@@ -939,19 +942,34 @@ def register_callbacks(app: Dash) -> None:
     def preview_kaspi_pdf(contents, filename):
         if not contents:
             raise PreventUpdate
+        display_filename = _safe_upload_filename(filename)
         try:
             data = parse_bank_upload_contents(contents)
             internal_count = int(data["skip_reason"].eq("internal_transfer").sum()) if "skip_reason" in data else 0
             message = (
-                f"{filename or 'PDF'}: найдено строк {len(data)}, "
+                f"{display_filename}: найдено строк {len(data)}, "
                 f"к импорту {int(data['import_action'].eq('import').sum())}, "
                 f"skip {int(data['import_action'].eq('skip').sum())}, "
                 f"требуют решения {int(data['import_action'].eq('review').sum())}, "
                 f"внутренние переводы {internal_count}."
             )
             return _dataframe_records(data), _kaspi_import_column_defs(), message, "secondary"
-        except Exception as exc:
-            return [], _kaspi_import_column_defs(), str(exc), "danger"
+        except BankPdfError as exc:
+            logger.warning(
+                "Bank PDF upload rejected: filename=%r error=%s",
+                display_filename,
+                type(exc).__name__,
+                exc_info=True,
+            )
+            return [], _kaspi_import_column_defs(), f"{display_filename}: {exc}", "danger"
+        except Exception:
+            logger.exception("Unexpected bank PDF import failure: filename=%r", display_filename)
+            return (
+                [],
+                _kaspi_import_column_defs(),
+                f"{display_filename}: импорт не выполнен из-за внутренней ошибки.",
+                "danger",
+            )
 
     @app.callback(
         Output("kaspi-import-message", "children", allow_duplicate=True),
@@ -2138,6 +2156,11 @@ def _native_select_options(options: list[dict], placeholder: str, include_empty:
     if include_empty:
         return [{"label": placeholder, "value": "__all__"}, *normalized]
     return normalized
+
+
+def _safe_upload_filename(filename: str | None) -> str:
+    value = str(filename or "PDF").replace("\\", "/").rsplit("/", 1)[-1]
+    return " ".join(value.split()) or "PDF"
 
 
 def _transaction_category_options() -> list[dict]:

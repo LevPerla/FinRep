@@ -139,3 +139,85 @@ def test_upload_limit_error_clears_preview_without_writing(tmp_path, monkeypatch
     assert "максимум 8 байт" in result["kaspi-import-message"]["children"]
     after = sorted(path.relative_to(tmp_path) for path in tmp_path.rglob("*") if path.is_file())
     assert after == before
+
+
+def test_valid_unknown_pdf_is_reported_as_unsupported(monkeypatch):
+    first_page = Mock()
+    first_page.extract_text.return_value = "Unrecognized document"
+    monkeypatch.setattr(bank_pdf.pdfplumber, "open", Mock(return_value=_opened_pdf([first_page])))
+    monkeypatch.setattr(bank_pdf, "parse_kaspi_pdf_bytes", Mock(return_value=pd.DataFrame()))
+
+    with pytest.raises(bank_pdf.BankPdfUnsupportedError, match="не похож на поддерживаемую"):
+        bank_pdf.parse_bank_upload_contents(_contents(b"valid-unknown-pdf"))
+
+
+def test_recognized_statement_without_transactions_is_reported_as_empty(monkeypatch):
+    first_page = Mock()
+    first_page.extract_text.return_value = bank_pdf.OZON_MARKER
+    monkeypatch.setattr(bank_pdf.pdfplumber, "open", Mock(return_value=_opened_pdf([first_page])))
+    monkeypatch.setattr(bank_pdf, "parse_ozon_pdf_bytes", Mock(return_value=pd.DataFrame()))
+
+    with pytest.raises(bank_pdf.BankPdfEmptyError, match="операции в ней не найдены"):
+        bank_pdf.parse_bank_upload_contents(_contents(b"valid-empty-statement"))
+
+
+def test_malformed_pdf_is_reported_without_parser_details(monkeypatch):
+    monkeypatch.setattr(
+        bank_pdf.pdfplumber,
+        "open",
+        Mock(side_effect=RuntimeError("/Users/owner/private-statement.pdf: No /Root object")),
+    )
+
+    with pytest.raises(bank_pdf.BankPdfReadError) as error:
+        bank_pdf.parse_bank_upload_contents(_contents(b"malformed"))
+
+    assert str(error.value) == "Не удалось прочитать PDF. Проверь файл и попробуй снова."
+    assert "/Users/owner" not in str(error.value)
+
+
+def test_dashboard_hides_private_error_details_and_logs_diagnostics(
+    tmp_path, monkeypatch, caplog
+):
+    monkeypatch.setenv("FINREP_DASH_PASSWORD", "synthetic-password")
+    monkeypatch.setenv("FINREP_DASH_SECRET_KEY", "synthetic-key")
+    monkeypatch.setattr(config, "DATA_PATH", str(tmp_path))
+    from src.dashboard import app as dashboard_app
+
+    private_detail = "/Users/owner/private-statement.pdf: parser failure"
+    monkeypatch.setattr(
+        dashboard_app,
+        "parse_bank_upload_contents",
+        Mock(side_effect=RuntimeError(private_detail)),
+    )
+    app = dashboard_app.create_app()
+    client = app.server.test_client()
+    with client.session_transaction() as session:
+        session["authenticated"] = True
+        session["data_mode"] = "live"
+
+    key = next(key for key in app.callback_map if "kaspi-import-grid.rowData" in key)
+    callback = app.callback_map[key]
+    payload = {
+        "output": key,
+        "outputs": [
+            {"id": item.component_id, "property": item.component_property}
+            for item in callback["output"]
+        ],
+        "inputs": [{**item, "value": _contents(b"malformed")} for item in callback["inputs"]],
+        "state": [
+            {**item, "value": "/Users/owner/private-statement.pdf"}
+            for item in callback["state"]
+        ],
+        "changedPropIds": ["kaspi-upload.contents"],
+    }
+
+    with caplog.at_level("ERROR", logger="src.dashboard.app"):
+        response = client.post("/_dash-update-component", json=payload)
+
+    result = response.get_json()["response"]
+    message = result["kaspi-import-message"]["children"]
+    assert response.status_code == 200
+    assert result["kaspi-import-message"]["color"] == "danger"
+    assert message == "private-statement.pdf: импорт не выполнен из-за внутренней ошибки."
+    assert "/Users/owner" not in message
+    assert private_detail in caplog.text
