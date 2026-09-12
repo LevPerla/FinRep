@@ -1582,9 +1582,9 @@ def _runway_section(dataset: DashboardDataset, theme: str | None = None):
             _section_header(dataset),
             html.Div(
                 [
-                    card("Runway в месяцах", str(row.get("Runway, мес.", "не рассчитано"))),
-                    card("Runway в годах", str(row.get("Runway, лет", "не рассчитано"))),
-                    card("Капитал", str(row.get("Капитал", "не задано"))),
+                    card("Runway по cash-flow, месяцев", str(row.get("Runway, мес.", "не рассчитано"))),
+                    card("Runway по cash-flow, лет", str(row.get("Runway, лет", "не рассчитано"))),
+                    card("Капитал по cash-flow", str(row.get("Капитал по cash-flow", "не задано"))),
                     card("Средний расход/мес", str(row.get("Средний расход", "не задано"))),
                 ],
                 className="d-grid gap-3",

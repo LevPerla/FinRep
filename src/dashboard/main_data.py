@@ -168,9 +168,15 @@ def _cockpit_metrics(
     latest_row = balance.sort_index().tail(1).iloc[0]
     current_capital = _latest_number(balance, "Капитал по активам")
     capital_source = "assets"
+    capital_label = "Капитал по активам"
+    capital_detail = "Последний доступный snapshot активов"
+    runway_label = "Runway по активам"
     if pd.isna(current_capital):
         current_capital = _latest_number(balance, "Капитал")
         capital_source = "cash-flow"
+        capital_label = "Капитал по cash-flow"
+        capital_detail = "Накопленный cash-flow за доступную историю"
+        runway_label = "Runway по cash-flow"
 
     income = _row_number(selected_row, "Доход")
     expense = _row_number(selected_row, "Расход")
@@ -184,12 +190,12 @@ def _cockpit_metrics(
     period_detail = "выбранный месяц" if is_selected_month else "последний доступный месяц"
 
     rows = [
-        ("Капитал", current_capital, capital_source, "Последний доступный капитал по assets или cash-flow", "money"),
+        (capital_label, current_capital, capital_source, capital_detail, "money"),
         ("Доход месяца", income, "ok" if income > 0 else "empty", f"{period_label}, {period_detail}", "money"),
         ("Расход месяца", expense, "watch" if expense > avg_expense * 1.2 and avg_expense > 0 else "ok", f"{period_label}, средний расход 12м: {avg_expense:,.0f} {currency}", "money"),
         ("Cash-flow месяца", delta, "positive" if delta >= 0 else "negative", f"{period_label}: доход минус расход", "money"),
         ("Норма сбережений", savings_rate, _savings_rate_status(savings_rate), f"{period_label}: cash-flow / income", "percent"),
-        ("Runway", runway_months, _runway_status(runway_months), "Капитал / средний расход за последние 12 месяцев", "months"),
+        (runway_label, runway_months, _runway_status(runway_months), f"{capital_label} / средний расход за последние 12 месяцев", "months"),
         ("Расхождение с активами", asset_gap, _asset_gap_status(asset_gap, current_capital), "Последний assets snapshot минус cash-flow капитал", "money"),
         ("FX impact месяца", fx_impact, "positive" if fx_impact >= 0 else "negative", f"{period_label}: валютная переоценка", "money"),
     ]

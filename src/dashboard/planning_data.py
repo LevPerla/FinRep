@@ -74,7 +74,7 @@ def _build_planning_dashboard_data(
         ),
         "planning_runway": DashboardDataset(
             id="planning_runway",
-            title="Runway",
+            title="Runway по cash-flow",
             dataframe=runway,
             display_dataframe=_format_runway(runway, currency),
         ),
@@ -252,7 +252,7 @@ def _forecast_capital_source(balance: pd.DataFrame) -> str:
 
 def _runway(balance: pd.DataFrame) -> pd.DataFrame:
     if balance.empty:
-        return pd.DataFrame(columns=["Капитал", "Средний расход", "Runway, мес.", "Runway, лет", "Статус"])
+        return pd.DataFrame(columns=["Капитал по cash-flow", "Средний расход", "Runway, мес.", "Runway, лет", "Статус"])
 
     current_capital = _latest_value(balance, "Капитал")
     avg_expense = float(pd.to_numeric(balance["Расход"].tail(12), errors="coerce").mean())
@@ -267,7 +267,7 @@ def _runway(balance: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(
         [
             {
-                "Капитал": current_capital,
+                "Капитал по cash-flow": current_capital,
                 "Средний расход": avg_expense,
                 "Runway, мес.": runway_months,
                 "Runway, лет": runway_years,
@@ -396,7 +396,7 @@ def _format_money_columns(data: pd.DataFrame, currency: str, not_money_cols: lis
 
 def _format_runway(data: pd.DataFrame, currency: str) -> pd.DataFrame:
     display = data.copy(deep=True)
-    for column in ["Капитал", "Средний расход"]:
+    for column in ["Капитал по cash-flow", "Средний расход"]:
         display[column] = display[column].map(lambda value: _format_money(value, currency))
     display["Runway, мес."] = display["Runway, мес."].map(lambda value: "не рассчитано" if pd.isna(value) else f"{value:,.1f} мес.".replace(",", " "))
     display["Runway, лет"] = display["Runway, лет"].map(lambda value: "не рассчитано" if pd.isna(value) else f"{value:,.1f} лет".replace(",", " "))
