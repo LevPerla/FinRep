@@ -1938,14 +1938,14 @@ def _transaction_input_layout(currency: str, year: str, month: str, theme: str |
                             html.Div(
                                 [
                                     dbc.Button("Preview", id="transaction-preview-export-button", color="secondary", outline=True, size="sm"),
-                                    dbc.Button("Подтвердить экспорт", id="transaction-confirm-export-button", color="danger", outline=True, size="sm", disabled=read_only),
+                                    dbc.Button("Сохранить месяц", id="transaction-confirm-export-button", color="primary", outline=False, size="sm", disabled=read_only),
                                 ],
                                 className="d-flex flex-wrap gap-2",
                             ),
                         ],
                         className="d-flex justify-content-between align-items-center mb-3",
                     ),
-                    dbc.Alert(id="transaction-export-message", children="Preview покажет итоговый месячный CSV. Запись произойдет только после подтверждения.", color="secondary", is_open=True, className="mb-3 py-2"),
+                    dbc.Alert(id="transaction-export-message", children="Preview покажет итоговый месячный CSV. Запись произойдет только после нажатия «Сохранить месяц».", color="secondary", is_open=True, className="mb-3 py-2"),
                     _ag_grid_scroll(
                         dag.AgGrid(
                             id="transaction-export-preview-grid",

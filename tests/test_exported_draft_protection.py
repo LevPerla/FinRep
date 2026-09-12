@@ -154,3 +154,16 @@ def test_exported_grid_rows_are_read_only(exported_case):
     assert grid.defaultColDef["editable"]["function"] == (
         "params.data.status !== 'exported' && params.data.status !== 'archived'"
     )
+
+
+def test_month_save_is_presented_as_primary_non_destructive_action(exported_case):
+    from src.dashboard.app import _transaction_input_layout
+
+    layout = _transaction_input_layout("RUB", "2026", "09", "light")
+    button = _component(layout, "transaction-confirm-export-button")
+    message = _component(layout, "transaction-export-message")
+
+    assert button.children == "Сохранить месяц"
+    assert button.color == "primary"
+    assert button.outline is False
+    assert "«Сохранить месяц»" in message.children
