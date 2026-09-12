@@ -57,6 +57,10 @@ def test_authentication_protects_dash_but_not_healthcheck():
     assert b'id="toggle-password"' in login_html
     assert b'id="password-help-button"' in login_html
     assert b'id="password-help-modal"' in login_html
+    assert b"main { box-sizing: border-box;" in login_html
+    assert b"pageContent.inert = true" in login_html
+    assert b'event.key !== "Tab"' in login_html
+    assert b"last.focus()" in login_html
     assert b"FINREP_DASH_PASSWORD" in login_html
     assert b"FINREP_DASH_SECRET_KEY" in login_html
 
@@ -120,6 +124,111 @@ def test_test_mode_never_requires_password():
     assert desktop_labels["investments"] == "Инвестиции · Beta"
 
 
+def test_dashboard_filters_and_actions_are_inside_collapsible_settings():
+    app = create_app()
+    client = app.server.test_client()
+    client.post("/login", data={"data_mode": "test"})
+
+    layout = client.get("/_dash-layout").get_json()
+    settings = _layout_component(layout, "dashboard-settings")
+
+    assert settings is not None
+    assert settings["type"] == "Details"
+    assert settings["props"]["open"] is True
+    for component_id in (
+        "dashboard-currency",
+        "dashboard-year",
+        "dashboard-month",
+        "refresh-reports",
+        "refresh-fx-rates",
+        "theme-toggle",
+        "export-png",
+        "export-pdf",
+        "dashboard-logout-form",
+    ):
+        assert _layout_component(settings, component_id) is not None
+
+
+def test_mobile_navigation_has_four_primary_actions_and_a_more_menu():
+    from src.dashboard.app import _mobile_bottom_nav, _mobile_more_menu
+
+    nav = _mobile_bottom_nav()
+    menu = _mobile_more_menu()
+    primary_ids = ["mobile-tab-main", "mobile-tab-month", "mobile-tab-input", "mobile-tab-planning"]
+
+    for component_id in primary_ids + ["mobile-tab-more"]:
+        button = _layout_component(nav, component_id)
+        assert button is not None
+        assert button.type == "button"
+    assert getattr(_layout_component(nav, "mobile-tab-main"), "aria-pressed") == "true"
+    assert getattr(_layout_component(nav, "mobile-tab-more"), "aria-haspopup") == "dialog"
+    assert _layout_component(nav, "mobile-tab-year") is None
+    for component_id in ("mobile-more-year", "mobile-more-debts", "mobile-more-investments"):
+        assert _layout_component(menu, component_id) is not None
+    assert _layout_component(menu, "mobile-more-menu").placement == "bottom"
+
+
+def test_main_metrics_are_grouped_by_decision_priority():
+    from src.dashboard.app import _cockpit_section
+    from src.dashboard.main_data import DashboardDataset
+
+    metrics_data = [
+        ("capital", "Название капитала можно менять"),
+        ("monthly_income", "Название дохода можно менять"),
+        ("monthly_expense", "Название расхода можно менять"),
+        ("monthly_cash_flow", "Название потока можно менять"),
+        ("savings_rate", "Название нормы можно менять"),
+        ("runway", "Название запаса можно менять"),
+        ("asset_gap", "Название сверки можно менять"),
+        ("monthly_fx_revaluation", "Название переоценки можно менять"),
+    ]
+    metrics = pd.DataFrame(
+        [
+            {
+                "ID": metric_id,
+                "Показатель": name,
+                "Значение": str(index),
+                "Статус ID": "ok",
+                "Статус": "В норме",
+                "Детали": "detail",
+            }
+            for index, (metric_id, name) in enumerate(metrics_data)
+        ]
+    )
+    dataset = DashboardDataset(
+        id="cockpit_metrics",
+        title="Ключевые метрики",
+        dataframe=metrics,
+        display_dataframe=metrics,
+    )
+
+    section = _cockpit_section(dataset)
+    primary = _layout_component(section, "main-metrics-primary")
+    reconciliation = _layout_component(section, "main-metrics-reconciliation")
+    stability = _layout_component(section, "main-metrics-stability")
+
+    assert len(primary.children) == 4
+    assert [card.children[0].children for card in primary.children] == [name for _, name in metrics_data[:4]]
+    assert [card.children[0].children for card in reconciliation.children[1].children] == [name for _, name in metrics_data[6:]]
+    assert [card.children[0].children for card in stability.children[1].children] == [name for _, name in metrics_data[4:6]]
+    assert all("finrep-cockpit-card-compact" in card.className for card in reconciliation.children[1].children)
+    assert all("finrep-cockpit-ok" in card.className for card in primary.children)
+
+
+def test_dataset_header_uses_shared_visual_components():
+    from src.dashboard.app import _section_header
+    from src.dashboard.main_data import DashboardDataset
+
+    header = _section_header(
+        DashboardDataset(id="example", title="Пример", dataframe=pd.DataFrame())
+    )
+    download_button = header.children[1].children[0]
+
+    assert header.className == "finrep-section-header"
+    assert download_button.className == "finrep-section-action"
+    assert download_button.children == "XLSX"
+
+
 def test_month_summary_is_split_into_logical_groups():
     from src.dashboard.app import _month_summary_section
     from src.dashboard.main_data import DashboardDataset
@@ -174,6 +283,31 @@ def test_planning_goals_grid_does_not_force_empty_row_space():
     assert "min-height: 0 !important;" in css
 
 
+def test_mobile_charts_use_the_actual_container_width_without_css_zoom():
+    css = (Path(__file__).resolve().parents[1] / "assets" / "dashboard.css").read_text(encoding="utf-8")
+
+    assert ".finrep-chart-scroll .finrep-graph {" in css
+    assert "width: 100% !important;" in css
+    assert "width: 720px !important;" not in css
+    assert "zoom:" not in css
+
+
+def test_dashboard_chart_does_not_add_a_rangeslider_that_overlaps_mobile_labels():
+    from src.dashboard.main_data import _income_expense_figure
+
+    data = pd.DataFrame(
+        {
+            "Дата": pd.to_datetime(["2026-01-31", "2026-02-28"]),
+            "Доход": [100_000, 120_000],
+            "Расход": [80_000, 90_000],
+        }
+    )
+
+    figure = _income_expense_figure(data, "RUB")
+
+    assert figure.layout.xaxis.rangeslider.visible is None
+
+
 def test_month_transaction_rows_are_clickable():
     from src.dashboard.app import _report_table_section
     from src.dashboard.main_data import DashboardDataset
@@ -191,6 +325,42 @@ def test_month_transaction_rows_are_clickable():
 
     assert row is not None
     assert "finrep-report-row-clickable" in row.className
+    assert row.role == "button"
+    assert row.tabIndex == 0
+    assert row.title == "Открыть детализацию транзакций за день"
+
+    project_root = Path(__file__).resolve().parents[1]
+    keyboard_handler = (project_root / "assets" / "dashboardA11y.js").read_text(encoding="utf-8")
+    css = (project_root / "assets" / "dashboard.css").read_text(encoding="utf-8")
+    assert 'event.key === "Enter"' in keyboard_handler
+    assert 'event.code === "Space"' in keyboard_handler
+    assert ".finrep-report-row-clickable:focus" in css
+
+
+def test_manual_transaction_fields_have_persistent_labels_and_error_description():
+    from src.dashboard.app import _transaction_input_layout
+
+    layout = _transaction_input_layout("RUB", "2026", "05", "dark")
+    native_fields = {
+        "transaction-input-date": "Дата",
+        "transaction-input-amount": "Сумма",
+        "transaction-input-comment": "Комментарий",
+    }
+    for field_id, label_text in native_fields.items():
+        field = _layout_component(layout, field_id)
+        label = next(
+            component
+            for component in layout._traverse()
+            if getattr(component, "html_for", None) == field_id
+        )
+        assert label.children == label_text
+
+    assert _layout_component(layout, "transaction-input-category-label").children == "Категория"
+    assert _layout_component(layout, "transaction-input-currency-label").children == "Валюта"
+    adapter = (Path(__file__).resolve().parents[1] / "assets" / "dashboardA11y.js").read_text(encoding="utf-8")
+    assert 'setAttribute("aria-describedby", "transaction-input-message")' in adapter
+    assert 'control.setAttribute("aria-labelledby", `${id}-label${valueId}`)' in adapter
+    assert 'control.setAttribute("aria-describedby", "transaction-input-message")' in adapter
 
 
 def test_day_transaction_details_include_native_amount_and_comment(monkeypatch):

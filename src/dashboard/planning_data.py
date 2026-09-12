@@ -74,13 +74,13 @@ def _build_planning_dashboard_data(
         ),
         "planning_runway": DashboardDataset(
             id="planning_runway",
-            title="Runway по cash-flow",
+            title="Финансовый запас по денежному потоку",
             dataframe=runway,
             display_dataframe=_format_runway(runway, currency),
         ),
         "planning_fx_scenarios": DashboardDataset(
             id="planning_fx_scenarios",
-            title="FX-сценарии",
+            title="Валютные сценарии",
             dataframe=fx_scenarios,
             display_dataframe=_format_fx_scenarios(fx_scenarios, currency),
             figure=_fx_scenarios_figure(fx_scenarios, currency),
@@ -373,7 +373,7 @@ def _fx_scenarios_figure(data: pd.DataFrame, currency: str) -> go.Figure:
             ),
         )
     )
-    _apply_dashboard_chart_layout(fig, "FX-сценарии")
+    _apply_dashboard_chart_layout(fig, "Валютные сценарии")
     return fig
 
 

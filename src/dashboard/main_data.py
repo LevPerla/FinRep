@@ -9,7 +9,7 @@ from src.data.get import get_assets, get_transactions
 from src.data.exchange_rates_info import get_exchange_rates_info
 from src.data.get_finance import fx_network_mode, get_fx_rates, require_fx_rate
 from src.data.proccess import convert_transaction
-from src.model.create_tables import get_balance_by_month
+from src.model.create_tables import asset_valuation_dates, get_balance_by_month
 
 
 CHART_FONT_SIZE = 13
@@ -25,6 +25,19 @@ ASSET_ALLOCATION_COLORS = [
     "#8D985F",
     "#C4A35A",
 ]
+
+COCKPIT_STATUS_LABELS = {
+    "assets": "Источник: активы",
+    "cash-flow": "Источник: денежный поток",
+    "ok": "В норме",
+    "empty": "Нет данных",
+    "positive": "Положительный",
+    "negative": "Отрицательный",
+    "strong": "Высокий уровень",
+    "watch": "Стоит проверить",
+    "thin": "Низкий уровень",
+    "review": "Требует сверки",
+}
 
 
 @dataclass(frozen=True)
@@ -88,7 +101,7 @@ def _build_main_dashboard_data(
         ),
         "yearly_stats": DashboardDataset(
             id="yearly_stats",
-            title="Yearly Stats",
+            title="Итоги по годам",
             dataframe=yearly_stats,
             display_dataframe=_format_money_columns(
                 yearly_stats,
@@ -104,20 +117,20 @@ def _build_main_dashboard_data(
         ),
         "fx_rates": DashboardDataset(
             id="fx_rates",
-            title="FX Rates",
+            title="Курсы валют",
             dataframe=fx_info,
             display_dataframe=fx_info.copy(deep=True),
         ),
         "income_expense": DashboardDataset(
             id="income_expense",
-            title="Income and Expense",
+            title="Доходы и расходы",
             dataframe=income_expense,
             figure=_income_expense_figure(income_expense, currency),
             graph_config={"scrollZoom": False},
         ),
         "delta": DashboardDataset(
             id="delta",
-            title="Delta",
+            title="Денежный поток",
             dataframe=delta,
             figure=_delta_figure(delta, currency),
         ),
@@ -129,25 +142,25 @@ def _build_main_dashboard_data(
         ),
         "capital": DashboardDataset(
             id="capital",
-            title="Capital",
+            title="Динамика капитала",
             dataframe=capital,
             figure=_capital_figure(capital, currency),
         ),
         "fx_revaluation": DashboardDataset(
             id="fx_revaluation",
-            title="FX Revaluation",
+            title="Валютная переоценка",
             dataframe=fx_revaluation,
             figure=_fx_revaluation_figure(fx_revaluation, currency),
         ),
         "asset_currency_allocation": DashboardDataset(
             id="asset_currency_allocation",
-            title="Asset Currency Allocation",
+            title="Валютная структура активов",
             dataframe=asset_currency_allocation,
             figure=_asset_currency_allocation_figure(asset_currency_allocation),
         ),
         "fx_changes": DashboardDataset(
             id="fx_changes",
-            title="FX Changes",
+            title="Изменение курсов валют",
             dataframe=fx_changes,
             figure=_fx_changes_figure(fx_changes, currency),
         ),
@@ -160,7 +173,7 @@ def _cockpit_metrics(
     year: str | None,
     month: str | None,
 ) -> pd.DataFrame:
-    columns = ["Показатель", "Значение", "Статус", "Детали", "Тип"]
+    columns = ["ID", "Показатель", "Значение", "Статус", "Детали", "Тип"]
     if balance.empty:
         return pd.DataFrame(columns=columns)
 
@@ -169,14 +182,14 @@ def _cockpit_metrics(
     current_capital = _latest_number(balance, "Капитал по активам")
     capital_source = "assets"
     capital_label = "Капитал по активам"
-    capital_detail = "Последний доступный snapshot активов"
-    runway_label = "Runway по активам"
+    capital_detail = "Последний доступный снимок активов"
+    runway_label = "Финансовый запас по активам"
     if pd.isna(current_capital):
         current_capital = _latest_number(balance, "Капитал")
         capital_source = "cash-flow"
-        capital_label = "Капитал по cash-flow"
-        capital_detail = "Накопленный cash-flow за доступную историю"
-        runway_label = "Runway по cash-flow"
+        capital_label = "Капитал по денежному потоку"
+        capital_detail = "Накопленный денежный поток за доступную историю"
+        runway_label = "Финансовый запас по денежному потоку"
 
     income = _row_number(selected_row, "Доход")
     expense = _row_number(selected_row, "Расход")
@@ -188,16 +201,17 @@ def _cockpit_metrics(
     fx_impact = _row_number(selected_row, "Валютная переоценка")
     period_label = str(selected_period)
     period_detail = "выбранный месяц" if is_selected_month else "последний доступный месяц"
+    avg_expense_label = f"{avg_expense:,.0f}".replace(",", " ") + config.UNIQUE_TICKERS[currency]
 
     rows = [
-        (capital_label, current_capital, capital_source, capital_detail, "money"),
-        ("Доход месяца", income, "ok" if income > 0 else "empty", f"{period_label}, {period_detail}", "money"),
-        ("Расход месяца", expense, "watch" if expense > avg_expense * 1.2 and avg_expense > 0 else "ok", f"{period_label}, средний расход 12м: {avg_expense:,.0f} {currency}", "money"),
-        ("Cash-flow месяца", delta, "positive" if delta >= 0 else "negative", f"{period_label}: доход минус расход", "money"),
-        ("Норма сбережений", savings_rate, _savings_rate_status(savings_rate), f"{period_label}: cash-flow / income", "percent"),
-        (runway_label, runway_months, _runway_status(runway_months), f"{capital_label} / средний расход за последние 12 месяцев", "months"),
-        ("Расхождение с активами", asset_gap, _asset_gap_status(asset_gap, current_capital), "Последний assets snapshot минус cash-flow капитал", "money"),
-        ("FX impact месяца", fx_impact, "positive" if fx_impact >= 0 else "negative", f"{period_label}: валютная переоценка", "money"),
+        ("capital", capital_label, current_capital, capital_source, capital_detail, "money"),
+        ("monthly_income", "Доход месяца", income, "ok" if income > 0 else "empty", f"{period_label}, {period_detail}", "money"),
+        ("monthly_expense", "Расход месяца", expense, "watch" if expense > avg_expense * 1.2 and avg_expense > 0 else "ok", f"{period_label}, средний расход за 12 месяцев: {avg_expense_label}", "money"),
+        ("monthly_cash_flow", "Денежный поток месяца", delta, "positive" if delta >= 0 else "negative", f"{period_label}: доход минус расход", "money"),
+        ("savings_rate", "Норма сбережений", savings_rate, _savings_rate_status(savings_rate), f"{period_label}: денежный поток / доход", "percent"),
+        ("runway", runway_label, runway_months, _runway_status(runway_months), f"{capital_label} / средний расход за последние 12 месяцев", "months"),
+        ("asset_gap", "Расхождение с активами", asset_gap, _asset_gap_status(asset_gap, current_capital), "Последний снимок активов минус капитал по денежному потоку", "money"),
+        ("monthly_fx_revaluation", "Валютная переоценка месяца", fx_impact, "positive" if fx_impact >= 0 else "negative", f"{period_label}: изменение стоимости из-за курсов валют", "money"),
     ]
     return pd.DataFrame(rows, columns=columns)
 
@@ -270,6 +284,7 @@ def _asset_gap_status(asset_gap: float, capital) -> str:
 
 def _format_cockpit_metrics(data: pd.DataFrame, currency: str) -> pd.DataFrame:
     display = data.copy(deep=True)
+    display["Значение"] = display["Значение"].astype(object)
     for index, row in data.iterrows():
         value = row["Значение"]
         if row["Тип"] == "money":
@@ -278,6 +293,8 @@ def _format_cockpit_metrics(data: pd.DataFrame, currency: str) -> pd.DataFrame:
             display.loc[index, "Значение"] = "не рассчитано" if pd.isna(value) else f"{float(value):,.1f}%".replace(",", " ")
         elif row["Тип"] == "months":
             display.loc[index, "Значение"] = "не рассчитано" if pd.isna(value) else f"{float(value):,.1f} мес.".replace(",", " ")
+    display = display.rename(columns={"Статус": "Статус ID"})
+    display["Статус"] = display["Статус ID"].map(COCKPIT_STATUS_LABELS).fillna(display["Статус ID"])
     return display.drop(columns=["Тип"])
 
 
@@ -375,7 +392,7 @@ def _income_expense_figure(data: pd.DataFrame, currency: str) -> go.Figure:
             line=dict(color="firebrick", width=2),
         )
     )
-    _apply_dashboard_chart_layout(fig, "Динамика доходов и расходов", range_slider=True)
+    _apply_dashboard_chart_layout(fig, "Динамика доходов и расходов")
     return fig
 
 
@@ -384,11 +401,11 @@ def _delta_figure(data: pd.DataFrame, currency: str) -> go.Figure:
         go.Bar(
             x=_month_start_dates(data),
             y=data["Дельта"],
-            name="Дельта",
+            name="Доход минус расход",
             hovertemplate="%{x|%Y-%m}<br>%{y:,.0f}<extra></extra>",
         )
     )
-    _apply_dashboard_chart_layout(fig, "Дельты", range_slider=True)
+    _apply_dashboard_chart_layout(fig, "Денежный поток")
     fig.update_layout(annotations=_important_delta_annotations(data, currency, max_labels=6))
     return fig
 
@@ -415,7 +432,7 @@ def _savings_rate_figure(data: pd.DataFrame) -> go.Figure:
     )
     fig.add_hline(y=0, line_dash="dot", line_color="rgba(120,120,120,0.7)")
     fig.add_hline(y=30, line_dash="dash", line_color="rgba(46,139,87,0.55)")
-    _apply_dashboard_chart_layout(fig, "Динамика нормы сбережений", range_slider=True)
+    _apply_dashboard_chart_layout(fig, "Динамика нормы сбережений")
     fig.update_yaxes(ticksuffix="%", range=[0, 100])
     return fig
 
@@ -428,7 +445,7 @@ def _capital_figure(data: pd.DataFrame, currency: str) -> go.Figure:
             x=x_dates,
             y=data["Капитал"],
             mode="lines+markers+text",
-            name="Капитал cash-flow",
+            name="Капитал по денежному потоку",
             text=_sparse_money_labels(data["Капитал"], currency, max_labels=7),
             textposition="top center",
             line=dict(color="green", width=2),
@@ -445,7 +462,7 @@ def _capital_figure(data: pd.DataFrame, currency: str) -> go.Figure:
                 connectgaps=False,
             )
         )
-    _apply_dashboard_chart_layout(fig, "Динамика капитала", range_slider=True)
+    _apply_dashboard_chart_layout(fig, "Динамика капитала")
     max_value = pd.to_numeric(data[["Капитал", "Капитал по активам"]].stack(), errors="coerce").max() if "Капитал по активам" in data.columns else pd.to_numeric(data["Капитал"], errors="coerce").max()
     if pd.notna(max_value) and max_value > 0:
         fig.update_layout(
@@ -473,7 +490,7 @@ def _fx_revaluation_figure(data: pd.DataFrame, currency: str) -> go.Figure:
             hovertemplate="%{x|%Y-%m}<br>%{y:,.0f}<extra></extra>",
         )
     )
-    _apply_dashboard_chart_layout(fig, "Валютная переоценка", range_slider=True)
+    _apply_dashboard_chart_layout(fig, "Валютная переоценка")
     fig.update_layout(yaxis_title=config.UNIQUE_TICKERS[currency])
     return fig
 
@@ -518,6 +535,7 @@ def _asset_currency_allocation_data_cached(data_root: str, currency: str) -> pd.
         month=assets["Месяц"].astype(int),
         freq="M",
     ).to_timestamp(how="end").normalize()
+    assets["Дата оценки"] = asset_valuation_dates(assets)
     assets["Значение"] = pd.to_numeric(assets["Значение"], errors="coerce").fillna(0.0)
     assets["Валюта"] = assets["Валюта"].astype(str).str.upper()
     assets["value_in_target"] = _convert_asset_allocation_values(assets, currency)
@@ -538,7 +556,8 @@ def _asset_currency_allocation_data_cached(data_root: str, currency: str) -> pd.
 
 def _convert_asset_allocation_values(assets: pd.DataFrame, currency: str) -> pd.Series:
     values = assets["Значение"].copy()
-    for (from_currency, snapshot_date), index in assets.groupby(["Валюта", "Дата"]).groups.items():
+    valuation_column = "Дата оценки" if "Дата оценки" in assets.columns else "Дата"
+    for (from_currency, snapshot_date), index in assets.groupby(["Валюта", valuation_column]).groups.items():
         from_currency = str(from_currency).upper()
         if from_currency == currency:
             continue
@@ -562,7 +581,7 @@ def _fx_rate_as_of(from_currency: str, to_currency: str, as_of_date) -> float | 
 def _asset_currency_allocation_figure(data: pd.DataFrame) -> go.Figure:
     fig = go.Figure()
     if data.empty or "Дата" not in data.columns:
-        _apply_dashboard_chart_layout(fig, "Динамика аллокации активов по валютам", range_slider=True)
+        _apply_dashboard_chart_layout(fig, "Динамика аллокации активов по валютам")
         return fig
 
     x_dates = pd.to_datetime(data["Дата"])
@@ -578,7 +597,7 @@ def _asset_currency_allocation_figure(data: pd.DataFrame) -> go.Figure:
             )
         )
 
-    _apply_dashboard_chart_layout(fig, "Динамика аллокации активов по валютам", range_slider=True)
+    _apply_dashboard_chart_layout(fig, "Динамика аллокации активов по валютам")
     fig.update_layout(barmode="stack", yaxis=dict(range=[0, 100], ticksuffix="%"))
     return fig
 
@@ -586,7 +605,7 @@ def _asset_currency_allocation_figure(data: pd.DataFrame) -> go.Figure:
 def _fx_changes_figure(data: pd.DataFrame, currency: str) -> go.Figure:
     fig = go.Figure()
     if data.empty or "Дата" not in data.columns:
-        _apply_dashboard_chart_layout(fig, "Динамика курсов валют", range_slider=True)
+        _apply_dashboard_chart_layout(fig, "Динамика курсов валют")
         return fig
 
     x_dates = pd.to_datetime(data["Дата"])
@@ -603,7 +622,7 @@ def _fx_changes_figure(data: pd.DataFrame, currency: str) -> go.Figure:
             )
         )
 
-    _apply_dashboard_chart_layout(fig, "Динамика курсов валют", range_slider=True)
+    _apply_dashboard_chart_layout(fig, "Динамика курсов валют")
     fig.update_layout(yaxis_title=f"1 валюта в {currency}")
     return fig
 
@@ -753,16 +772,11 @@ def _important_delta_annotations(data: pd.DataFrame, currency: str, max_labels: 
     return annotations
 
 
-def _apply_dashboard_chart_layout(fig: go.Figure, title: str, range_slider: bool = False) -> None:
+def _apply_dashboard_chart_layout(fig: go.Figure, title: str) -> None:
     xaxis = dict(
         tickfont=dict(size=CHART_FONT_SIZE),
         fixedrange=False,
     )
-    if range_slider:
-        xaxis.update(
-            rangeslider=dict(visible=True, thickness=0.08),
-        )
-
     fig.update_layout(
         title=dict(text=title, font=dict(size=CHART_TITLE_SIZE)),
         autosize=True,

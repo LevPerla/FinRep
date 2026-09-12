@@ -19,7 +19,7 @@ LOGIN_TEMPLATE = """
   <style>
     :root { color-scheme: dark; font-family: system-ui, sans-serif; }
     body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: #111827; color: #e5e7eb; }
-    main { width: min(360px, calc(100% - 32px)); padding: 28px; border: 1px solid #374151; border-radius: 14px; background: #1f2937; box-shadow: 0 20px 45px #0005; }
+    main { box-sizing: border-box; width: min(360px, calc(100% - 32px)); padding: 28px; border: 1px solid #374151; border-radius: 14px; background: #1f2937; box-shadow: 0 20px 45px #0005; }
     h1 { margin: 0 0 22px; font-size: 1.5rem; }
     label { display: block; font-weight: 600; }
     .password-label-row { display: flex; align-items: center; gap: 7px; margin: 14px 0 6px; }
@@ -113,13 +113,19 @@ LOGIN_TEMPLATE = """
     const helpButton = document.getElementById("password-help-button");
     const helpModal = document.getElementById("password-help-modal");
     const helpClose = document.getElementById("password-help-close");
+    const pageContent = document.querySelector("main");
+    const helpFocusableSelector = "button:not([disabled]), a[href], input:not([disabled]), [tabindex]:not([tabindex='-1'])";
     const closeHelp = () => {
       helpModal.hidden = true;
+      pageContent.inert = false;
+      pageContent.removeAttribute("aria-hidden");
       helpButton.setAttribute("aria-expanded", "false");
       helpButton.focus();
     };
     helpButton.addEventListener("click", () => {
       helpModal.hidden = false;
+      pageContent.inert = true;
+      pageContent.setAttribute("aria-hidden", "true");
       helpButton.setAttribute("aria-expanded", "true");
       helpClose.focus();
     });
@@ -127,7 +133,22 @@ LOGIN_TEMPLATE = """
     document.getElementById("password-help-done").addEventListener("click", closeHelp);
     document.querySelector("[data-close-password-help]").addEventListener("click", closeHelp);
     document.addEventListener("keydown", (event) => {
-      if (event.key === "Escape" && !helpModal.hidden) closeHelp();
+      if (helpModal.hidden) return;
+      if (event.key === "Escape") {
+        closeHelp();
+        return;
+      }
+      if (event.key !== "Tab") return;
+      const focusable = [...helpModal.querySelectorAll(helpFocusableSelector)];
+      const first = focusable[0];
+      const last = focusable.at(-1);
+      if (event.shiftKey && (document.activeElement === first || !helpModal.contains(document.activeElement))) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
     });
   </script>
 </body>
