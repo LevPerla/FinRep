@@ -215,6 +215,20 @@ def test_main_metrics_are_grouped_by_decision_priority():
     assert all("finrep-cockpit-ok" in card.className for card in primary.children)
 
 
+def test_dataset_header_uses_shared_visual_components():
+    from src.dashboard.app import _section_header
+    from src.dashboard.main_data import DashboardDataset
+
+    header = _section_header(
+        DashboardDataset(id="example", title="Пример", dataframe=pd.DataFrame())
+    )
+    download_button = header.children[1].children[0]
+
+    assert header.className == "finrep-section-header"
+    assert download_button.className == "finrep-section-action"
+    assert download_button.children == "XLSX"
+
+
 def test_month_summary_is_split_into_logical_groups():
     from src.dashboard.app import _month_summary_section
     from src.dashboard.main_data import DashboardDataset

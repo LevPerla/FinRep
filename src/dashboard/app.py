@@ -3620,13 +3620,14 @@ def _section_header(dataset: DashboardDataset):
                         color="secondary",
                         outline=True,
                         size="sm",
+                        className="finrep-section-action",
                     ),
                     dcc.Download(id={"type": "dataset-download", "dataset_id": dataset.id}),
                 ],
                 className="d-flex gap-2",
             ),
         ],
-        className="d-flex justify-content-between align-items-center mb-3",
+        className="finrep-section-header",
     )
 
 

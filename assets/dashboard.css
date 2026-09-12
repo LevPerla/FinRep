@@ -15,11 +15,27 @@ body {
 }
 
 .finrep-theme-light {
+  --finrep-surface: #ffffff;
+  --finrep-surface-subtle: #f8fafc;
+  --finrep-border: #d7dee7;
+  --finrep-text: #212529;
+  --finrep-muted: #64748b;
+  --finrep-heading: #172033;
+  --finrep-focus: #2563eb;
+  --finrep-shadow: 0 1px 2px rgba(15, 23, 42, 0.06);
   background: #ffffff;
   color: #212529;
 }
 
 .finrep-theme-dark {
+  --finrep-surface: #34373a;
+  --finrep-surface-subtle: #25282b;
+  --finrep-border: #555b62;
+  --finrep-text: #dcdcdc;
+  --finrep-muted: #a9b7c6;
+  --finrep-heading: #f1f3f5;
+  --finrep-focus: #62a8ff;
+  --finrep-shadow: 0 1px 2px rgba(0, 0, 0, 0.24);
   background: #2b2b2b;
   color: #a9b7c6;
 }
@@ -1781,5 +1797,190 @@ body {
   #export-png,
   #export-pdf {
     grid-column: span 3;
+  }
+}
+
+/* Shared visual language. Keep this final in the cascade until SIM-05 removes
+   the older component-specific overrides above. */
+.finrep-section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.finrep-section-header h2 {
+  color: var(--finrep-heading);
+  font-weight: 700;
+  line-height: 1.25;
+}
+
+.finrep-shell .btn {
+  min-height: 36px;
+  border-radius: 8px;
+  font-weight: 600;
+  transition: background-color 140ms ease, border-color 140ms ease, color 140ms ease, box-shadow 140ms ease;
+}
+
+.finrep-shell .btn:focus-visible,
+.finrep-shell .form-control:focus-visible,
+.finrep-shell .dashboard-settings-summary:focus-visible {
+  outline: 3px solid var(--finrep-focus);
+  outline-offset: 2px;
+  box-shadow: none;
+}
+
+.finrep-shell .btn:disabled,
+.finrep-shell .btn.disabled {
+  opacity: 0.48;
+}
+
+.finrep-section-action {
+  flex: 0 0 auto;
+  min-width: 58px;
+  padding-right: 10px;
+  padding-left: 10px;
+  letter-spacing: 0.02em;
+}
+
+.finrep-theme-light .btn-outline-secondary {
+  color: #475569;
+  border-color: #94a3b8;
+}
+
+.finrep-theme-light .btn-outline-secondary:hover,
+.finrep-theme-light .btn-outline-secondary:active {
+  color: #172033;
+  background: #eef2f6;
+  border-color: #64748b;
+}
+
+.finrep-theme-dark .btn-outline-secondary {
+  color: #c5d0dc !important;
+  border-color: #6f7882 !important;
+}
+
+.finrep-theme-dark .btn-outline-secondary:hover,
+.finrep-theme-dark .btn-outline-secondary:active {
+  color: #ffffff !important;
+  background: #3f454b !important;
+  border-color: #8a96a3 !important;
+}
+
+.finrep-theme-dark .btn-outline-primary {
+  color: #9dccf5 !important;
+  border-color: #6897bb !important;
+}
+
+.finrep-theme-dark .btn-outline-primary:hover,
+.finrep-theme-dark .btn-outline-primary:active {
+  color: #ffffff !important;
+  background: #416983 !important;
+  border-color: #8ab6d6 !important;
+}
+
+.dashboard-settings-summary {
+  min-height: 44px;
+  color: var(--finrep-muted);
+  background: var(--finrep-surface);
+  border-color: var(--finrep-border);
+  border-radius: 8px;
+}
+
+.dashboard-settings-summary:hover,
+.dashboard-settings[open] .dashboard-settings-summary {
+  color: var(--finrep-heading);
+  background: var(--finrep-surface-subtle);
+  border-color: #94a3b8;
+}
+
+.dashboard-settings-icon {
+  display: inline-grid;
+  width: 20px;
+  height: 20px;
+  place-items: center;
+}
+
+.finrep-theme-dark .dashboard-settings-summary:hover,
+.finrep-theme-dark .dashboard-settings[open] .dashboard-settings-summary {
+  border-color: #78838e;
+}
+
+.finrep-cockpit-card,
+.finrep-main-metric-group {
+  border-color: var(--finrep-border);
+  border-radius: 10px;
+  box-shadow: var(--finrep-shadow);
+}
+
+.finrep-cockpit-card,
+.finrep-theme-dark .finrep-cockpit-card {
+  background: var(--finrep-surface);
+}
+
+.finrep-main-metric-group {
+  background: var(--finrep-surface-subtle);
+}
+
+.finrep-cockpit-label,
+.finrep-cockpit-detail {
+  color: var(--finrep-muted);
+  opacity: 1;
+}
+
+.finrep-cockpit-status {
+  color: var(--finrep-muted);
+  letter-spacing: 0.01em;
+  text-transform: none;
+  opacity: 1;
+}
+
+.finrep-cockpit-value {
+  color: var(--finrep-heading);
+  font-variant-numeric: tabular-nums;
+}
+
+.finrep-report-table-cap,
+.finrep-fx-table,
+.finrep-ag-grid .ag-root-wrapper {
+  border-color: var(--finrep-border);
+  border-radius: 10px;
+  box-shadow: var(--finrep-shadow);
+}
+
+.finrep-shell .form-control,
+.finrep-shell .dash-dropdown .Select-control,
+.finrep-shell .dash-dropdown .Select__control {
+  border-radius: 8px !important;
+}
+
+.finrep-shell .alert {
+  border-radius: 10px;
+}
+
+.finrep-shell .nav-tabs .nav-link {
+  padding: 10px 16px;
+  border-radius: 8px 8px 0 0;
+  font-weight: 600;
+}
+
+@media (max-width: 768px) {
+  .finrep-section-header {
+    align-items: flex-start;
+    gap: 8px;
+  }
+
+  .finrep-section-header h2 {
+    padding-top: 7px;
+  }
+
+  .finrep-shell .btn,
+  .finrep-section-action {
+    min-height: 44px;
+  }
+
+  .finrep-cockpit-card {
+    padding: 16px;
   }
 }
