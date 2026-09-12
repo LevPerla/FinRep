@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+from decimal import Decimal, InvalidOperation
 from math import isfinite
 from pathlib import Path
 
@@ -10,6 +11,7 @@ import pandas as pd
 from src import config
 from src.data.cache_invalidation import clear_valuation_caches
 from src.data.csv_storage import atomic_write_csv
+from src.data.money import format_money_amount
 
 
 TRANSACTION_COLUMNS = [
@@ -145,6 +147,7 @@ def write_price_cache(data: pd.DataFrame, path: str | Path | None = None) -> Non
     normalized = normalized[PRICE_CACHE_COLUMNS].fillna("")
     normalized["ticker"] = normalized["ticker"].astype(str).str.strip().str.upper()
     normalized["currency"] = normalized["currency"].astype(str).str.strip().str.upper()
+    normalized["price"] = normalized["price"].apply(_normalize_decimal)
     for row_number, price in enumerate(normalized["price"], start=2):
         if _to_float(price) is None:
             raise ValueError(f"row {row_number}: price must be finite")
@@ -289,7 +292,7 @@ def normalize_investment_transactions(data: pd.DataFrame) -> pd.DataFrame:
     normalized["quantity"] = normalized["quantity"].apply(_normalize_decimal)
     normalized["price"] = normalized["price"].apply(_normalize_decimal)
     normalized["currency"] = normalized["currency"].astype(str).str.strip().str.upper()
-    normalized["fee"] = normalized["fee"].replace("", "0").apply(_normalize_decimal)
+    normalized["fee"] = normalized["fee"].replace("", "0").apply(_normalize_investment_fee)
     normalized["account"] = normalized["account"].astype(str).str.strip()
     normalized["comment"] = normalized["comment"].astype(str).str.strip()
     return normalized
@@ -386,7 +389,16 @@ def _format_date(value) -> str:
 
 
 def _normalize_decimal(value) -> str:
-    return str(value).strip().replace(",", ".").replace("\\xa0", "").replace("\xa0", "")
+    return str(value).strip().replace(" ", "").replace("\u00a0", "").replace(",", ".")
+
+
+def _normalize_investment_fee(value) -> str:
+    normalized = _normalize_decimal(value)
+    try:
+        return format_money_amount(normalized, field_name="fee")
+    except ValueError:
+        # Preserve invalid input so the validator can report the row and field.
+        return normalized
 
 
 def _is_positive_number(value) -> bool:
@@ -401,9 +413,10 @@ def _is_non_negative_number(value) -> bool:
 
 def _to_float(value) -> float | None:
     try:
-        parsed = float(_normalize_decimal(value))
-        return parsed if isfinite(parsed) else None
-    except (TypeError, ValueError):
+        parsed = Decimal(_normalize_decimal(value))
+        converted = float(parsed)
+        return converted if parsed.is_finite() and isfinite(converted) else None
+    except (InvalidOperation, OverflowError, TypeError, ValueError):
         return None
 
 
