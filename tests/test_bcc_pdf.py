@@ -26,11 +26,15 @@ def test_parse_bcc_statement_includes_pending_transactions(tmp_path, monkeypatch
     ].iloc[0]
     assert pending["category"] != "Доход"
     assert pending["comment"] == 'TOO "KS KOMPANI"'
+    assert pending["bank_status"] == "pending"
+    assert pending["bank_reference"] == "SYN-BCC-002"
 
     cafe = data.loc[data["details"].eq("Purchase ARYSTAN CAFE")].iloc[0]
     assert cafe["date"] == "2026-07-05"
     assert cafe["amount"] == 1600.0
     assert cafe["category"] != "Доход"
+    assert cafe["bank_status"] == "posted"
+    assert cafe["bank_reference"] == "SYN-BCC-001"
 
 
 def test_parse_russian_bcc_account_statement_row():
@@ -52,4 +56,6 @@ def test_parse_russian_bcc_account_statement_row():
         "signed_amount": -1135.43,
         "currency": "EUR",
         "details": "Retail. 26.07.2026 00:00:00, JPN, Tokyo, Trip.com, Карта: 446375******8407",
+        "bank_status": "posted",
+        "bank_reference": "",
     }

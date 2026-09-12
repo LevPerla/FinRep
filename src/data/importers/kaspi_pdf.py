@@ -12,7 +12,11 @@ import pdfplumber
 
 from src import config
 from src.data.get import get_transactions
-from src.data.staging import DRAFT_COLUMNS, append_transaction_draft_rows, read_transaction_drafts
+from src.data.staging import (
+    DRAFT_COLUMNS,
+    append_transaction_draft_rows,
+    read_transaction_drafts_snapshot,
+)
 
 KASPI_SOURCE = "kaspi_pdf"
 TRANSACTION_RE = re.compile(
@@ -90,6 +94,13 @@ def _import_frame_from_rows(
     data["comment"] = data["details"].map(_clean_comment)
     data["source"] = source
     data["source_id"] = _source_ids(data, statement_id or _rows_statement_id(rows))
+    if "bank_status" not in data.columns:
+        data["bank_status"] = "posted"
+    data["bank_status"] = data["bank_status"].replace("", "posted").astype(str).str.lower()
+    if "bank_reference" not in data.columns:
+        data["bank_reference"] = ""
+    if "bank_account_id" not in data.columns:
+        data["bank_account_id"] = ""
     data["status"] = "draft"
     data = _add_duplicate_flags(data, source)
     data = _sort_import_preview(data)
@@ -134,6 +145,18 @@ def save_kaspi_import_to_staging(import_rows: list[dict], path: str | Path | Non
         )
 
     duplicate_mask = _as_bool_series(incoming["duplicate_in_staging"])
+    current_drafts, _ = read_transaction_drafts_snapshot(path)
+    current_draft_keys = set(
+        zip(
+            current_drafts["source"].astype(str),
+            current_drafts["source_id"].astype(str),
+        )
+    )
+    duplicate_mask = duplicate_mask | incoming.apply(
+        lambda row: (str(row["source"]), str(row["source_id"]))
+        in current_draft_keys,
+        axis=1,
+    )
     duplicate_mask = duplicate_mask | incoming["skip_reason"].astype(str).eq(
         "internal_transfer"
     )
@@ -143,11 +166,27 @@ def save_kaspi_import_to_staging(import_rows: list[dict], path: str | Path | Non
         return {"accepted_rows": 0, "skipped_rows": int(len(incoming))}
 
     draft_rows = accepted[DRAFT_COLUMNS].copy(deep=True)
-    result = append_transaction_draft_rows(draft_rows, path)
-    return {
+    revisions = set(incoming["staging_revision"].astype(str))
+    if len(revisions) != 1 or not next(iter(revisions)):
+        raise ValueError("Preview не содержит ревизию staging: построй Preview заново.")
+    replacements = {
+        (str(row["source"]), str(row["source_id"])): str(row["replaces_source_id"])
+        for _, row in accepted.iterrows()
+        if str(row["replaces_source_id"])
+    }
+    result = append_transaction_draft_rows(
+        draft_rows,
+        path,
+        expected_revision=next(iter(revisions)),
+        pending_replacements=replacements,
+    )
+    response = {
         "accepted_rows": result["accepted_rows"],
         "skipped_rows": int(duplicate_mask.sum()) + result["skipped_rows"],
     }
+    if result["replaced_pending_rows"]:
+        response["replaced_pending_rows"] = result["replaced_pending_rows"]
+    return response
 
 
 
@@ -257,11 +296,16 @@ def _rows_statement_id(rows: list[dict]) -> str:
 
 def _add_duplicate_flags(data: pd.DataFrame, source: str = KASPI_SOURCE) -> pd.DataFrame:
     result = data.copy(deep=True)
-    existing_drafts = read_transaction_drafts()
+    existing_drafts, staging_revision = read_transaction_drafts_snapshot()
     existing_source_ids = set(existing_drafts.loc[existing_drafts["source"].eq(source), "source_id"])
     source_keys = _existing_source_keys()
     result["duplicate_in_staging"] = result["source_id"].isin(existing_source_ids)
     result["duplicate_in_source"] = result.apply(lambda row: _source_key(row) in source_keys, axis=1)
+    result["replaces_source_id"] = ""
+    result["possible_pending_match"] = False
+    if source == "bcc_pdf":
+        result = _add_pending_matches(result, existing_drafts)
+    result["staging_revision"] = staging_revision
     result["skip_reason"] = result.apply(_skip_reason, axis=1)
     result["import_action"] = result["skip_reason"].map(_default_import_action)
     return result
@@ -274,12 +318,18 @@ def _skip_reason(row: pd.Series) -> str:
         return "duplicate_in_staging"
     if bool(row.get("duplicate_in_source", False)):
         return "possible_duplicate"
+    if bool(row.get("possible_pending_match", False)):
+        return "possible_pending_match"
+    if str(row.get("replaces_source_id", "")):
+        return "replaces_pending"
     return ""
 
 
 def _default_import_action(skip_reason: str) -> str:
-    if skip_reason == "possible_duplicate":
+    if skip_reason in {"possible_duplicate", "possible_pending_match"}:
         return "review"
+    if skip_reason == "replaces_pending":
+        return "import"
     return "skip" if skip_reason else "import"
 
 
@@ -339,15 +389,64 @@ def _normalize_text(value: str) -> str:
     return re.sub(r"\s+", " ", str(value).upper()).strip()
 
 
+def _add_pending_matches(data: pd.DataFrame, drafts: pd.DataFrame) -> pd.DataFrame:
+    result = data.copy(deep=True)
+    pending = drafts[
+        drafts["source"].eq("bcc_pdf") & drafts["bank_status"].eq("pending")
+    ].copy(deep=True)
+    if pending.empty:
+        return result
+    for index, row in result.iterrows():
+        if str(row.get("bank_status", "")) != "posted":
+            continue
+        candidates = _pending_candidates(row, pending)
+        if len(candidates) == 1:
+            result.at[index, "replaces_source_id"] = str(candidates.iloc[0]["source_id"])
+        elif len(candidates) > 1:
+            result.at[index, "possible_pending_match"] = True
+    return result
+
+
+def _pending_candidates(row: pd.Series, pending: pd.DataFrame) -> pd.DataFrame:
+    reference = _normalize_text(row.get("bank_reference", ""))
+    account_id = str(row.get("bank_account_id", ""))
+    if reference:
+        reference_matches = pending[
+            pending["bank_reference"].map(_normalize_text).eq(reference)
+            & pending["bank_account_id"].astype(str).eq(account_id)
+        ]
+        if not reference_matches.empty:
+            return reference_matches
+
+    row_date = pd.to_datetime(row.get("date"), errors="coerce")
+    pending_dates = pd.to_datetime(pending["date"], errors="coerce")
+    pending_amounts = pd.to_numeric(pending["amount"], errors="coerce")
+    if pd.isna(row_date):
+        return pending.iloc[0:0]
+    mask = (
+        pending["currency"].astype(str).str.upper().eq(str(row.get("currency", "")).upper())
+        & pending["bank_account_id"].astype(str).eq(str(row.get("bank_account_id", "")))
+        & pending_amounts.round(2).eq(round(abs(float(row.get("amount", 0))), 2))
+        & pending["direction"].astype(str).str.lower().eq(
+            str(row.get("direction", "")).lower()
+        )
+        & pending["comment"].map(_normalize_text).eq(_normalize_text(row.get("comment", "")))
+        & (row_date - pending_dates).dt.days.between(0, 7)
+    )
+    return pending[mask]
+
+
 def _import_columns() -> list[str]:
     return [
         *DRAFT_COLUMNS,
-        "direction",
         "details",
         "duplicate_in_staging",
         "duplicate_in_source",
         "skip_reason",
         "import_action",
+        "replaces_source_id",
+        "possible_pending_match",
+        "staging_revision",
     ]
 
 

@@ -29,6 +29,10 @@ DRAFT_COLUMNS = [
     "comment",
     "source",
     "source_id",
+    "direction",
+    "bank_status",
+    "bank_reference",
+    "bank_account_id",
     "status",
 ]
 DRAFT_STATUSES = {"draft", "ready", "exported", "ignored"}
@@ -191,13 +195,44 @@ def transaction_drafts_with_appended_row(
 
 
 def append_transaction_draft_rows(
-    rows: pd.DataFrame, path: str | Path | None = None
+    rows: pd.DataFrame,
+    path: str | Path | None = None,
+    *,
+    expected_revision: str | None = None,
+    pending_replacements: dict[tuple[str, str], str] | None = None,
 ) -> dict:
     config.require_writable_mode()
     incoming = _normalize_drafts(rows)
     draft_path = _draft_path(path)
     with _transaction_drafts_lock(draft_path):
         data = _read_transaction_drafts_unlocked(draft_path)
+        _validate_draft_revision(data, expected_revision)
+        replacements = pending_replacements or {}
+        replaced_keys: set[tuple[str, str]] = set()
+        for (source, new_source_id), old_source_id in replacements.items():
+            incoming_match = incoming["source"].eq(str(source)) & incoming["source_id"].eq(
+                str(new_source_id)
+            )
+            if int(incoming_match.sum()) != 1:
+                raise DraftRevisionConflict(
+                    "Состав импортируемых строк изменился после Preview: построй Preview заново."
+                )
+            old_key = (str(source), str(old_source_id))
+            if old_key in replaced_keys:
+                raise DraftRevisionConflict(
+                    "Несколько операций пытаются заменить один pending: проверь строки вручную."
+                )
+            pending_match = (
+                data["source"].eq(old_key[0])
+                & data["source_id"].eq(old_key[1])
+                & data["bank_status"].eq("pending")
+            )
+            if int(pending_match.sum()) != 1:
+                raise DraftRevisionConflict(
+                    "Pending-операция изменилась после Preview: построй Preview заново."
+                )
+            data = data[~pending_match].reset_index(drop=True)
+            replaced_keys.add(old_key)
         existing_keys = set(zip(data["source"].astype(str), data["source_id"].astype(str)))
         incoming_keys = pd.Series(
             list(zip(incoming["source"].astype(str), incoming["source_id"].astype(str))),
@@ -214,6 +249,7 @@ def append_transaction_draft_rows(
         return {
             "accepted_rows": int(len(accepted)),
             "skipped_rows": int(duplicate_mask.sum()),
+            "replaced_pending_rows": len(replaced_keys),
         }
 
 
@@ -586,6 +622,7 @@ def _exportable_month_drafts(
         dates.dt.year.eq(int(year))
         & dates.dt.month.eq(int(month))
         & data["status"].isin(EXPORTABLE_STATUSES)
+        & data["bank_status"].ne("pending")
     )
     return data[mask].copy(deep=True)
 
@@ -725,6 +762,14 @@ def validate_transaction_drafts(data: pd.DataFrame | None = None, path: str | Pa
         if str(value) not in DRAFT_STATUSES:
             issues.append(DraftValidationIssue(index, f"unsupported status {value!r}"))
 
+    for index, value in enumerate(data["direction"], start=2):
+        if str(value) not in {"", "debit", "credit"}:
+            issues.append(DraftValidationIssue(index, f"unsupported direction {value!r}"))
+
+    for index, value in enumerate(data["bank_status"], start=2):
+        if str(value) not in {"", "pending", "posted"}:
+            issues.append(DraftValidationIssue(index, f"unsupported bank status {value!r}"))
+
     duplicate_mask = data.duplicated(subset=["source", "source_id"], keep=False) & data["source_id"].ne("")
     for index in data.index[duplicate_mask]:
         issues.append(DraftValidationIssue(index + 2, "duplicate source/source_id"))
@@ -743,12 +788,14 @@ def _normalize_drafts(data: pd.DataFrame) -> pd.DataFrame:
     for column in DRAFT_COLUMNS:
         if column not in normalized.columns:
             normalized[column] = ""
-    normalized = normalized[DRAFT_COLUMNS]
+    normalized = normalized[DRAFT_COLUMNS].fillna("")
     normalized["currency"] = normalized["currency"].astype(str).str.upper()
+    normalized["direction"] = normalized["direction"].astype(str).str.lower()
+    normalized["bank_status"] = normalized["bank_status"].astype(str).str.lower()
     normalized["status"] = normalized["status"].replace("", DEFAULT_STATUS)
     normalized["amount"] = normalized["amount"].astype(str)
     normalized["comment"] = normalized["comment"].map(sanitize_transaction_comment)
-    return normalized.fillna("")
+    return normalized
 
 
 def sanitize_transaction_comment(value) -> str:

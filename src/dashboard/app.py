@@ -967,6 +967,8 @@ def register_callbacks(app: Dash) -> None:
             config.require_writable_mode()
             result = save_kaspi_import_to_staging(row_data or [])
             message = f"Сохранено в staging: {result['accepted_rows']}. Пропущено дублей/skip: {result['skipped_rows']}."
+            if result.get("replaced_pending_rows"):
+                message += f" Заменено pending: {result['replaced_pending_rows']}."
             color = "success"
         except Exception as exc:
             message = str(exc)
@@ -2332,6 +2334,7 @@ def _kaspi_import_column_defs() -> list[dict]:
         {"field": "amount", "headerName": "Сумма", "width": 120},
         {"field": "currency", "headerName": "Валюта", "width": 100},
         {"field": "direction", "headerName": "Направление", "hide": True},
+        {"field": "bank_status", "headerName": "Статус банка", "width": 130},
         {"field": "comment", "headerName": "Комментарий", "editable": True, "flex": 1, "minWidth": 220},
         {"field": "import_action", "headerName": "Действие", "editable": True, "cellEditor": "agSelectCellEditor", "cellEditorParams": {"values": ["import", "skip"]}, "width": 120, "cellClassRules": {"text-warning": "params.value == 'review'"}},
         {"field": "skip_reason", "headerName": "Причина skip", "width": 170},
@@ -2341,6 +2344,11 @@ def _kaspi_import_column_defs() -> list[dict]:
         {"field": "source_id", "headerName": "ID", "hide": True},
         {"field": "source", "headerName": "Источник", "hide": True},
         {"field": "status", "headerName": "Статус", "hide": True},
+        {"field": "bank_reference", "headerName": "Reference", "hide": True},
+        {"field": "bank_account_id", "headerName": "Счёт банка", "hide": True},
+        {"field": "replaces_source_id", "headerName": "Заменяет pending", "hide": True},
+        {"field": "possible_pending_match", "headerName": "Несколько pending", "hide": True},
+        {"field": "staging_revision", "headerName": "Ревизия staging", "hide": True},
     ]
 
 
@@ -2353,6 +2361,10 @@ def _transaction_draft_column_defs(category_options: list[dict], currencies: lis
         {"field": "amount", "headerName": "Сумма", "width": 130},
         {"field": "comment", "headerName": "Комментарий", "flex": 1, "minWidth": 220},
         {"field": "status", "headerName": "Статус", "cellEditor": "agSelectCellEditor", "cellEditorParams": {"values": sorted(DRAFT_STATUSES)}, "width": 130},
+        {"field": "bank_status", "headerName": "Статус банка", "editable": False, "width": 130},
+        {"field": "direction", "headerName": "Направление банка", "hide": True},
+        {"field": "bank_reference", "headerName": "Reference", "hide": True},
+        {"field": "bank_account_id", "headerName": "Счёт банка", "hide": True},
         {"field": "source", "headerName": "Источник", "editable": False, "width": 130},
         {"field": "source_id", "headerName": "ID", "editable": False, "width": 220},
     ]
