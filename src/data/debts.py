@@ -8,6 +8,7 @@ from uuid import uuid4
 import pandas as pd
 
 from src import config
+from src.data.csv_storage import atomic_write_csv
 from src.data.get import get_transactions
 from src.data.proccess import convert_transaction
 from src.data.staging import append_transaction_draft
@@ -60,9 +61,13 @@ def ensure_debt_files(debts_path: str | Path | None = None, payments_path: str |
     debt_path.parent.mkdir(parents=True, exist_ok=True)
     payment_path.parent.mkdir(parents=True, exist_ok=True)
     if not debt_path.exists():
-        pd.DataFrame(columns=DEBT_COLUMNS).to_csv(debt_path, sep=";", index=False, encoding="utf-8-sig")
+        atomic_write_csv(
+            pd.DataFrame(columns=DEBT_COLUMNS), debt_path, sep=";", index=False, encoding="utf-8-sig"
+        )
     if not payment_path.exists():
-        pd.DataFrame(columns=PAYMENT_COLUMNS).to_csv(payment_path, sep=";", index=False, encoding="utf-8-sig")
+        atomic_write_csv(
+            pd.DataFrame(columns=PAYMENT_COLUMNS), payment_path, sep=";", index=False, encoding="utf-8-sig"
+        )
 
 
 def read_debts(path: str | Path | None = None) -> pd.DataFrame:
@@ -87,7 +92,7 @@ def write_debts(data: pd.DataFrame, path: str | Path | None = None) -> None:
     _raise_if_issues(validate_debt_rows(normalized, read_debt_payments()))
     debt_path = _debt_path(path)
     debt_path.parent.mkdir(parents=True, exist_ok=True)
-    normalized.to_csv(debt_path, sep=";", index=False, encoding="utf-8-sig")
+    atomic_write_csv(normalized, debt_path, sep=";", index=False, encoding="utf-8-sig")
 
 
 def write_debt_payments(data: pd.DataFrame, path: str | Path | None = None) -> None:
@@ -96,7 +101,7 @@ def write_debt_payments(data: pd.DataFrame, path: str | Path | None = None) -> N
     _raise_if_issues(validate_debt_rows(read_debts(), normalized))
     payment_path = _payment_path(path)
     payment_path.parent.mkdir(parents=True, exist_ok=True)
-    normalized.to_csv(payment_path, sep=";", index=False, encoding="utf-8-sig")
+    atomic_write_csv(normalized, payment_path, sep=";", index=False, encoding="utf-8-sig")
 
 
 def create_debt(
@@ -130,7 +135,7 @@ def create_debt(
     updated = pd.concat([debts, pd.DataFrame([row])], ignore_index=True)
     normalized = _normalize_debts(updated)
     _raise_if_issues(validate_debt_rows(normalized, read_debt_payments()))
-    normalized.to_csv(_debt_path(), sep=";", index=False, encoding="utf-8-sig")
+    atomic_write_csv(normalized, _debt_path(), sep=";", index=False, encoding="utf-8-sig")
 
     draft = None
     if create_draft:
@@ -184,8 +189,8 @@ def create_debt_payment(
     normalized_payments = _normalize_payments(updated_payments)
     updated_debts = _close_repaid_debts(debts, normalized_payments)
     _raise_if_issues(validate_debt_rows(updated_debts, normalized_payments))
-    updated_debts.to_csv(_debt_path(), sep=";", index=False, encoding="utf-8-sig")
-    normalized_payments.to_csv(_payment_path(), sep=";", index=False, encoding="utf-8-sig")
+    atomic_write_csv(updated_debts, _debt_path(), sep=";", index=False, encoding="utf-8-sig")
+    atomic_write_csv(normalized_payments, _payment_path(), sep=";", index=False, encoding="utf-8-sig")
 
     draft = None
     if create_draft:
@@ -311,8 +316,8 @@ def migrate_legacy_debts(create_files_only_if_missing: bool = True) -> dict:
     payments_df = _normalize_payments(pd.DataFrame(payments))
     _raise_if_issues(validate_debt_rows(debts_df, payments_df))
     _debt_path().parent.mkdir(parents=True, exist_ok=True)
-    debts_df.to_csv(_debt_path(), sep=";", index=False, encoding="utf-8-sig")
-    payments_df.to_csv(_payment_path(), sep=";", index=False, encoding="utf-8-sig")
+    atomic_write_csv(debts_df, _debt_path(), sep=";", index=False, encoding="utf-8-sig")
+    atomic_write_csv(payments_df, _payment_path(), sep=";", index=False, encoding="utf-8-sig")
     return {"created_debts": int(len(debts_df)), "created_payments": int(len(payments_df)), "skipped": ""}
 
 

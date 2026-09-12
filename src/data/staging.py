@@ -10,7 +10,6 @@ from hashlib import sha256
 import json
 from math import isfinite
 import re
-from shutil import copy2
 from threading import RLock
 from time import monotonic, sleep
 from uuid import uuid4
@@ -18,6 +17,7 @@ from uuid import uuid4
 import pandas as pd
 
 from src import config
+from src.data.csv_storage import atomic_copy_file, atomic_write_csv
 
 TRANSACTION_BOUNDARY_RE = re.compile(r'#(?=\s*[+-]?(?:\d+(?:[.,]\d*)?|[.,]\d+)(?:\||#|$))')
 
@@ -69,7 +69,7 @@ def ensure_transaction_drafts_file(path: str | Path | None = None) -> Path:
 def _ensure_transaction_drafts_file_unlocked(draft_path: Path) -> Path:
     draft_path.parent.mkdir(parents=True, exist_ok=True)
     if not draft_path.exists():
-        pd.DataFrame(columns=DRAFT_COLUMNS).to_csv(draft_path, sep=";", index=False)
+        atomic_write_csv(pd.DataFrame(columns=DRAFT_COLUMNS), draft_path, sep=";", index=False)
     return draft_path
 
 
@@ -124,7 +124,7 @@ def _write_transaction_drafts_unlocked(data: pd.DataFrame, draft_path: Path) -> 
     if issues:
         raise ValueError(_format_issues(issues))
     draft_path = _ensure_transaction_drafts_file_unlocked(draft_path)
-    normalized.to_csv(draft_path, sep=";", index=False)
+    atomic_write_csv(normalized, draft_path, sep=";", index=False)
 
 
 def append_transaction_draft(
@@ -250,7 +250,7 @@ def ensure_monthly_transaction_csv(year: str, month: str, transactions_root: str
     template_path = previous_monthly_transaction_csv_path(year, month, transactions_root)
     table = _empty_month_table_from_template(year, month, template_path)
     target_path.parent.mkdir(parents=True, exist_ok=True)
-    table.to_csv(target_path, sep=";", index=False, encoding="utf-8-sig")
+    atomic_write_csv(table, target_path, sep=";", index=False, encoding="utf-8-sig")
     return {
         "path": str(target_path),
         "created": True,
@@ -368,9 +368,9 @@ def export_monthly_transaction_drafts(
         if target_path.exists():
             backup_path = _monthly_transaction_backup_path(target_path)
             backup_path.parent.mkdir(parents=True, exist_ok=True)
-            copy2(target_path, backup_path)
+            atomic_copy_file(target_path, backup_path)
 
-        preview.to_csv(target_path, sep=";", index=False, encoding="utf-8-sig")
+        atomic_write_csv(preview, target_path, sep=";", index=False, encoding="utf-8-sig")
         if not drafts.empty:
             _mark_month_drafts_exported_unlocked(drafts, draft_path)
         return {

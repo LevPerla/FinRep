@@ -10,6 +10,7 @@ import pandas as pd
 import requests
 
 from src import config
+from src.data.csv_storage import atomic_write_csv
 from src.data.get_finance import get_actual_fx_rate, get_fallback_rate
 from src.data.investments import latest_cached_prices, read_price_cache, write_price_cache
 
@@ -95,7 +96,9 @@ def ensure_crypto_wallets_file(path: str | Path | None = None) -> Path:
         return wallets_path
     wallets_path.parent.mkdir(parents=True, exist_ok=True)
     if not wallets_path.exists():
-        pd.DataFrame(columns=WALLET_COLUMNS).to_csv(wallets_path, sep=";", index=False, encoding="utf-8-sig")
+        atomic_write_csv(
+            pd.DataFrame(columns=WALLET_COLUMNS), wallets_path, sep=";", index=False, encoding="utf-8-sig"
+        )
     return wallets_path
 
 
@@ -150,7 +153,7 @@ def write_crypto_refresh_status(data: pd.DataFrame, path: str | Path | None = No
         if column not in normalized.columns:
             normalized[column] = ""
     normalized = normalized[REFRESH_STATUS_COLUMNS].fillna("")
-    normalized.to_csv(status_path, sep=";", index=False, encoding="utf-8-sig")
+    atomic_write_csv(normalized, status_path, sep=";", index=False, encoding="utf-8-sig")
 
 
 def write_crypto_balances(data: pd.DataFrame, path: str | Path | None = None) -> None:
@@ -163,7 +166,7 @@ def write_crypto_balances(data: pd.DataFrame, path: str | Path | None = None) ->
     _validate_crypto_numbers(normalized, ["balance"])
     normalized = normalized[BALANCE_COLUMNS].fillna("")
     balance_path.parent.mkdir(parents=True, exist_ok=True)
-    normalized.to_csv(balance_path, sep=";", index=False, encoding="utf-8-sig")
+    atomic_write_csv(normalized, balance_path, sep=";", index=False, encoding="utf-8-sig")
 
 
 def read_crypto_transactions(path: str | Path | None = None) -> pd.DataFrame:
@@ -188,7 +191,7 @@ def write_crypto_transactions(data: pd.DataFrame, path: str | Path | None = None
     _validate_crypto_numbers(normalized, ["quantity", "fee"], allow_empty=True)
     normalized = normalized[TRANSACTION_COLUMNS].fillna("")
     transactions_path.parent.mkdir(parents=True, exist_ok=True)
-    normalized.to_csv(transactions_path, sep=";", index=False, encoding="utf-8-sig")
+    atomic_write_csv(normalized, transactions_path, sep=";", index=False, encoding="utf-8-sig")
 
 
 def _validate_crypto_numbers(data: pd.DataFrame, columns: list[str], allow_empty: bool = False) -> None:

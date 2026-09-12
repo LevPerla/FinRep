@@ -13,6 +13,7 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
 from src import config
+from src.data.csv_storage import atomic_write_csv
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -710,7 +711,7 @@ def _write_cache(cache: pd.DataFrame):
     cache = cache.copy()
     cache['date'] = pd.to_datetime(cache['date']).dt.strftime('%Y-%m-%d')
     cache = cache.sort_values(['currency', 'date'])
-    cache.to_csv(cache_path, sep=';', index=False)
+    atomic_write_csv(cache, cache_path, sep=';', index=False)
     _FX_CACHE_DF.pop(str(cache_path), None)
 
 
@@ -742,7 +743,7 @@ def _ensure_cache_file():
         if config.is_test_mode():
             return
         cache_path.parent.mkdir(parents=True, exist_ok=True)
-        pd.DataFrame(columns=FX_CACHE_COLUMNS).to_csv(cache_path, sep=';', index=False)
+        atomic_write_csv(pd.DataFrame(columns=FX_CACHE_COLUMNS), cache_path, sep=';', index=False)
 
 
 def _clean_rate_series(series: pd.Series) -> pd.Series:

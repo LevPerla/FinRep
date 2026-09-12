@@ -8,6 +8,7 @@ from pathlib import Path
 import pandas as pd
 
 from src import config
+from src.data.csv_storage import atomic_write_csv
 
 
 TRANSACTION_COLUMNS = [
@@ -128,7 +129,9 @@ def ensure_price_cache_file(path: str | Path | None = None) -> Path:
         return cache_path
     cache_path.parent.mkdir(parents=True, exist_ok=True)
     if not cache_path.exists():
-        pd.DataFrame(columns=PRICE_CACHE_COLUMNS).to_csv(cache_path, sep=";", index=False, encoding="utf-8-sig")
+        atomic_write_csv(
+            pd.DataFrame(columns=PRICE_CACHE_COLUMNS), cache_path, sep=";", index=False, encoding="utf-8-sig"
+        )
     return cache_path
 
 
@@ -145,7 +148,7 @@ def write_price_cache(data: pd.DataFrame, path: str | Path | None = None) -> Non
         if _to_float(price) is None:
             raise ValueError(f"row {row_number}: price must be finite")
     cache_path = ensure_price_cache_file(path)
-    normalized.to_csv(cache_path, sep=";", index=False, encoding="utf-8-sig")
+    atomic_write_csv(normalized, cache_path, sep=";", index=False, encoding="utf-8-sig")
 
 
 def seed_price_cache_from_transactions(
@@ -253,12 +256,12 @@ def export_legacy_investment_migration(
     price_cache = pd.DataFrame(columns=PRICE_CACHE_COLUMNS)
 
     transactions_path.parent.mkdir(parents=True, exist_ok=True)
-    transactions.to_csv(transactions_path, sep=";", index=False, encoding="utf-8-sig")
+    atomic_write_csv(transactions, transactions_path, sep=";", index=False, encoding="utf-8-sig")
     instruments_path.parent.mkdir(parents=True, exist_ok=True)
-    instruments.to_csv(instruments_path, sep=";", index=False, encoding="utf-8-sig")
+    atomic_write_csv(instruments, instruments_path, sep=";", index=False, encoding="utf-8-sig")
     price_cache_path.parent.mkdir(parents=True, exist_ok=True)
     if not price_cache_path.exists():
-        price_cache.to_csv(price_cache_path, sep=";", index=False, encoding="utf-8-sig")
+        atomic_write_csv(price_cache, price_cache_path, sep=";", index=False, encoding="utf-8-sig")
 
     return {
         "transactions_path": str(transactions_path),
