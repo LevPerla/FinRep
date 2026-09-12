@@ -151,11 +151,13 @@ def test_test_mode_read_does_not_create_sidecar(drafts_path, monkeypatch):
     assert not lock_path.exists()
 
 
-def _draft_callback_request(app, client, trigger, rows, revision):
+def _draft_callback_request(
+    app, client, trigger, rows, revision, *, add_request_id="browser-add-request"
+):
     key = next(key for key in app.callback_map if "transaction-input-message.children" in key)
     callback = app.callback_map[key]
     values = {
-        "transaction-add-button": 0,
+        "transaction-add-button": 1 if trigger == "transaction-add-button" else 0,
         "transaction-save-grid-button": 1 if trigger == "transaction-save-grid-button" else 0,
         "transaction-delete-button": 0,
         "transaction-reload-grid-button": 1 if trigger == "transaction-reload-grid-button" else 0,
@@ -170,6 +172,7 @@ def _draft_callback_request(app, client, trigger, rows, revision):
         "transaction-input-comment": "",
         "transaction-drafts-grid": rows,
         "transaction-drafts-revision": revision,
+        "transaction-add-request-id": add_request_id,
     }
     payload = {
         "output": key,
@@ -314,3 +317,47 @@ def test_dashboard_refreshes_draft_filters_and_preserves_current_values(
         "Текущая категория",
     }
     assert source_values == {"__all__", "new-bank", "current-source"}
+
+
+def test_manual_submit_clears_sent_fields_and_retry_does_not_duplicate(
+    drafts_path, monkeypatch
+):
+    monkeypatch.setenv("FINREP_DASH_PASSWORD", "synthetic-password")
+    monkeypatch.setenv("FINREP_DASH_SECRET_KEY", "synthetic-key")
+    from src.dashboard.app import create_app
+
+    _, revision = staging.read_transaction_drafts_snapshot(drafts_path)
+    app = create_app()
+    client = app.server.test_client()
+    with client.session_transaction() as session:
+        session["authenticated"] = True
+        session["data_mode"] = "live"
+
+    first = _draft_callback_request(
+        app,
+        client,
+        "transaction-add-button",
+        [],
+        revision,
+        add_request_id="manual-submit-A",
+    )
+    retry = _draft_callback_request(
+        app,
+        client,
+        "transaction-add-button",
+        [],
+        revision,
+        add_request_id="manual-submit-A",
+    )
+
+    assert first.status_code == 200
+    first_result = first.get_json()["response"]
+    assert first_result["transaction-input-message"]["children"] == "Черновик добавлен."
+    assert first_result["transaction-input-amount"]["value"] is None
+    assert first_result["transaction-input-comment"]["value"] == ""
+    assert retry.status_code == 200
+    retry_result = retry.get_json()["response"]
+    assert "повтор не создан" in retry_result["transaction-input-message"]["children"]
+    saved = staging.read_transaction_drafts(drafts_path)
+    assert len(saved) == 1
+    assert saved.iloc[0]["source_id"] == "manual:manual-submit-A"

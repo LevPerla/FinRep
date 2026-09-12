@@ -41,7 +41,7 @@ from src.data.staging import (
     DRAFT_COLUMNS,
     DRAFT_STATUSES,
     DraftRevisionConflict,
-    append_transaction_draft,
+    append_transaction_draft_rows,
     delete_transaction_drafts,
     export_monthly_transaction_drafts,
     merge_transaction_draft_rows,
@@ -479,6 +479,11 @@ def create_layout():
             dcc.Location(id="dashboard-location"),
             dcc.Store(id="dashboard-theme", data="dark"),
             dcc.Store(id="dashboard-refresh-token", data=0),
+            dcc.Store(
+                id="transaction-add-request-id",
+                data=uuid4().hex,
+                storage_type="session",
+            ),
             dcc.Store(
                 id="debt-create-request-id",
                 data=uuid4().hex,
@@ -1011,6 +1016,9 @@ def register_callbacks(app: Dash) -> None:
         Output("transaction-drafts-message", "color"),
         Output("transaction-filter-month", "value"),
         Output("transaction-drafts-revision", "data"),
+        Output("transaction-input-amount", "value"),
+        Output("transaction-input-comment", "value"),
+        Output("transaction-add-request-id", "data"),
         Input("transaction-add-button", "n_clicks", allow_optional=True),
         Input("transaction-save-grid-button", "n_clicks", allow_optional=True),
         Input("transaction-delete-button", "n_clicks", allow_optional=True),
@@ -1027,6 +1035,7 @@ def register_callbacks(app: Dash) -> None:
         State("transaction-drafts-grid", "rowData", allow_optional=True),
         State("transaction-drafts-grid", "selectedRows", allow_optional=True),
         State("transaction-drafts-revision", "data", allow_optional=True),
+        State("transaction-add-request-id", "data"),
     )
     def sync_transaction_drafts(
         add_clicks,
@@ -1045,10 +1054,14 @@ def register_callbacks(app: Dash) -> None:
         row_data,
         selected_rows,
         expected_revision,
+        add_request_id,
     ):
         trigger = ctx.triggered_id
         message = ""
         color = "secondary"
+        amount_value = no_update
+        comment_value = no_update
+        next_add_request_id = add_request_id or uuid4().hex
 
         try:
             if trigger in {"transaction-add-button", "transaction-save-grid-button", "transaction-delete-button"}:
@@ -1056,16 +1069,32 @@ def register_callbacks(app: Dash) -> None:
             if trigger == "transaction-add-button":
                 if not input_date or not input_category or not input_currency or input_amount in {None, ""}:
                     raise ValueError("Заполни дату, категорию, валюту и сумму.")
-                append_transaction_draft(
-                    date=input_date,
-                    category=input_category,
-                    currency=input_currency,
-                    amount=input_amount,
-                    comment=input_comment or "",
+                result = append_transaction_draft_rows(
+                    pd.DataFrame(
+                        [
+                            {
+                                "date": input_date,
+                                "category": input_category,
+                                "currency": input_currency,
+                                "amount": input_amount,
+                                "comment": input_comment or "",
+                                "source": "manual",
+                                "source_id": f"manual:{next_add_request_id}",
+                                "status": "draft",
+                            }
+                        ]
+                    )
                 )
                 month_filter = pd.to_datetime(input_date).strftime("%Y-%m")
-                message = "Черновик добавлен."
+                message = (
+                    "Черновик добавлен."
+                    if result["accepted_rows"]
+                    else "Черновик уже был добавлен; повтор не создан."
+                )
                 color = "success"
+                amount_value = None
+                comment_value = ""
+                next_add_request_id = uuid4().hex
             elif trigger == "transaction-save-grid-button":
                 if not expected_revision:
                     raise DraftRevisionConflict
@@ -1103,6 +1132,9 @@ def register_callbacks(app: Dash) -> None:
                 "warning",
                 month_filter,
                 expected_revision,
+                no_update,
+                no_update,
+                next_add_request_id,
             )
         except Exception as exc:
             message = str(exc)
@@ -1111,7 +1143,18 @@ def register_callbacks(app: Dash) -> None:
         records, revision = _transaction_draft_snapshot_records(
             month_filter, category_filter, status_filter, source_filter
         )
-        return records, message, color, message, color, month_filter, revision
+        return (
+            records,
+            message,
+            color,
+            message,
+            color,
+            month_filter,
+            revision,
+            amount_value,
+            comment_value,
+            next_add_request_id,
+        )
 
     @app.callback(
         Output("transaction-filter-category", "options"),
