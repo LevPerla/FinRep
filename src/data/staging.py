@@ -430,6 +430,7 @@ def export_monthly_transaction_drafts(
             receipt_path=_transaction_export_receipt_path(draft_path),
             receipt=receipt,
         )
+        _clear_transaction_report_caches()
         return result
 
 
@@ -804,10 +805,17 @@ def _transaction_drafts_lock(draft_path: Path):
                         "Черновики сейчас сохраняются в другом процессе. Повтори попытку."
                     )
                 sleep(min(0.05, max(0.0, deadline - monotonic())))
+        recovered_transaction_export = False
         for journal_path in sorted(
             draft_path.parent.glob(f".{draft_path.name}.*-commit.json")
         ):
-            recover_file_commit(journal_path)
+            recovered = recover_file_commit(journal_path)
+            if recovered is not None and journal_path == _transaction_export_journal_path(
+                draft_path
+            ):
+                recovered_transaction_export = True
+        if recovered_transaction_export:
+            _clear_transaction_report_caches()
         yield
     finally:
         if lock_file is not None:
@@ -820,6 +828,14 @@ def _transaction_drafts_lock(draft_path: Path):
 
 def _new_source_id(source: str) -> str:
     return f"{source}-{uuid4().hex}"
+
+
+def _clear_transaction_report_caches() -> None:
+    from src.data.get import clear_data_cache
+    from src.model.create_tables import clear_table_cache
+
+    clear_data_cache()
+    clear_table_cache()
 
 
 def _format_issues(issues: list[DraftValidationIssue]) -> str:
