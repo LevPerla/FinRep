@@ -35,7 +35,7 @@ DRAFT_COLUMNS = [
     "bank_account_id",
     "status",
 ]
-DRAFT_STATUSES = {"draft", "ready", "exported", "ignored"}
+DRAFT_STATUSES = {"draft", "ready", "exported", "archived", "ignored"}
 EXPORTABLE_STATUSES = {"draft", "ready"}
 DEFAULT_SOURCE = "manual"
 DEFAULT_STATUS = "draft"
@@ -261,6 +261,10 @@ def update_transaction_draft(source: str, source_id: str, updates: dict, path: s
         mask = (data["source"] == str(source)) & (data["source_id"] == str(source_id))
         if not mask.any():
             raise KeyError(f"draft transaction not found: {source}/{source_id}")
+        if data.loc[mask, "status"].isin({"exported", "archived"}).any():
+            raise ValueError(
+                "Проведённую операцию нельзя изменить через staging. Исправь данные в Preview до подтверждения."
+            )
         allowed_updates = {key: value for key, value in updates.items() if key in DRAFT_COLUMNS}
         for key, value in allowed_updates.items():
             data.loc[mask, key] = value
@@ -279,8 +283,21 @@ def delete_transaction_drafts(
         if not rows:
             return data
         keys = {(str(row.get("source", "")), str(row.get("source_id", ""))) for row in rows}
-        keep_mask = ~data.apply(lambda row: (str(row["source"]), str(row["source_id"])) in keys, axis=1)
-        updated = data[keep_mask].reset_index(drop=True)
+        selected_mask = data.apply(
+            lambda row: (str(row["source"]), str(row["source_id"])) in keys,
+            axis=1,
+        )
+        archive_mask = selected_mask & data["status"].isin({"exported", "archived"})
+        delete_mask = selected_mask & ~archive_mask
+        updated = data[~delete_mask].reset_index(drop=True)
+        updated.loc[
+            updated.apply(
+                lambda row: (str(row["source"]), str(row["source_id"])) in keys,
+                axis=1,
+            )
+            & updated["status"].isin({"exported", "archived"}),
+            "status",
+        ] = "archived"
         _write_transaction_drafts_unlocked(updated, draft_path)
         return _read_transaction_drafts_unlocked(draft_path)
 
@@ -296,6 +313,7 @@ def merge_transaction_draft_rows(
         if not rows:
             return data
         incoming = _normalize_drafts(pd.DataFrame(rows))
+        _validate_protected_drafts_unchanged(data, incoming)
         existing = data.set_index(["source", "source_id"], drop=False)
         for _, row in incoming.iterrows():
             key = (row["source"], row["source_id"])
@@ -305,6 +323,23 @@ def merge_transaction_draft_rows(
         updated = existing.reset_index(drop=True)
         _write_transaction_drafts_unlocked(updated, draft_path)
         return _read_transaction_drafts_unlocked(draft_path)
+
+
+def _validate_protected_drafts_unchanged(
+    current: pd.DataFrame, incoming: pd.DataFrame
+) -> None:
+    current_by_key = current.set_index(["source", "source_id"], drop=False)
+    for _, row in incoming.iterrows():
+        key = (row["source"], row["source_id"])
+        if key not in current_by_key.index:
+            continue
+        saved = current_by_key.loc[key]
+        if str(saved["status"]) not in {"exported", "archived"}:
+            continue
+        if any(str(saved[column]) != str(row[column]) for column in DRAFT_COLUMNS):
+            raise ValueError(
+                "Проведённую операцию нельзя изменить через staging. Исправь данные в Preview до подтверждения."
+            )
 
 
 def ensure_monthly_transaction_csv(year: str, month: str, transactions_root: str | Path | None = None) -> dict:

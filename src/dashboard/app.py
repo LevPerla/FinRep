@@ -1053,8 +1053,15 @@ def register_callbacks(app: Dash) -> None:
                     raise ValueError("Выбери строки для удаления.")
                 if not expected_revision:
                     raise DraftRevisionConflict
+                archived_count = sum(
+                    str(row.get("status", "")) in {"exported", "archived"}
+                    for row in selected_rows
+                )
+                deleted_count = len(selected_rows) - archived_count
                 delete_transaction_drafts(selected_rows, expected_revision=expected_revision)
-                message = f"Удалено строк: {len(selected_rows)}."
+                message = f"Удалено черновиков: {deleted_count}. Скрыто проведённых: {archived_count}."
+                if archived_count:
+                    message += " Данные месяца не изменялись."
                 color = "warning"
             elif trigger == "transaction-reload-grid-button":
                 message = "Таблица обновлена из staging."
@@ -1754,6 +1761,9 @@ def _transaction_input_layout(currency: str, year: str, month: str, theme: str |
     draft_records, draft_revision = _transaction_draft_snapshot_records(
         month_value, None, None, None
     )
+    draft_editable = False if read_only else {
+        "function": "params.data.status !== 'exported' && params.data.status !== 'archived'"
+    }
 
     return html.Div(
         [
@@ -1864,7 +1874,7 @@ def _transaction_input_layout(currency: str, year: str, month: str, theme: str |
                     ),
                     dbc.Alert(
                         id="transaction-drafts-message",
-                        children="",
+                        children="Проведённые строки доступны только для очистки списка; данные месяца меняются в финальном Preview до подтверждения.",
                         color="secondary",
                         is_open=True,
                         className="mb-3 py-2",
@@ -1874,7 +1884,7 @@ def _transaction_input_layout(currency: str, year: str, month: str, theme: str |
                             id="transaction-drafts-grid",
                             rowData=draft_records,
                             columnDefs=_transaction_draft_column_defs(category_options, list(config.UNIQUE_TICKERS)),
-                            defaultColDef=_ag_grid_default_col_def(editable=not read_only),
+                            defaultColDef=_ag_grid_default_col_def(editable=draft_editable),
                             dashGridOptions={
                                 "pagination": False,
                                 "suppressFieldDotNotation": True,
@@ -2165,6 +2175,8 @@ def _transaction_draft_snapshot_records(
         data = data[data["category"] == str(category_filter)]
     if status_filter:
         data = data[data["status"] == str(status_filter)]
+    else:
+        data = data[data["status"].ne("archived")]
     if source_filter:
         data = data[data["source"] == str(source_filter)]
     records = data.sort_values(["date", "category", "comment"], kind="mergesort").to_dict("records")
