@@ -7,7 +7,6 @@ from calendar import monthrange
 import fcntl
 from hashlib import sha256
 import json
-from math import isfinite
 import re
 from threading import RLock
 from time import monotonic, sleep
@@ -18,8 +17,11 @@ import pandas as pd
 from src import config
 from src.data.csv_storage import atomic_write_csv, create_unique_backup
 from src.data.file_commit import commit_file_images, read_commit_receipt, recover_file_commit
+from src.data.money import format_money_amount, parse_money_amount
 
-TRANSACTION_BOUNDARY_RE = re.compile(r'#(?=\s*[+-]?(?:\d+(?:[.,]\d*)?|[.,]\d+)(?:\||#|$))')
+TRANSACTION_BOUNDARY_RE = re.compile(
+    r"#(?=\s*[+-]?(?:(?:\d+|\d{1,3}(?:[ \u00a0]\d{3})+)(?:[.,]\d*)?|[.,]\d+)(?:\||#|$))"
+)
 
 DRAFT_COLUMNS = [
     "date",
@@ -460,6 +462,7 @@ def export_monthly_transaction_drafts(
             preview = preview[expected_columns]
             if preview["Дата"].astype(str).tolist() != server_preview["Дата"].astype(str).tolist():
                 raise ValueError("Структура дат Preview изменилась: построй Preview заново.")
+            preview = _canonicalize_edited_preview_amounts(preview, server_preview)
         else:
             preview = _preview_rows_to_month_table(server_preview.to_dict("records"), year, month)
         if drafts.empty and preview_rows is None:
@@ -566,14 +569,50 @@ def _preview_rows_to_month_table(
             if value is None or (isinstance(value, str) and value == ""):
                 continue
             for part in TRANSACTION_BOUNDARY_RE.split(str(value)):
-                amount_text = (part.split("|", 1)[0].replace(",", ".")
-                               .replace("\\xa0", "").replace("\xa0", "").replace(" ₽", ""))
-                amount = pd.to_numeric(amount_text, errors="coerce")
-                if not isfinite(amount):
-                    raise ValueError(f"row {row_number}, column {column!r}: amount must be finite")
+                amount_text = _month_cell_amount_text(part)
+                try:
+                    parse_money_amount(amount_text)
+                except ValueError as exc:
+                    raise ValueError(f"row {row_number}, column {column!r}: {exc}") from exc
     data = data.fillna("0")
     ordered_columns = ["Дата", *[column for column in data.columns if column != "Дата"]]
     return data[ordered_columns]
+
+
+def _canonicalize_edited_preview_amounts(
+    preview: pd.DataFrame, server_preview: pd.DataFrame
+) -> pd.DataFrame:
+    result = preview.copy(deep=True)
+    reference = server_preview.reset_index(drop=True)
+    for column in result.columns:
+        if column == "Дата":
+            continue
+        for index, value in result[column].items():
+            if str(value) == str(reference.at[index, column]):
+                continue
+            if value is None or (isinstance(value, str) and value == ""):
+                continue
+            result.at[index, column] = _format_month_cell_amounts(value)
+    return result
+
+
+def _format_month_cell_amounts(value) -> str:
+    parts = TRANSACTION_BOUNDARY_RE.split(str(value))
+    normalized_parts = []
+    for part in parts:
+        _, separator, suffix = part.partition("|")
+        amount = format_money_amount(_month_cell_amount_text(part), decimal_separator=",")
+        normalized_parts.append(f"{amount}{separator}{suffix}")
+    return "#".join(normalized_parts)
+
+
+def _month_cell_amount_text(part: str) -> str:
+    return (
+        part.split("|", 1)[0]
+        .replace("\\xa0", "")
+        .replace(" ₽", "")
+        .strip()
+    )
 
 
 def _frame_revision_payload(data: pd.DataFrame) -> dict:
@@ -736,12 +775,7 @@ def _draft_to_month_cell(draft: pd.Series) -> str:
 
 
 def _format_amount_for_month_cell(value) -> str:
-    numeric = pd.to_numeric(value, errors="coerce")
-    if not isfinite(numeric):
-        raise ValueError(f"invalid amount {value!r}")
-    if float(numeric).is_integer():
-        return str(int(numeric))
-    return f"{float(numeric):.2f}".rstrip("0").rstrip(".").replace(".", ",")
+    return format_money_amount(value, decimal_separator=",")
 
 
 def _mark_month_drafts_exported(drafts: pd.DataFrame, path: str | Path | None = None) -> None:
@@ -788,10 +822,11 @@ def validate_transaction_drafts(data: pd.DataFrame | None = None, path: str | Pa
         if str(value).upper() not in config.UNIQUE_TICKERS:
             issues.append(DraftValidationIssue(index, f"unsupported currency {value!r}"))
 
-    amounts = pd.to_numeric(data["amount"], errors="coerce")
-    for index, is_bad in enumerate(~amounts.map(isfinite), start=2):
-        if is_bad:
-            issues.append(DraftValidationIssue(index, "invalid amount: must be finite"))
+    for index, value in enumerate(data["amount"], start=2):
+        try:
+            parse_money_amount(value)
+        except ValueError as exc:
+            issues.append(DraftValidationIssue(index, f"invalid amount: {exc}"))
 
     for index, value in enumerate(data["status"], start=2):
         if str(value) not in DRAFT_STATUSES:
