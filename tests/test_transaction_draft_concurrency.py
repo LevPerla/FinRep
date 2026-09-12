@@ -245,3 +245,72 @@ def test_dashboard_grid_save_requires_revision(drafts_path, monkeypatch):
     assert result["transaction-drafts-grid"]["rowData"] == rows
     assert result["transaction-drafts-message"]["color"] == "warning"
     assert staging.read_transaction_drafts(drafts_path).iloc[0]["amount"] == "100"
+
+
+def test_dashboard_refreshes_draft_filters_and_preserves_current_values(
+    drafts_path, monkeypatch
+):
+    monkeypatch.setenv("FINREP_DASH_PASSWORD", "synthetic-password")
+    monkeypatch.setenv("FINREP_DASH_SECRET_KEY", "synthetic-key")
+    staging.append_transaction_draft(
+        "2026-01-01",
+        "Новая категория",
+        "RUB",
+        100,
+        source="new-bank",
+        source_id="new-source-id",
+        path=drafts_path,
+    )
+    from src.dashboard import app as dashboard_app
+
+    monkeypatch.setattr(
+        dashboard_app,
+        "get_transactions",
+        lambda: pd.DataFrame({"Категория": ["Историческая категория"]}),
+    )
+    app = dashboard_app.create_app()
+    client = app.server.test_client()
+    with client.session_transaction() as session:
+        session["authenticated"] = True
+        session["data_mode"] = "live"
+
+    key = next(
+        key
+        for key in app.callback_map
+        if "transaction-filter-category.options" in key
+    )
+    callback = app.callback_map[key]
+    _, revision = staging.read_transaction_drafts_snapshot(drafts_path)
+    values = {
+        "transaction-drafts-revision": revision,
+        "transaction-filter-category": "Текущая категория",
+        "transaction-filter-source": "current-source",
+    }
+    payload = {
+        "output": key,
+        "outputs": [
+            {"id": item.component_id, "property": item.component_property}
+            for item in callback["output"]
+        ],
+        "inputs": [{**item, "value": values[item["id"]]} for item in callback["inputs"]],
+        "state": [{**item, "value": values[item["id"]]} for item in callback["state"]],
+        "changedPropIds": ["transaction-drafts-revision.data"],
+    }
+
+    response = client.post("/_dash-update-component", json=payload)
+
+    assert response.status_code == 200
+    result = response.get_json()["response"]
+    category_values = {
+        option["value"] for option in result["transaction-filter-category"]["options"]
+    }
+    source_values = {
+        option["value"] for option in result["transaction-filter-source"]["options"]
+    }
+    assert category_values >= {
+        "__all__",
+        "Историческая категория",
+        "Новая категория",
+        "Текущая категория",
+    }
+    assert source_values == {"__all__", "new-bank", "current-source"}

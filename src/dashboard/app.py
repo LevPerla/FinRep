@@ -1096,6 +1096,16 @@ def register_callbacks(app: Dash) -> None:
         return records, message, color, message, color, month_filter, revision
 
     @app.callback(
+        Output("transaction-filter-category", "options"),
+        Output("transaction-filter-source", "options"),
+        Input("transaction-drafts-revision", "data"),
+        State("transaction-filter-category", "value"),
+        State("transaction-filter-source", "value"),
+    )
+    def refresh_transaction_draft_filter_options(_revision, category_filter, source_filter):
+        return _transaction_draft_filter_options(category_filter, source_filter)
+
+    @app.callback(
         Output("transaction-export-preview-grid", "rowData"),
         Output("transaction-export-preview-grid", "columnDefs"),
         Output("transaction-export-message", "children"),
@@ -2146,6 +2156,27 @@ def _draft_source_options() -> list[dict]:
     data = read_transaction_drafts()
     sources = sorted(source for source in data["source"].dropna().unique() if str(source))
     return [{"label": source, "value": source} for source in sources]
+
+
+def _transaction_draft_filter_options(
+    selected_category: str | None, selected_source: str | None
+) -> tuple[list[dict], list[dict]]:
+    data = read_transaction_drafts()
+    categories = {option["value"] for option in _transaction_category_options()}
+    categories.update(str(value) for value in data["category"].dropna().unique() if str(value))
+    sources = {str(value) for value in data["source"].dropna().unique() if str(value)}
+
+    if selected_category not in {None, "", "__all__"}:
+        categories.add(str(selected_category))
+    if selected_source not in {None, "", "__all__"}:
+        sources.add(str(selected_source))
+
+    category_options = [{"label": value, "value": value} for value in sorted(categories)]
+    source_options = [{"label": value, "value": value} for value in sorted(sources)]
+    return (
+        _native_select_options(category_options, "Все категории"),
+        _native_select_options(source_options, "Все источники"),
+    )
 
 
 def _transaction_month_options(selected_month: str | None = None) -> list[dict]:
