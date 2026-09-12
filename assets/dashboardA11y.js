@@ -23,8 +23,25 @@ const labelTransactionDropdowns = () => {
   }
 };
 
-new MutationObserver(labelTransactionDropdowns).observe(document.documentElement, {
+const syncDashboardSettings = () => {
+  const settings = document.getElementById("dashboard-settings");
+  if (!settings) return;
+
+  const viewportMode = window.matchMedia("(max-width: 768px)").matches ? "mobile" : "desktop";
+  if (settings.dataset.viewportMode === viewportMode) return;
+
+  settings.open = viewportMode === "desktop";
+  settings.dataset.viewportMode = viewportMode;
+};
+
+const refreshDashboardEnhancements = () => {
+  labelTransactionDropdowns();
+  syncDashboardSettings();
+};
+
+new MutationObserver(refreshDashboardEnhancements).observe(document.documentElement, {
   childList: true,
   subtree: true,
 });
-labelTransactionDropdowns();
+window.addEventListener("resize", syncDashboardSettings);
+refreshDashboardEnhancements();

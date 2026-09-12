@@ -248,6 +248,34 @@ body {
   box-shadow: 0 14px 34px rgba(0, 0, 0, 0.42);
 }
 
+@media (min-width: 769px) {
+  .dashboard-settings {
+    flex: 1 1 auto;
+  }
+
+  .dashboard-settings-summary {
+    display: none;
+  }
+
+  .dashboard-settings:not([open]) > .dashboard-toolbar {
+    display: flex;
+  }
+
+  .dashboard-settings .dashboard-toolbar {
+    position: static;
+    width: auto;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    box-shadow: none;
+  }
+
+  .finrep-theme-dark .dashboard-settings .dashboard-toolbar {
+    background: transparent;
+    box-shadow: none;
+  }
+}
+
 .finrep-theme-dark .finrep-cockpit-card {
   border-color: #555555;
   border-left-color: #6897bb;
@@ -1297,9 +1325,17 @@ body {
     justify-content: space-between;
   }
 
+  .dashboard-header-actions #dashboard-mode-badge {
+    order: 1;
+  }
+
+  .dashboard-settings {
+    order: 2;
+  }
+
   .dashboard-settings .dashboard-toolbar {
     position: fixed;
-    top: 76px;
+    top: 112px;
     right: 14px;
     left: 14px;
     width: auto;

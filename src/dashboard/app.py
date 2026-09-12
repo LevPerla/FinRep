@@ -469,17 +469,11 @@ def create_layout():
                     dbc.Col(
                         html.H1("Finance Dashboard", className="h3 mb-0"),
                         xs=12,
-                        md=6,
+                        md=4,
                     ),
                     dbc.Col(
                         html.Div(
                             [
-                                dbc.Badge(
-                                    "TEST MODE" if test_mode else "LIVE",
-                                    id="dashboard-mode-badge",
-                                    color="warning" if test_mode else "success",
-                                    className="px-2 py-2",
-                                ),
                                 html.Details(
                                     [
                                         html.Summary(
@@ -533,12 +527,19 @@ def create_layout():
                                     ],
                                     id="dashboard-settings",
                                     className="dashboard-settings",
+                                    open=True,
+                                ),
+                                dbc.Badge(
+                                    "TEST MODE" if test_mode else "LIVE",
+                                    id="dashboard-mode-badge",
+                                    color="warning" if test_mode else "success",
+                                    className="px-2 py-2",
                                 ),
                             ],
                             className="dashboard-header-actions",
                         ),
                         xs=12,
-                        md=6,
+                        md=8,
                         className="mt-3 mt-md-0",
                     ),
                 ],

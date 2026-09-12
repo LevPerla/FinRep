@@ -134,7 +134,7 @@ def test_dashboard_filters_and_actions_are_inside_collapsible_settings():
 
     assert settings is not None
     assert settings["type"] == "Details"
-    assert settings["props"].get("open") is not True
+    assert settings["props"]["open"] is True
     for component_id in (
         "dashboard-currency",
         "dashboard-year",
