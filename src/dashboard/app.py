@@ -4,7 +4,7 @@ from io import BytesIO
 from pathlib import Path
 from urllib.parse import parse_qs
 
-from dash import ALL, Dash, Input, MATCH, Output, State, ctx, dcc, html
+from dash import ALL, Dash, Input, MATCH, Output, State, ctx, dcc, html, no_update
 import dash_ag_grid as dag
 import dash_bootstrap_components as dbc
 import pandas as pd
@@ -39,7 +39,7 @@ from src.data.staging import (
     read_monthly_transaction_csv,
     read_transaction_drafts,
 )
-from src.dashboard.export import export_dashboard_page
+from src.dashboard.export import ExportBusyError, export_dashboard_page
 from src.dashboard.auth import configure_auth
 from src.dashboard.investment_data import build_investment_dashboard_data
 from src.dashboard.main_data import DashboardDataset, build_main_dashboard_data, clear_main_dashboard_cache
@@ -511,8 +511,8 @@ def create_layout():
                                 dbc.Button("Обновить", id="refresh-reports", color="secondary", outline=True),
                                 dbc.Button("Обновить курс", id="refresh-fx-rates", color="warning", outline=True, disabled=test_mode),
                                 dbc.Button("Светлая", id="theme-toggle", color="secondary", outline=True),
-                                dbc.Button("PNG", id="export-png", color="primary", outline=True),
-                                dbc.Button("PDF", id="export-pdf", color="primary", outline=True),
+                                dbc.Button("PNG", id="export-png", color="primary", outline=True, disabled=test_mode),
+                                dbc.Button("PDF", id="export-pdf", color="primary", outline=True, disabled=test_mode),
                                 dbc.Badge(
                                     "TEST MODE" if test_mode else "LIVE",
                                     id="dashboard-mode-badge",
@@ -536,6 +536,13 @@ def create_layout():
                 ],
                 align="center",
                 className="py-3",
+            ),
+            dbc.Alert(
+                id="page-export-message",
+                children="PNG/PDF доступны только в LIVE." if test_mode else "",
+                color="warning" if test_mode else "secondary",
+                is_open=test_mode,
+                className="py-2 mb-3",
             ),
             _dashboard_tabs(),
             dcc.Loading(
@@ -861,6 +868,9 @@ def register_callbacks(app: Dash) -> None:
 
     @app.callback(
         Output("page-export-download", "data"),
+        Output("page-export-message", "children"),
+        Output("page-export-message", "color"),
+        Output("page-export-message", "is_open"),
         Input("export-png", "n_clicks"),
         Input("export-pdf", "n_clicks"),
         State("dashboard-currency", "value"),
@@ -880,17 +890,23 @@ def register_callbacks(app: Dash) -> None:
         if not png_clicks and not pdf_clicks:
             raise PreventUpdate
 
+        if config.is_test_mode():
+            return no_update, "PNG/PDF доступны только в LIVE.", "warning", True
+
         export_format = "png" if ctx.triggered_id == "export-png" else "pdf"
-        export_path = export_dashboard_page(
-            currency,
-            active_tab,
-            export_format,
-            year=year,
-            month=month if active_tab == "month" else None,
-            session_cookie=request.cookies.get(app.server.config.get("SESSION_COOKIE_NAME", "session")),
-            session_cookie_name=app.server.config.get("SESSION_COOKIE_NAME", "session"),
-        )
-        return dcc.send_file(str(export_path))
+        try:
+            export_path = export_dashboard_page(
+                currency,
+                active_tab,
+                export_format,
+                year=year,
+                month=month if active_tab == "month" else None,
+                session_cookie=request.cookies.get(app.server.config.get("SESSION_COOKIE_NAME", "session")),
+                session_cookie_name=app.server.config.get("SESSION_COOKIE_NAME", "session"),
+            )
+        except ExportBusyError as exc:
+            return no_update, str(exc), "warning", True
+        return dcc.send_file(str(export_path)), "Экспорт готов.", "success", True
 
     @app.callback(
         Output("kaspi-import-grid", "rowData"),

@@ -85,17 +85,21 @@ def test_local_dash_request_and_fixed_stylesheet_policy():
 def test_callback_has_no_client_url_and_ignores_host(monkeypatch, tmp_path):
     from src.dashboard.app import create_app
     import importlib
+    monkeypatch.setenv('FINREP_DASH_PASSWORD', 'synthetic-password')
+    monkeypatch.setenv('FINREP_DASH_SECRET_KEY', 'synthetic-key')
     app_module = importlib.import_module('src.dashboard.app')
     app = create_app()
     client = app.server.test_client()
-    client.post('/login', data={'data_mode':'test'})
+    client.post('/login', data={'password':'synthetic-password', 'data_mode':'live'})
     # Model an authenticated crafted request; the test client's cookie jar is host-scoped.
     client.set_cookie('session', client.get_cookie('session').value, domain='evil.test')
-    payload = {'output':'page-export-download.data', 'outputs':{'id':'page-export-download','property':'data'},
+    key = next(key for key in app.callback_map if 'page-export-download.data' in key)
+    callback = app.callback_map[key]
+    payload = {'output':key, 'outputs':[{'id':item.component_id,'property':item.component_property} for item in callback['output']],
         'inputs':[{'id':'export-png','property':'n_clicks','value':1},{'id':'export-pdf','property':'n_clicks','value':0}],
         'state':[{'id':'dashboard-currency','property':'value','value':'RUB'}, {'id':'dashboard-year','property':'value','value':'2026'}, {'id':'dashboard-month','property':'value','value':'05'}, {'id':'dashboard-tabs','property':'active_tab','value':'main'}],
         'changedPropIds':['export-png.n_clicks']}
-    registered = app.callback_map['page-export-download.data']['state']
+    registered = callback['state']
     assert not any(item['id']=='dashboard-location' for item in registered)
     output = tmp_path/'output.png'
     output.write_bytes(b'png fixture')
