@@ -3,7 +3,14 @@ import pandas as pd
 from src.data.get_finance import get_actual_fx_rate, get_rates, require_fx_rate
 
 
-def convert_transaction(df_to_convert: pd.DataFrame, to_curr: str, target_col: str, use_current_rate: bool = False):
+def convert_transaction(
+    df_to_convert: pd.DataFrame,
+    to_curr: str,
+    target_col: str,
+    use_current_rate: bool = False,
+    *,
+    round_result: bool = True,
+):
     """
     Convert values of transactions to chosen currency with improved error handling.
 
@@ -52,7 +59,7 @@ def convert_transaction(df_to_convert: pd.DataFrame, to_curr: str, target_col: s
         curr_smpl.index = smpl_index
         df_to_convert.loc[df_to_convert['Валюта'] == curr_name] = curr_smpl
             
-    return df_to_convert.round(2)
+    return df_to_convert.round(2) if round_result else df_to_convert
 
 
 def _latest_rate(rates: pd.DataFrame | None, ticker: str):

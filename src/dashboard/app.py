@@ -2192,17 +2192,8 @@ def _asset_input_records(year: str, month: str) -> list[dict]:
     data["amount_sort"] = data["amount"]
     data = data.sort_values("amount_sort", ascending=False, kind="mergesort")
     data["amount_sort"] = range(len(data), 0, -1)
-    data["amount"] = data["amount"].map(_format_asset_input_amount)
+    data["amount"] = data["amount"].map(_format_input_amount)
     return _dataframe_records(data)
-
-
-def _format_asset_input_amount(value) -> str:
-    text = format_money_amount(value)
-    sign = "-" if text.startswith("-") else ""
-    unsigned = text.removeprefix("-")
-    integer, separator, fraction = unsigned.partition(".")
-    grouped_integer = f"{int(integer):,}".replace(",", " ")
-    return f"{sign}{grouped_integer}{separator}{fraction}"
 
 
 def _asset_input_status(year: str, month: str) -> tuple[str, str]:
@@ -2350,12 +2341,12 @@ def _asset_row_key(row: dict) -> tuple[str, str, str]:
 
 
 def _format_input_amount(value) -> str:
-    numeric = pd.to_numeric(value, errors="coerce")
-    if pd.isna(numeric):
-        return "0"
-    if float(numeric).is_integer():
-        return f"{int(numeric):,}".replace(",", " ")
-    return f"{float(numeric):,.2f}".replace(",", " ").rstrip("0").rstrip(".")
+    text = format_money_amount(value)
+    sign = "-" if text.startswith("-") else ""
+    unsigned = text.removeprefix("-")
+    integer, separator, fraction = unsigned.partition(".")
+    grouped_integer = f"{int(integer):,}".replace(",", " ")
+    return f"{sign}{grouped_integer}{separator}{fraction}"
 
 
 def _kaspi_import_column_defs() -> list[dict]:
