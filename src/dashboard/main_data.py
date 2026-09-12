@@ -9,7 +9,7 @@ from src.data.get import get_assets, get_transactions
 from src.data.exchange_rates_info import get_exchange_rates_info
 from src.data.get_finance import fx_network_mode, get_fx_rates, require_fx_rate
 from src.data.proccess import convert_transaction
-from src.model.create_tables import get_balance_by_month
+from src.model.create_tables import asset_valuation_dates, get_balance_by_month
 
 
 CHART_FONT_SIZE = 13
@@ -535,6 +535,7 @@ def _asset_currency_allocation_data_cached(data_root: str, currency: str) -> pd.
         month=assets["Месяц"].astype(int),
         freq="M",
     ).to_timestamp(how="end").normalize()
+    assets["Дата оценки"] = asset_valuation_dates(assets)
     assets["Значение"] = pd.to_numeric(assets["Значение"], errors="coerce").fillna(0.0)
     assets["Валюта"] = assets["Валюта"].astype(str).str.upper()
     assets["value_in_target"] = _convert_asset_allocation_values(assets, currency)
@@ -555,7 +556,8 @@ def _asset_currency_allocation_data_cached(data_root: str, currency: str) -> pd.
 
 def _convert_asset_allocation_values(assets: pd.DataFrame, currency: str) -> pd.Series:
     values = assets["Значение"].copy()
-    for (from_currency, snapshot_date), index in assets.groupby(["Валюта", "Дата"]).groups.items():
+    valuation_column = "Дата оценки" if "Дата оценки" in assets.columns else "Дата"
+    for (from_currency, snapshot_date), index in assets.groupby(["Валюта", valuation_column]).groups.items():
         from_currency = str(from_currency).upper()
         if from_currency == currency:
             continue
