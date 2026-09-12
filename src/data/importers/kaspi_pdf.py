@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import io
+import json
 import re
 from pathlib import Path
 
@@ -37,11 +38,14 @@ INTERNAL_TRANSFER_PATTERNS = (
 
 
 def parse_kaspi_pdf(path: str | Path) -> pd.DataFrame:
-    return _import_frame_from_rows(_extract_rows_from_pdf(Path(path)))
+    return parse_kaspi_pdf_bytes(Path(path).read_bytes())
 
 
 def parse_kaspi_pdf_bytes(content: bytes) -> pd.DataFrame:
-    return _import_frame_from_rows(_extract_rows_from_pdf(io.BytesIO(content)))
+    return _import_frame_from_rows(
+        _extract_rows_from_pdf(io.BytesIO(content)),
+        statement_id=hashlib.sha256(content).hexdigest(),
+    )
 
 
 def _extract_rows_from_pdf(pdf_source) -> list[dict]:
@@ -66,7 +70,11 @@ def _extract_rows_from_pdf(pdf_source) -> list[dict]:
     return rows
 
 
-def _import_frame_from_rows(rows: list[dict], source: str = KASPI_SOURCE) -> pd.DataFrame:
+def _import_frame_from_rows(
+    rows: list[dict],
+    source: str = KASPI_SOURCE,
+    statement_id: str | None = None,
+) -> pd.DataFrame:
     data = pd.DataFrame(rows)
     if data.empty:
         return _empty_import_frame()
@@ -76,9 +84,12 @@ def _import_frame_from_rows(rows: list[dict], source: str = KASPI_SOURCE) -> pd.
         lambda row: _categorize(row["details"], row["signed_amount"], history_categories), axis=1
     )
     data["amount"] = data["signed_amount"].abs()
+    data["direction"] = data["signed_amount"].map(
+        lambda value: "credit" if float(value) > 0 else "debit"
+    )
     data["comment"] = data["details"].map(_clean_comment)
     data["source"] = source
-    data["source_id"] = _source_ids(data)
+    data["source_id"] = _source_ids(data, statement_id or _rows_statement_id(rows))
     data["status"] = "draft"
     data = _add_duplicate_flags(data, source)
     data = _sort_import_preview(data)
@@ -105,12 +116,28 @@ def save_kaspi_import_to_staging(import_rows: list[dict], path: str | Path | Non
     incoming = incoming[_import_columns()].copy(deep=True)
     source_keys = _existing_source_keys()
 
-    duplicate_mask = _as_bool_series(incoming["duplicate_in_staging"]) | _as_bool_series(incoming["duplicate_in_source"])
-    duplicate_mask = duplicate_mask | incoming.apply(lambda row: _source_key(row) in source_keys, axis=1)
-    if "skip_reason" in incoming.columns:
-        duplicate_mask = duplicate_mask | incoming["skip_reason"].astype(str).eq("internal_transfer")
-    if "import_action" in incoming.columns:
-        duplicate_mask = duplicate_mask | incoming["import_action"].astype(str).eq("skip")
+    actions = incoming["import_action"].astype(str).str.lower()
+    unsupported = ~actions.isin({"import", "skip", "review"})
+    if unsupported.any():
+        raise ValueError("Некорректное действие импорта: выбери import или skip.")
+    if actions.eq("review").any():
+        raise ValueError(
+            "Есть возможные дубли без решения: для каждой строки review выбери import или skip."
+        )
+    current_source_match = incoming.apply(
+        lambda row: _source_key(row) in source_keys, axis=1
+    )
+    preview_source_match = _as_bool_series(incoming["duplicate_in_source"])
+    if (current_source_match & ~preview_source_match).any():
+        raise ValueError(
+            "История операций изменилась после Preview: построй Preview заново и проверь возможные дубли."
+        )
+
+    duplicate_mask = _as_bool_series(incoming["duplicate_in_staging"])
+    duplicate_mask = duplicate_mask | incoming["skip_reason"].astype(str).eq(
+        "internal_transfer"
+    )
+    duplicate_mask = duplicate_mask | actions.eq("skip")
     accepted = incoming[~duplicate_mask].copy(deep=True)
     if accepted.empty:
         return {"accepted_rows": 0, "skipped_rows": int(len(incoming))}
@@ -204,17 +231,28 @@ def _clean_comment(details: str) -> str:
     return details.strip()
 
 
-def _source_ids(data: pd.DataFrame) -> pd.Series:
-    base_keys = data.apply(_source_base_key, axis=1)
-    occurrence_numbers = base_keys.groupby(base_keys).cumcount()
+def _source_ids(data: pd.DataFrame, statement_id: str) -> pd.Series:
     return pd.Series(
-        [hashlib.sha1(f"{base_key}|{occurrence}".encode("utf-8")).hexdigest() for base_key, occurrence in zip(base_keys, occurrence_numbers)],
+        [
+            hashlib.sha256(
+                f"{statement_id}|{row_number}|{_source_base_key(row)}".encode("utf-8")
+            ).hexdigest()
+            for row_number, (_, row) in enumerate(data.iterrows())
+        ],
         index=data.index,
     )
 
 
 def _source_base_key(row: pd.Series) -> str:
-    return f"{row['date']}|{row['amount']}|{row['currency']}|{_normalize_text(row['details'])}"
+    return (
+        f"{row['date']}|{row['signed_amount']}|{row['currency']}|"
+        f"{_normalize_text(row['details'])}"
+    )
+
+
+def _rows_statement_id(rows: list[dict]) -> str:
+    payload = json.dumps(rows, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 def _add_duplicate_flags(data: pd.DataFrame, source: str = KASPI_SOURCE) -> pd.DataFrame:
@@ -225,7 +263,7 @@ def _add_duplicate_flags(data: pd.DataFrame, source: str = KASPI_SOURCE) -> pd.D
     result["duplicate_in_staging"] = result["source_id"].isin(existing_source_ids)
     result["duplicate_in_source"] = result.apply(lambda row: _source_key(row) in source_keys, axis=1)
     result["skip_reason"] = result.apply(_skip_reason, axis=1)
-    result["import_action"] = result["skip_reason"].map(lambda value: "skip" if value else "import")
+    result["import_action"] = result["skip_reason"].map(_default_import_action)
     return result
 
 
@@ -235,8 +273,14 @@ def _skip_reason(row: pd.Series) -> str:
     if bool(row.get("duplicate_in_staging", False)):
         return "duplicate_in_staging"
     if bool(row.get("duplicate_in_source", False)):
-        return "duplicate_in_source"
+        return "possible_duplicate"
     return ""
+
+
+def _default_import_action(skip_reason: str) -> str:
+    if skip_reason == "possible_duplicate":
+        return "review"
+    return "skip" if skip_reason else "import"
 
 
 def _sort_import_preview(data: pd.DataFrame) -> pd.DataFrame:
@@ -247,7 +291,7 @@ def _sort_import_preview(data: pd.DataFrame) -> pd.DataFrame:
     return result.drop(columns=["__date_sort", "__action_sort"]).reset_index(drop=True)
 
 
-def _existing_source_keys() -> set[tuple[str, str, float]]:
+def _existing_source_keys() -> set[tuple[str, str, float, str, str]]:
     try:
         transactions = get_transactions()
     except Exception:
@@ -259,14 +303,36 @@ def _existing_source_keys() -> set[tuple[str, str, float]]:
         date = pd.to_datetime(row.get("Дата"), errors="coerce")
         amount = pd.to_numeric(row.get("Значение"), errors="coerce")
         currency = str(row.get("Валюта", "")).upper()
+        comment = _normalize_text(row.get("Комментарий", ""))
+        direction = _stored_transaction_direction(str(row.get("Категория", "")))
         if pd.isna(date) or pd.isna(amount) or not currency:
             continue
-        keys.add((date.date().isoformat(), currency, round(abs(float(amount)), 2)))
+        keys.add(
+            (
+                date.date().isoformat(),
+                currency,
+                round(abs(float(amount)), 2),
+                comment,
+                direction,
+            )
+        )
     return keys
 
 
-def _source_key(row: pd.Series) -> tuple[str, str, float]:
-    return (str(row["date"]), str(row["currency"]).upper(), round(abs(float(row["amount"])), 2))
+def _source_key(row: pd.Series) -> tuple[str, str, float, str, str]:
+    return (
+        str(row["date"]),
+        str(row["currency"]).upper(),
+        round(abs(float(row["amount"])), 2),
+        _normalize_text(row.get("comment", "")),
+        str(row.get("direction", "")).lower(),
+    )
+
+
+def _stored_transaction_direction(category: str) -> str:
+    if category in {"Доход", "Погашение деб. зад.", "Кредиторская задолженность"}:
+        return "credit"
+    return "debit"
 
 
 def _normalize_text(value: str) -> str:
@@ -274,7 +340,15 @@ def _normalize_text(value: str) -> str:
 
 
 def _import_columns() -> list[str]:
-    return [*DRAFT_COLUMNS, "details", "duplicate_in_staging", "duplicate_in_source", "skip_reason", "import_action"]
+    return [
+        *DRAFT_COLUMNS,
+        "direction",
+        "details",
+        "duplicate_in_staging",
+        "duplicate_in_source",
+        "skip_reason",
+        "import_action",
+    ]
 
 
 def _empty_import_frame() -> pd.DataFrame:

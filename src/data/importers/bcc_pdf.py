@@ -21,11 +21,17 @@ RU_TRANSACTION_DATE_RE = re.compile(r"^\d{2}\.\d{2}\.\d{4}$")
 
 
 def parse_bcc_pdf(path: str | Path) -> pd.DataFrame:
-    return _import_frame_from_rows(_extract_rows_from_pdf(Path(path)), BCC_SOURCE)
+    return parse_bcc_pdf_bytes(Path(path).read_bytes())
 
 
 def parse_bcc_pdf_bytes(content: bytes) -> pd.DataFrame:
-    return _import_frame_from_rows(_extract_rows_from_pdf(io.BytesIO(content)), BCC_SOURCE)
+    from hashlib import sha256
+
+    return _import_frame_from_rows(
+        _extract_rows_from_pdf(io.BytesIO(content)),
+        BCC_SOURCE,
+        statement_id=sha256(content).hexdigest(),
+    )
 
 
 def _extract_rows_from_pdf(pdf_source) -> list[dict]:

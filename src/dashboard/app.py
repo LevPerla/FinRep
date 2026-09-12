@@ -940,6 +940,7 @@ def register_callbacks(app: Dash) -> None:
                 f"{filename or 'PDF'}: найдено строк {len(data)}, "
                 f"к импорту {int(data['import_action'].eq('import').sum())}, "
                 f"skip {int(data['import_action'].eq('skip').sum())}, "
+                f"требуют решения {int(data['import_action'].eq('review').sum())}, "
                 f"внутренние переводы {internal_count}."
             )
             return _dataframe_records(data), _kaspi_import_column_defs(), message, "secondary"
@@ -2330,8 +2331,9 @@ def _kaspi_import_column_defs() -> list[dict]:
         {"field": "date", "headerName": "Дата", "width": 120, "sort": "asc", "sortIndex": 1},
         {"field": "amount", "headerName": "Сумма", "width": 120},
         {"field": "currency", "headerName": "Валюта", "width": 100},
+        {"field": "direction", "headerName": "Направление", "hide": True},
         {"field": "comment", "headerName": "Комментарий", "editable": True, "flex": 1, "minWidth": 220},
-        {"field": "import_action", "headerName": "Действие", "editable": True, "cellEditor": "agSelectCellEditor", "cellEditorParams": {"values": ["import", "skip"]}, "width": 120},
+        {"field": "import_action", "headerName": "Действие", "editable": True, "cellEditor": "agSelectCellEditor", "cellEditorParams": {"values": ["import", "skip"]}, "width": 120, "cellClassRules": {"text-warning": "params.value == 'review'"}},
         {"field": "skip_reason", "headerName": "Причина skip", "width": 170},
         {"field": "duplicate_in_source", "headerName": "Дубль в CSV", "width": 130},
         {"field": "duplicate_in_staging", "headerName": "Дубль в staging", "width": 150},
