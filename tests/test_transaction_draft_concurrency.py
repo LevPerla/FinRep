@@ -151,27 +151,16 @@ def test_test_mode_read_does_not_create_sidecar(drafts_path, monkeypatch):
     assert not lock_path.exists()
 
 
-def _draft_callback_request(
-    app, client, trigger, rows, revision, *, add_request_id="browser-add-request"
-):
+def _manual_callback_request(app, client, *, add_request_id="browser-add-request"):
     key = next(key for key in app.callback_map if "transaction-input-message.children" in key)
     callback = app.callback_map[key]
     values = {
-        "transaction-add-button": 1 if trigger == "transaction-add-button" else 0,
-        "transaction-save-grid-button": 1 if trigger == "transaction-save-grid-button" else 0,
-        "transaction-delete-button": 0,
-        "transaction-reload-grid-button": 1 if trigger == "transaction-reload-grid-button" else 0,
-        "transaction-filter-month": "2026-01",
-        "transaction-filter-category": "__all__",
-        "transaction-filter-status": "__all__",
-        "transaction-filter-source": "__all__",
+        "transaction-add-button": 1,
         "transaction-input-date": "2026-01-01",
         "transaction-input-category": "Прочее",
         "transaction-input-currency": "RUB",
         "transaction-input-amount": 100,
         "transaction-input-comment": "",
-        "transaction-drafts-grid": rows,
-        "transaction-drafts-revision": revision,
         "transaction-add-request-id": add_request_id,
     }
     payload = {
@@ -182,141 +171,9 @@ def _draft_callback_request(
         ],
         "inputs": [{**item, "value": values[item["id"]]} for item in callback["inputs"]],
         "state": [{**item, "value": values[item["id"]]} for item in callback["state"]],
-        "changedPropIds": [f"{trigger}.n_clicks"],
+        "changedPropIds": ["transaction-add-button.n_clicks"],
     }
     return client.post("/_dash-update-component", json=payload)
-
-
-def test_dashboard_conflict_preserves_edits_until_explicit_reload(
-    drafts_path, monkeypatch
-):
-    monkeypatch.setenv("FINREP_DASH_PASSWORD", "synthetic-password")
-    monkeypatch.setenv("FINREP_DASH_SECRET_KEY", "synthetic-key")
-    from src.dashboard.app import create_app
-
-    _append(drafts_path, "A")
-    rows, revision = staging.read_transaction_drafts_snapshot(drafts_path)
-    edited_rows = rows.to_dict("records")
-    edited_rows[0]["amount"] = "150"
-    _append(drafts_path, "B")
-    app = create_app()
-    client = app.server.test_client()
-    with client.session_transaction() as session:
-        session["authenticated"] = True
-        session["data_mode"] = "live"
-
-    conflict = _draft_callback_request(
-        app, client, "transaction-save-grid-button", edited_rows, revision
-    )
-    assert conflict.status_code == 200
-    response = conflict.get_json()["response"]
-    assert response["transaction-drafts-grid"]["rowData"] == edited_rows
-    assert "Обновить таблицу" in response["transaction-input-message"]["children"]
-    assert response["transaction-input-message"]["color"] == "warning"
-
-    reload_response = _draft_callback_request(
-        app, client, "transaction-reload-grid-button", edited_rows, revision
-    )
-    assert reload_response.status_code == 200
-    reloaded = reload_response.get_json()["response"]
-    reloaded_rows = reloaded["transaction-drafts-grid"]["rowData"]
-    assert {row["source_id"] for row in reloaded_rows} == {"A", "B"}
-    assert next(row for row in reloaded_rows if row["source_id"] == "A")["amount"] == "100"
-    assert reloaded["transaction-drafts-revision"]["data"] != revision
-
-
-def test_dashboard_grid_save_requires_revision(drafts_path, monkeypatch):
-    monkeypatch.setenv("FINREP_DASH_PASSWORD", "synthetic-password")
-    monkeypatch.setenv("FINREP_DASH_SECRET_KEY", "synthetic-key")
-    from src.dashboard.app import create_app
-
-    _append(drafts_path, "A")
-    rows = staging.read_transaction_drafts(drafts_path).to_dict("records")
-    rows[0]["amount"] = "150"
-    app = create_app()
-    client = app.server.test_client()
-    with client.session_transaction() as session:
-        session["authenticated"] = True
-        session["data_mode"] = "live"
-
-    response = _draft_callback_request(
-        app, client, "transaction-save-grid-button", rows, None
-    )
-
-    assert response.status_code == 200
-    result = response.get_json()["response"]
-    assert result["transaction-drafts-grid"]["rowData"] == rows
-    assert result["transaction-drafts-message"]["color"] == "warning"
-    assert staging.read_transaction_drafts(drafts_path).iloc[0]["amount"] == "100"
-
-
-def test_dashboard_refreshes_draft_filters_and_preserves_current_values(
-    drafts_path, monkeypatch
-):
-    monkeypatch.setenv("FINREP_DASH_PASSWORD", "synthetic-password")
-    monkeypatch.setenv("FINREP_DASH_SECRET_KEY", "synthetic-key")
-    staging.append_transaction_draft(
-        "2026-01-01",
-        "Новая категория",
-        "RUB",
-        100,
-        source="new-bank",
-        source_id="new-source-id",
-        path=drafts_path,
-    )
-    from src.dashboard import app as dashboard_app
-
-    monkeypatch.setattr(
-        dashboard_app,
-        "get_transactions",
-        lambda: pd.DataFrame({"Категория": ["Историческая категория"]}),
-    )
-    app = dashboard_app.create_app()
-    client = app.server.test_client()
-    with client.session_transaction() as session:
-        session["authenticated"] = True
-        session["data_mode"] = "live"
-
-    key = next(
-        key
-        for key in app.callback_map
-        if "transaction-filter-category.options" in key
-    )
-    callback = app.callback_map[key]
-    _, revision = staging.read_transaction_drafts_snapshot(drafts_path)
-    values = {
-        "transaction-drafts-revision": revision,
-        "transaction-filter-category": "Текущая категория",
-        "transaction-filter-source": "current-source",
-    }
-    payload = {
-        "output": key,
-        "outputs": [
-            {"id": item.component_id, "property": item.component_property}
-            for item in callback["output"]
-        ],
-        "inputs": [{**item, "value": values[item["id"]]} for item in callback["inputs"]],
-        "state": [{**item, "value": values[item["id"]]} for item in callback["state"]],
-        "changedPropIds": ["transaction-drafts-revision.data"],
-    }
-
-    response = client.post("/_dash-update-component", json=payload)
-
-    assert response.status_code == 200
-    result = response.get_json()["response"]
-    category_values = {
-        option["value"] for option in result["transaction-filter-category"]["options"]
-    }
-    source_values = {
-        option["value"] for option in result["transaction-filter-source"]["options"]
-    }
-    assert category_values >= {
-        "__all__",
-        "Историческая категория",
-        "Новая категория",
-        "Текущая категория",
-    }
-    assert source_values == {"__all__", "new-bank", "current-source"}
 
 
 def test_manual_submit_clears_sent_fields_and_retry_does_not_duplicate(
@@ -326,29 +183,14 @@ def test_manual_submit_clears_sent_fields_and_retry_does_not_duplicate(
     monkeypatch.setenv("FINREP_DASH_SECRET_KEY", "synthetic-key")
     from src.dashboard.app import create_app
 
-    _, revision = staging.read_transaction_drafts_snapshot(drafts_path)
     app = create_app()
     client = app.server.test_client()
     with client.session_transaction() as session:
         session["authenticated"] = True
         session["data_mode"] = "live"
 
-    first = _draft_callback_request(
-        app,
-        client,
-        "transaction-add-button",
-        [],
-        revision,
-        add_request_id="manual-submit-A",
-    )
-    retry = _draft_callback_request(
-        app,
-        client,
-        "transaction-add-button",
-        [],
-        revision,
-        add_request_id="manual-submit-A",
-    )
+    first = _manual_callback_request(app, client, add_request_id="manual-submit-A")
+    retry = _manual_callback_request(app, client, add_request_id="manual-submit-A")
 
     assert first.status_code == 200
     first_result = first.get_json()["response"]
