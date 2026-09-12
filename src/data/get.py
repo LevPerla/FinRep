@@ -1,10 +1,7 @@
 import pandas as pd
 import numpy as np
 import os
-import warnings
 from functools import lru_cache
-
-warnings.filterwarnings('ignore')
 
 from src import config
 from src.data.staging import TRANSACTION_BOUNDARY_RE, sanitize_transaction_comment
