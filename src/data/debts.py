@@ -9,9 +9,10 @@ import pandas as pd
 
 from src import config
 from src.data.csv_storage import atomic_write_csv
+from src.data.file_commit import commit_file_images, read_commit_receipt
 from src.data.get import get_transactions
 from src.data.proccess import convert_transaction
-from src.data.staging import append_transaction_draft
+from src.data import staging
 
 
 DEBT_COLUMNS = [
@@ -71,6 +72,20 @@ def ensure_debt_files(debts_path: str | Path | None = None, payments_path: str |
 
 
 def read_debts(path: str | Path | None = None) -> pd.DataFrame:
+    if config.is_test_mode():
+        return _read_debts_unlocked(path)
+    with staging.transaction_drafts_commit_lock():
+        return _read_debts_unlocked(path)
+
+
+def read_debt_payments(path: str | Path | None = None) -> pd.DataFrame:
+    if config.is_test_mode():
+        return _read_debt_payments_unlocked(path)
+    with staging.transaction_drafts_commit_lock():
+        return _read_debt_payments_unlocked(path)
+
+
+def _read_debts_unlocked(path: str | Path | None = None) -> pd.DataFrame:
     ensure_debt_files(path, None)
     if not _debt_path(path).exists():
         return pd.DataFrame(columns=DEBT_COLUMNS)
@@ -78,7 +93,7 @@ def read_debts(path: str | Path | None = None) -> pd.DataFrame:
     return _normalize_debts(data)
 
 
-def read_debt_payments(path: str | Path | None = None) -> pd.DataFrame:
+def _read_debt_payments_unlocked(path: str | Path | None = None) -> pd.DataFrame:
     ensure_debt_files(None, path)
     if not _payment_path(path).exists():
         return pd.DataFrame(columns=PAYMENT_COLUMNS)
@@ -114,41 +129,64 @@ def create_debt(
     cash_currency: str | None = None,
     comment: str = "",
     create_draft: bool = True,
+    operation_id: str | None = None,
 ) -> dict:
     config.require_writable_mode()
-    debts = read_debts()
-    debt_id = f"debt-{uuid4().hex[:12]}"
-    cash_amount_value = principal_amount if cash_amount in {None, ""} else cash_amount
-    cash_currency_value = principal_currency if cash_amount in {None, ""} or not cash_currency else cash_currency
-    row = {
-        "debt_id": debt_id,
-        "type": debt_type,
-        "counterparty": counterparty,
-        "opened_date": opened_date,
-        "principal_amount": principal_amount,
-        "principal_currency": principal_currency,
-        "cash_amount": cash_amount_value,
-        "cash_currency": cash_currency_value,
-        "comment": comment,
-        "status": "active",
-    }
-    updated = pd.concat([debts, pd.DataFrame([row])], ignore_index=True)
-    normalized = _normalize_debts(updated)
-    _raise_if_issues(validate_debt_rows(normalized, read_debt_payments()))
-    atomic_write_csv(normalized, _debt_path(), sep=";", index=False, encoding="utf-8-sig")
+    operation_id = str(operation_id or uuid4().hex)
+    with staging.transaction_drafts_commit_lock() as draft_path:
+        completed = _completed_debt_create(operation_id, draft_path)
+        if completed is not None:
+            return completed
 
-    draft = None
-    if create_draft:
-        debt = normalized[normalized["debt_id"].eq(debt_id)].iloc[0]
-        draft = _append_debt_draft(
-            date=debt["opened_date"],
-            category=_debt_category(debt["type"]),
-            currency=debt["cash_currency"],
-            amount=debt["cash_amount"],
-            comment=_debt_comment(debt),
-            source_id=f"{debt_id}:open",
+        debts = _read_debts_unlocked()
+        payments = _read_debt_payments_unlocked()
+        debt_id = f"debt-{uuid4().hex[:12]}"
+        cash_amount_value = principal_amount if cash_amount in {None, ""} else cash_amount
+        cash_currency_value = (
+            principal_currency
+            if cash_amount in {None, ""} or not cash_currency
+            else cash_currency
         )
-    return {"debt_id": debt_id, "draft_created": draft is not None}
+        row = {
+            "debt_id": debt_id,
+            "type": debt_type,
+            "counterparty": counterparty,
+            "opened_date": opened_date,
+            "principal_amount": principal_amount,
+            "principal_currency": principal_currency,
+            "cash_amount": cash_amount_value,
+            "cash_currency": cash_currency_value,
+            "comment": comment,
+            "status": "active",
+        }
+        normalized = _normalize_debts(pd.concat([debts, pd.DataFrame([row])], ignore_index=True))
+        _raise_if_issues(validate_debt_rows(normalized, payments))
+
+        images = {_debt_path(): _csv_bytes(normalized)}
+        if create_draft:
+            debt = normalized[normalized["debt_id"].eq(debt_id)].iloc[0]
+            drafts = staging._read_transaction_drafts_unlocked(draft_path)
+            updated_drafts = staging.transaction_drafts_with_appended_row(
+                drafts,
+                date=debt["opened_date"],
+                category=_debt_category(debt["type"]),
+                currency=debt["cash_currency"],
+                amount=debt["cash_amount"],
+                comment=_debt_comment(debt),
+                source=DEBT_DRAFT_SOURCE,
+                source_id=f"{debt_id}:open",
+                status="ready",
+            )
+            images[draft_path] = _csv_bytes(updated_drafts, encoding="utf-8")
+
+        result = {"debt_id": debt_id, "draft_created": create_draft}
+        commit_file_images(
+            _debt_create_journal_path(draft_path),
+            images,
+            receipt_path=_debt_create_receipt_path(draft_path),
+            receipt={"version": 1, "operation_id": operation_id, "result": result},
+        )
+        return result
 
 
 def create_debt_payment(
@@ -424,7 +462,7 @@ def _cash_to_debt_amount(cash_amount: float, cash_currency: str, debt_currency: 
 
 
 def _append_debt_draft(date: str, category: str, currency: str, amount, comment: str, source_id: str):
-    return append_transaction_draft(
+    return staging.append_transaction_draft(
         date=date,
         category=category,
         currency=currency,
@@ -572,6 +610,26 @@ def _debt_path(path: str | Path | None = None) -> Path:
 
 def _payment_path(path: str | Path | None = None) -> Path:
     return Path(path or config.active_data_path("debts", "debt_payments.csv"))
+
+
+def _debt_create_journal_path(draft_path: Path) -> Path:
+    return draft_path.with_name(f".{draft_path.name}.debt-create-commit.json")
+
+
+def _debt_create_receipt_path(draft_path: Path) -> Path:
+    return draft_path.with_name(f".{draft_path.name}.last-debt-create.json")
+
+
+def _completed_debt_create(operation_id: str, draft_path: Path) -> dict | None:
+    receipt = read_commit_receipt(_debt_create_receipt_path(draft_path))
+    if receipt is None or receipt.get("operation_id") != operation_id:
+        return None
+    result = receipt.get("result")
+    return result if isinstance(result, dict) else None
+
+
+def _csv_bytes(data: pd.DataFrame, encoding: str = "utf-8-sig") -> bytes:
+    return data.to_csv(sep=";", index=False).encode(encoding)
 
 
 def _slug(value) -> str:

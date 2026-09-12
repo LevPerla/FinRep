@@ -142,8 +142,35 @@ def append_transaction_draft(
     draft_path = _draft_path(path)
     with _transaction_drafts_lock(draft_path):
         data = _read_transaction_drafts_unlocked(draft_path)
-        source_id = source_id or _new_source_id(source)
-        new_row = pd.DataFrame([
+        updated = transaction_drafts_with_appended_row(
+            data,
+            date=date,
+            category=category,
+            currency=currency,
+            amount=amount,
+            comment=comment,
+            source=source,
+            source_id=source_id,
+            status=status,
+        )
+        _write_transaction_drafts_unlocked(updated, draft_path)
+        return _read_transaction_drafts_unlocked(draft_path)
+
+
+def transaction_drafts_with_appended_row(
+    data: pd.DataFrame,
+    *,
+    date: str,
+    category: str,
+    currency: str,
+    amount: float,
+    comment: str = "",
+    source: str = DEFAULT_SOURCE,
+    source_id: str | None = None,
+    status: str = DEFAULT_STATUS,
+) -> pd.DataFrame:
+    new_row = pd.DataFrame(
+        [
             {
                 "date": date,
                 "category": category,
@@ -151,13 +178,16 @@ def append_transaction_draft(
                 "amount": amount,
                 "comment": comment,
                 "source": source,
-                "source_id": source_id,
+                "source_id": source_id or _new_source_id(source),
                 "status": status,
             }
-        ])
-        updated = pd.concat([data, new_row], ignore_index=True)
-        _write_transaction_drafts_unlocked(updated, draft_path)
-        return _read_transaction_drafts_unlocked(draft_path)
+        ]
+    )
+    updated = _normalize_drafts(pd.concat([data, new_row], ignore_index=True))
+    issues = validate_transaction_drafts(updated)
+    if issues:
+        raise ValueError(_format_issues(issues))
+    return updated
 
 
 def append_transaction_draft_rows(
@@ -746,6 +776,13 @@ def _transaction_export_receipt_path(draft_path: Path) -> Path:
 
 
 @contextmanager
+def transaction_drafts_commit_lock(path: str | Path | None = None):
+    draft_path = _draft_path(path)
+    with _transaction_drafts_lock(draft_path):
+        yield draft_path
+
+
+@contextmanager
 def _transaction_drafts_lock(draft_path: Path):
     deadline = monotonic() + DRAFT_LOCK_TIMEOUT_SECONDS
     remaining = max(0.0, deadline - monotonic())
@@ -767,7 +804,10 @@ def _transaction_drafts_lock(draft_path: Path):
                         "Черновики сейчас сохраняются в другом процессе. Повтори попытку."
                     )
                 sleep(min(0.05, max(0.0, deadline - monotonic())))
-        recover_file_commit(_transaction_export_journal_path(draft_path))
+        for journal_path in sorted(
+            draft_path.parent.glob(f".{draft_path.name}.*-commit.json")
+        ):
+            recover_file_commit(journal_path)
         yield
     finally:
         if lock_file is not None:

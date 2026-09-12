@@ -3,6 +3,7 @@ from datetime import datetime
 from io import BytesIO
 from pathlib import Path
 from urllib.parse import parse_qs
+from uuid import uuid4
 
 from dash import ALL, Dash, Input, MATCH, Output, State, ctx, dcc, html, no_update
 import dash_ag_grid as dag
@@ -469,6 +470,11 @@ def create_layout():
             dcc.Location(id="dashboard-location"),
             dcc.Store(id="dashboard-theme", data="dark"),
             dcc.Store(id="dashboard-refresh-token", data=0),
+            dcc.Store(
+                id="debt-create-request-id",
+                data=uuid4().hex,
+                storage_type="session",
+            ),
             dcc.Store(
                 id="crypto-refresh-status",
                 data={
@@ -1146,6 +1152,7 @@ def register_callbacks(app: Dash) -> None:
         Output("debt-payment-id", "value"),
         Output("debt-input-message", "children"),
         Output("debt-input-message", "color"),
+        Output("debt-create-request-id", "data"),
         Output("dashboard-refresh-token", "data", allow_duplicate=True),
         Input("debt-add-button", "n_clicks", allow_optional=True),
         Input("debt-payment-button", "n_clicks", allow_optional=True),
@@ -1164,6 +1171,7 @@ def register_callbacks(app: Dash) -> None:
         State("debt-payment-amount", "value", allow_optional=True),
         State("debt-payment-cash-currency", "value", allow_optional=True),
         State("debt-payment-comment", "value", allow_optional=True),
+        State("debt-create-request-id", "data"),
         State("dashboard-refresh-token", "data"),
         prevent_initial_call=True,
     )
@@ -1185,12 +1193,14 @@ def register_callbacks(app: Dash) -> None:
         payment_amount,
         payment_cash_currency,
         payment_comment,
+        create_request_id,
         current_token,
     ):
         trigger = ctx.triggered_id
         message = ""
         color = "secondary"
         token = int(current_token or 0)
+        next_create_request_id = create_request_id or uuid4().hex
 
         try:
             if trigger in {"debt-add-button", "debt-payment-button", "debt-migrate-button"}:
@@ -1207,7 +1217,9 @@ def register_callbacks(app: Dash) -> None:
                     cash_amount=cash_amount,
                     cash_currency=cash_currency,
                     comment=comment or "",
+                    operation_id=next_create_request_id,
                 )
+                next_create_request_id = uuid4().hex
                 clear_data_cache()
                 clear_table_cache()
                 clear_main_dashboard_cache()
@@ -1257,6 +1269,7 @@ def register_callbacks(app: Dash) -> None:
             selected_value,
             message,
             color,
+            next_create_request_id,
             token,
         )
 
