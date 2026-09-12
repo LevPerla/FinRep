@@ -8,6 +8,7 @@ from pathlib import Path
 import pandas as pd
 
 from src import config
+from src.data.cache_invalidation import clear_valuation_caches
 from src.data.csv_storage import atomic_write_csv
 
 
@@ -149,6 +150,7 @@ def write_price_cache(data: pd.DataFrame, path: str | Path | None = None) -> Non
             raise ValueError(f"row {row_number}: price must be finite")
     cache_path = ensure_price_cache_file(path)
     atomic_write_csv(normalized, cache_path, sep=";", index=False, encoding="utf-8-sig")
+    clear_valuation_caches()
 
 
 def seed_price_cache_from_transactions(

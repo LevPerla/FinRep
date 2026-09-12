@@ -10,6 +10,7 @@ import pandas as pd
 import requests
 
 from src import config
+from src.data.cache_invalidation import clear_valuation_caches
 from src.data.csv_storage import atomic_write_csv
 from src.data.get_finance import get_actual_fx_rate, get_fallback_rate
 from src.data.investments import latest_cached_prices, read_price_cache, write_price_cache
@@ -167,6 +168,7 @@ def write_crypto_balances(data: pd.DataFrame, path: str | Path | None = None) ->
     normalized = normalized[BALANCE_COLUMNS].fillna("")
     balance_path.parent.mkdir(parents=True, exist_ok=True)
     atomic_write_csv(normalized, balance_path, sep=";", index=False, encoding="utf-8-sig")
+    clear_valuation_caches()
 
 
 def read_crypto_transactions(path: str | Path | None = None) -> pd.DataFrame:
