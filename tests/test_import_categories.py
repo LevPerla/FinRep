@@ -28,8 +28,12 @@ def test_category_comes_from_latest_transaction_with_same_comment():
     assert data.iloc[0]["category"] == "Досуг"
 
 
-def test_category_falls_back_to_import_rules_without_history_match():
-    with patch.object(common, "get_transactions", return_value=pd.DataFrame()):
-        category = common.categorize("Cafe near home", -500.0, {})
+def test_category_falls_back_to_import_rules_without_history_match(tmp_path, monkeypatch):
+    rules_path = tmp_path / "import_rules" / "categories.csv"
+    rules_path.parent.mkdir(parents=True)
+    rules_path.write_text("pattern;category\ncafe;Пища\n", encoding="utf-8")
+    monkeypatch.setattr(common.config, "DATA_PATH", str(tmp_path))
+
+    category = common.categorize("Cafe near home", -500.0, {})
 
     assert category == "Пища"
