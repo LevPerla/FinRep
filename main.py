@@ -7,6 +7,7 @@ from src.reports.year_report import create_year_report
 CURRENCY = 'RUB'
 YEAR = '2026'
 MONTH = '04'
+LOCALE = 'ru'
 FX_NETWORK_ENABLED = True
 VALIDATE_DATA = True
 
@@ -18,13 +19,14 @@ def main() -> None:
     if VALIDATE_DATA:
         validate_all_data()
 
-    create_main_report(currency=CURRENCY, fx_network_enabled=FX_NETWORK_ENABLED)
-    create_year_report(year=YEAR, currency=CURRENCY, fx_network_enabled=FX_NETWORK_ENABLED)
+    create_main_report(currency=CURRENCY, fx_network_enabled=FX_NETWORK_ENABLED, locale=LOCALE)
+    create_year_report(year=YEAR, currency=CURRENCY, fx_network_enabled=FX_NETWORK_ENABLED, locale=LOCALE)
     create_month_report(
         year=YEAR,
         currency=CURRENCY,
         month=MONTH,
         fx_network_enabled=FX_NETWORK_ENABLED,
+        locale=LOCALE,
     )
 
 

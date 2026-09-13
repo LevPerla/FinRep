@@ -52,6 +52,7 @@ from src.dashboard.investment_data import build_investment_dashboard_data
 from src.dashboard.i18n import (
     DEFAULT_LOCALE,
     localize_report_datasets,
+    localize_export_dataframe,
     normalize_locale,
     report_column_label,
     report_text,
@@ -859,6 +860,7 @@ def register_callbacks(app: Dash) -> None:
         State("dashboard-year", "value"),
         State("dashboard-month", "value"),
         State("dashboard-tabs", "active_tab"),
+        State("dashboard-locale", "data"),
         prevent_initial_call=True,
     )
     def download_dataset(
@@ -868,6 +870,7 @@ def register_callbacks(app: Dash) -> None:
         year: str,
         month: str,
         active_tab: str,
+        locale: str,
     ):
         if not n_clicks:
             raise PreventUpdate
@@ -878,8 +881,10 @@ def register_callbacks(app: Dash) -> None:
             raise PreventUpdate
 
         dataset = datasets[dataset_id]
+        export_data = localize_export_dataframe(dataset.dataframe, locale)
+        export_title = str(report_text(dataset.title, locale))
         filename = _download_filename(dataset, currency, active_tab, year, month)
-        return dcc.send_bytes(_dataframe_to_xlsx_bytes(dataset.dataframe, dataset.title), filename)
+        return dcc.send_bytes(_dataframe_to_xlsx_bytes(export_data, export_title), filename)
 
     @app.callback(
         Output("page-export-download", "data"),
@@ -892,6 +897,7 @@ def register_callbacks(app: Dash) -> None:
         State("dashboard-year", "value"),
         State("dashboard-month", "value"),
         State("dashboard-tabs", "active_tab"),
+        State("dashboard-locale", "data"),
         prevent_initial_call=True,
     )
     def export_page(
@@ -901,12 +907,13 @@ def register_callbacks(app: Dash) -> None:
         year: str,
         month: str,
         active_tab: str,
+        locale: str,
     ):
         if not png_clicks and not pdf_clicks:
             raise PreventUpdate
 
         if config.is_test_mode():
-            return no_update, "PNG/PDF доступны только в LIVE.", "warning", True
+            return no_update, tr("dashboard.export_live_only", locale), "warning", True
 
         export_format = "png" if ctx.triggered_id == "export-png" else "pdf"
         try:
@@ -918,10 +925,13 @@ def register_callbacks(app: Dash) -> None:
                 month=month if active_tab == "month" else None,
                 session_cookie=request.cookies.get(app.server.config.get("SESSION_COOKIE_NAME", "session")),
                 session_cookie_name=app.server.config.get("SESSION_COOKIE_NAME", "session"),
+                locale=locale,
             )
         except ExportBusyError as exc:
-            return no_update, str(exc), "warning", True
-        return dcc.send_file(str(export_path)), "Экспорт готов.", "success", True
+            message = "An export is already running. Try again after it finishes." if normalize_locale(locale) == "en" else str(exc)
+            return no_update, message, "warning", True
+        message = "Export ready." if normalize_locale(locale) == "en" else "Экспорт готов."
+        return dcc.send_file(str(export_path)), message, "success", True
 
     @app.callback(
         Output("kaspi-import-grid", "rowData"),

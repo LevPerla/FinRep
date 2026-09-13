@@ -38,10 +38,10 @@ def test_import_is_inert_and_main_generates_all_reports(monkeypatch):
 
     assert calls == [
         ("validate", {}),
-        ("main", {"currency": "RUB", "fx_network_enabled": True}),
+        ("main", {"currency": "RUB", "fx_network_enabled": True, "locale": "ru"}),
         (
             "year",
-            {"year": "2026", "currency": "RUB", "fx_network_enabled": True},
+            {"year": "2026", "currency": "RUB", "fx_network_enabled": True, "locale": "ru"},
         ),
         (
             "month",
@@ -50,6 +50,7 @@ def test_import_is_inert_and_main_generates_all_reports(monkeypatch):
                 "currency": "RUB",
                 "month": "04",
                 "fx_network_enabled": True,
+                "locale": "ru",
             },
         ),
     ]

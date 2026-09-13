@@ -49,6 +49,11 @@ REPORT_TEXT_EN = {
     "Финансовый запас по денежному потоку": "Cash-flow runway",
     "Валютные сценарии": "Currency scenarios",
     "Нет данных за выбранный год": "No data for the selected year",
+    "Статистика по годам": "Yearly statistics",
+    "Дельты": "Net cash flow",
+    "Информация о курсах валют": "Exchange-rate information",
+    "Нет данных о курсах валют": "No exchange-rate data",
+    "Ошибка загрузки курсов валют": "Could not load exchange rates",
     # Table columns, metrics, statuses and legend labels.
     "Год": "Year",
     "Месяц": "Month",
@@ -423,6 +428,9 @@ def report_text(value: object, locale: str | None = None) -> object:
         (r"^Недопустимая валюта актива: (.+)$", r"Unsupported asset currency: \1"),
         (r"^PDF слишком большой: максимум (.+)\.$", r"The PDF is too large. Maximum size: \1."),
         (r"^PDF содержит (\d+) стр\.; максимум (\d+)\.$", r"The PDF has \1 pages. Maximum: \2."),
+        (r"^Основной отчет в валюте (.+)$", r"Overview report in \1"),
+        (r"^Отчет за (\d{4}) год в валюте (.+)$", r"Report for \1 in \2"),
+        (r"^Отчет за (\d{2}) месяц (\d{4}) года, в валюте (.+)$", r"Report for \2-\1 in \3"),
     )
     for pattern, replacement in patterns:
         if re.match(pattern, value):
@@ -471,7 +479,7 @@ def localize_report_datasets(datasets: dict, locale: str | None) -> dict:
                 value_columns = value_columns | {"Счет"}.intersection(display.columns)
             for column in value_columns:
                 display[column] = display[column].map(lambda value: report_text(value, "en"))
-        figure = _localized_figure(dataset.figure)
+        figure = localize_figure(dataset.figure, "en")
         localized[dataset_id] = replace(
             dataset,
             title=str(report_text(dataset.title, "en")),
@@ -481,9 +489,22 @@ def localize_report_datasets(datasets: dict, locale: str | None) -> dict:
     return localized
 
 
-def _localized_figure(figure):
+def localize_export_dataframe(data: pd.DataFrame, locale: str | None) -> pd.DataFrame:
+    """Localize spreadsheet presentation while preserving numeric cells and data keys."""
+    localized = data.copy(deep=True)
+    if normalize_locale(locale) != "en":
+        return localized
+    for column in REPORT_VALUE_COLUMNS.intersection(localized.columns):
+        localized[column] = localized[column].map(lambda value: report_text(value, "en"))
+    return localized.rename(columns=lambda column: report_column_label(str(column), "en"))
+
+
+def localize_figure(figure, locale: str | None):
+    """Return a presentation-localized Plotly figure copy."""
     if figure is None:
         return None
+    if normalize_locale(locale) != "en":
+        return figure
     localized = deepcopy(figure)
     if localized.layout.title and localized.layout.title.text:
         localized.layout.title.text = report_text(localized.layout.title.text, "en")
@@ -502,6 +523,9 @@ def _localized_figure(figure):
         customdata = getattr(trace, "customdata", None)
         if customdata is not None:
             trace.customdata = _translate_nested_values(customdata)
+        header = getattr(trace, "header", None)
+        if header is not None and getattr(header, "values", None) is not None:
+            header.values = [report_column_label(str(value), "en") for value in header.values]
     return localized
 
 

@@ -11,9 +11,16 @@ import io
 from src import config, utils
 from src.model.create_tables import get_balance_by_month, get_cost_distribution
 from src.data.get_finance import set_fx_network_enabled
+from src.dashboard.i18n import DEFAULT_LOCALE, localize_figure
 from src.reports.helpers import add_exchange_rates_table, add_table, write_report_html
 
-def create_year_report(year, currency, return_image=False, fx_network_enabled: bool = True):
+def create_year_report(
+    year,
+    currency,
+    return_image=False,
+    fx_network_enabled: bool = True,
+    locale: str = DEFAULT_LOCALE,
+):
     assert currency in config.UNIQUE_TICKERS.keys(), f'currency должно быть из {config.UNIQUE_TICKERS.keys()}'
     set_fx_network_enabled(fx_network_enabled)
 
@@ -182,6 +189,7 @@ def create_year_report(year, currency, return_image=False, fx_network_enabled: b
         margin=dict(l=50, r=50, t=80, b=50),
         font=dict(size=12)
     )
+    fig = localize_figure(fig, locale)
 
     if return_image:
         # Create a BytesIO object to hold the bytes

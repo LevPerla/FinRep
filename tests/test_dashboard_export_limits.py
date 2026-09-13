@@ -2,7 +2,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from threading import Event
-from unittest.mock import Mock
+from unittest.mock import MagicMock, Mock
 
 import pytest
 
@@ -35,7 +35,7 @@ def _component_text(node) -> str:
     return ""
 
 
-def _export_callback_request(app, client):
+def _export_callback_request(app, client, locale="ru"):
     key = next(key for key in app.callback_map if "page-export-download.data" in key)
     callback = app.callback_map[key]
     outputs = callback["output"]
@@ -61,6 +61,7 @@ def _export_callback_request(app, client):
             {"id": "dashboard-year", "property": "value", "value": "2026"},
             {"id": "dashboard-month", "property": "value", "value": "05"},
             {"id": "dashboard-tabs", "property": "active_tab", "value": "main"},
+            {"id": "dashboard-locale", "property": "data", "value": locale},
         ],
         "changedPropIds": ["export-png.n_clicks"],
     }
@@ -136,6 +137,32 @@ def test_live_callback_returns_busy_message_without_download(monkeypatch):
     assert "Экспорт уже выполняется" in result["page-export-message"]["children"]
 
 
+def test_live_callback_passes_english_locale_and_localizes_feedback(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setenv("FINREP_DASH_PASSWORD", "synthetic-password")
+    monkeypatch.setenv("FINREP_DASH_SECRET_KEY", "synthetic-key")
+    from src.dashboard import app as app_module
+
+    app = app_module.create_app()
+    client = app.server.test_client()
+    client.post(
+        "/login",
+        data={"password": "synthetic-password", "data_mode": "live"},
+    )
+    output = tmp_path / "export.png"
+    output.write_bytes(b"png")
+    render = Mock(return_value=output)
+    monkeypatch.setattr(app_module, "export_dashboard_page", render)
+
+    response = _export_callback_request(app, client, locale="en")
+
+    assert response.status_code == 200
+    result = response.get_json()["response"]
+    assert result["page-export-message"]["children"] == "Export ready."
+    assert render.call_args.kwargs["locale"] == "en"
+
+
 class _Page:
     def goto(self, *args, **kwargs):
         pass
@@ -145,6 +172,9 @@ class _Page:
 
 
 class _Context:
+    def add_init_script(self, *args, **kwargs):
+        pass
+
     def route(self, *args, **kwargs):
         pass
 
@@ -219,6 +249,28 @@ def test_export_lock_is_released_after_playwright_error(tmp_path, monkeypatch):
 
     assert export._EXPORT_LOCK.acquire(blocking=False)
     export._EXPORT_LOCK.release()
+
+
+def test_export_browser_receives_selected_locale_before_page_load(tmp_path, monkeypatch):
+    page = MagicMock()
+    context = MagicMock()
+    context.new_page.return_value = page
+    browser = MagicMock()
+    browser.new_context.return_value = context
+    playwright = MagicMock()
+    playwright.chromium.launch.return_value = browser
+    manager = MagicMock()
+    manager.__enter__.return_value = playwright
+    monkeypatch.setattr(export.config, "REPORTS_PATH", str(tmp_path))
+    monkeypatch.setattr(export, "sync_playwright", lambda: manager)
+    monkeypatch.setattr(export, "_wait_for_dashboard_ready", lambda page: None)
+
+    export.export_dashboard_page("RUB", "main", "png", locale="en")
+
+    script = context.add_init_script.call_args.args[0]
+    assert "dashboard-locale" in script
+    assert '\\"en\\"' in script
+    page.goto.assert_called_once()
 
 
 def test_docker_runs_one_process_for_process_local_export_lock():
