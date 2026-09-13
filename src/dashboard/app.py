@@ -1571,6 +1571,9 @@ def _runway_section(dataset: DashboardDataset, theme: str | None = None):
 
 
 def _month_report_layout(datasets: dict[str, DashboardDataset], theme: str | None):
+    if "month_empty" in datasets:
+        return _month_empty_state(datasets["month_empty"])
+
     return html.Div(
         [
             _month_summary_section(datasets["month_summary"], theme=theme),
@@ -1581,6 +1584,37 @@ def _month_report_layout(datasets: dict[str, DashboardDataset], theme: str | Non
             _grid_section(datasets["month_assets"], height="1120px", theme=theme),
         ],
         className="d-grid gap-4",
+    )
+
+
+def _month_empty_state(dataset: DashboardDataset):
+    row = dataset.dataframe.iloc[0]
+    year = str(row["Год"])
+    month = str(row["Месяц"]).zfill(2)
+    currency = str(row["Валюта"])
+    input_href = "?" + urlencode(
+        {"currency": currency, "year": year, "month": month, "tab": "input"}
+    )
+    return html.Section(
+        [
+            html.Div("Месяц не сохранён", className="finrep-first-run-kicker"),
+            html.H2(f"Нет данных за {year}-{month}", className="h3 mb-2"),
+            html.P(
+                "Выбранный месяц ещё не создан. Добавьте или импортируйте операции, проверьте Preview и сохраните месяц.",
+                className="finrep-first-run-intro",
+            ),
+            dcc.Link(
+                dbc.Button(
+                    "Перейти к вводу данных",
+                    color="primary",
+                    className="finrep-first-run-action",
+                ),
+                id="month-empty-input-link",
+                href=input_href,
+            ),
+        ],
+        id="month-empty-state",
+        className="finrep-first-run",
     )
 
 
