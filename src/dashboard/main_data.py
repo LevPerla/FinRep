@@ -178,7 +178,10 @@ def _cockpit_metrics(
         return pd.DataFrame(columns=columns)
 
     selected_row, selected_period, is_selected_month = _selected_balance_row(balance, year, month)
-    latest_row = balance.sort_index().tail(1).iloc[0]
+    sorted_balance = balance.sort_index()
+    latest_row = sorted_balance.tail(1).iloc[0]
+    latest_period = pd.to_datetime(sorted_balance.index[-1]).to_period("M")
+    selected_period_available = not selected_row.empty
     current_capital = _latest_number(balance, "Капитал по активам")
     capital_source = "assets"
     capital_label = "Капитал по активам"
@@ -191,29 +194,115 @@ def _cockpit_metrics(
         capital_detail = "Накопленный денежный поток за доступную историю"
         runway_label = "Финансовый запас по денежному потоку"
 
-    income = _row_number(selected_row, "Доход")
-    expense = _row_number(selected_row, "Расход")
-    delta = _row_number(selected_row, "Дельта")
+    income = _row_number(selected_row, "Доход") if selected_period_available else pd.NA
+    expense = _row_number(selected_row, "Расход") if selected_period_available else pd.NA
+    delta = _row_number(selected_row, "Дельта") if selected_period_available else pd.NA
     avg_expense = float(pd.to_numeric(balance["Расход"].tail(12), errors="coerce").mean())
     runway_months = current_capital / avg_expense if avg_expense > 0 else pd.NA
-    savings_rate = _bounded_percent(delta / income * 100) if income > 0 else pd.NA
+    savings_rate = _bounded_percent(delta / income * 100) if pd.notna(income) and income > 0 else pd.NA
     asset_gap = _row_number(latest_row, "Расхождение с активами")
-    fx_impact = _row_number(selected_row, "Валютная переоценка")
+    fx_impact = _row_number(selected_row, "Валютная переоценка") if selected_period_available else pd.NA
     period_label = str(selected_period)
-    period_detail = "выбранный месяц" if is_selected_month else "последний доступный месяц"
+    period_detail = (
+        "выбранный месяц"
+        if is_selected_month
+        else "последний доступный месяц" if selected_period_available else "нет сохранённых данных"
+    )
+    latest_period_suffix = f"; данные на {latest_period}" if not selected_period_available else ""
     avg_expense_label = f"{avg_expense:,.0f}".replace(",", " ") + config.UNIQUE_TICKERS[currency]
+    month_detail = f"{period_label}, {period_detail}"
+    cash_flow_detail = (
+        f"{period_label}: доход минус расход"
+        if selected_period_available
+        else f"{period_label}: {period_detail}"
+    )
+    expense_detail = (
+        f"{period_label}, средний расход за 12 месяцев: {avg_expense_label}"
+        if selected_period_available
+        else month_detail
+    )
+    savings_rate_detail = (
+        f"{period_label}: денежный поток / доход"
+        if selected_period_available
+        else f"{period_label}: {period_detail}"
+    )
+    fx_detail = (
+        f"{period_label}: изменение стоимости из-за курсов валют"
+        if selected_period_available
+        else f"{period_label}: {period_detail}"
+    )
 
     rows = [
-        ("capital", capital_label, current_capital, capital_source, capital_detail, "money"),
-        ("monthly_income", "Доход месяца", income, "ok" if income > 0 else "empty", f"{period_label}, {period_detail}", "money"),
-        ("monthly_expense", "Расход месяца", expense, "watch" if expense > avg_expense * 1.2 and avg_expense > 0 else "ok", f"{period_label}, средний расход за 12 месяцев: {avg_expense_label}", "money"),
-        ("monthly_cash_flow", "Денежный поток месяца", delta, "positive" if delta >= 0 else "negative", f"{period_label}: доход минус расход", "money"),
-        ("savings_rate", "Норма сбережений", savings_rate, _savings_rate_status(savings_rate), f"{period_label}: денежный поток / доход", "percent"),
-        ("runway", runway_label, runway_months, _runway_status(runway_months), f"{capital_label} / средний расход за последние 12 месяцев", "months"),
-        ("asset_gap", "Расхождение с активами", asset_gap, _asset_gap_status(asset_gap, current_capital), "Последний снимок активов минус капитал по денежному потоку", "money"),
-        ("monthly_fx_revaluation", "Валютная переоценка месяца", fx_impact, "positive" if fx_impact >= 0 else "negative", f"{period_label}: изменение стоимости из-за курсов валют", "money"),
+        (
+            "capital",
+            capital_label,
+            current_capital,
+            capital_source,
+            f"{capital_detail}{latest_period_suffix}",
+            "money",
+        ),
+        (
+            "monthly_income",
+            "Доход месяца",
+            income,
+            "empty" if pd.isna(income) or income <= 0 else "ok",
+            month_detail,
+            "money",
+        ),
+        (
+            "monthly_expense",
+            "Расход месяца",
+            expense,
+            "empty" if pd.isna(expense) else "watch" if expense > avg_expense * 1.2 and avg_expense > 0 else "ok",
+            expense_detail,
+            "money",
+        ),
+        (
+            "monthly_cash_flow",
+            "Денежный поток месяца",
+            delta,
+            "empty" if pd.isna(delta) else "positive" if delta >= 0 else "negative",
+            cash_flow_detail,
+            "money",
+        ),
+        (
+            "savings_rate",
+            "Норма сбережений",
+            savings_rate,
+            _savings_rate_status(savings_rate),
+            savings_rate_detail,
+            "percent",
+        ),
+        (
+            "runway",
+            runway_label,
+            runway_months,
+            _runway_status(runway_months),
+            f"{capital_label} / средний расход за последние 12 месяцев{latest_period_suffix}",
+            "months",
+        ),
+        (
+            "asset_gap",
+            "Расхождение с активами",
+            asset_gap,
+            _asset_gap_status(asset_gap, current_capital),
+            f"Последний снимок активов минус капитал по денежному потоку{latest_period_suffix}",
+            "money",
+        ),
+        (
+            "monthly_fx_revaluation",
+            "Валютная переоценка месяца",
+            fx_impact,
+            "empty" if pd.isna(fx_impact) else "positive" if fx_impact >= 0 else "negative",
+            fx_detail,
+            "money",
+        ),
     ]
-    return pd.DataFrame(rows, columns=columns)
+    result = pd.DataFrame(rows, columns=columns)
+    result.attrs["selected_period"] = period_label
+    result.attrs["selected_period_available"] = selected_period_available
+    result.attrs["latest_period"] = str(latest_period)
+    return result
 
 
 def _selected_balance_row(
@@ -229,6 +318,7 @@ def _selected_balance_row(
             matches = monthly[periods == selected_period]
             if not matches.empty:
                 return matches.iloc[-1], selected_period, True
+            return pd.Series(dtype=object), selected_period, False
         except (TypeError, ValueError):
             pass
     latest_period = pd.to_datetime(monthly.index[-1]).to_period("M")

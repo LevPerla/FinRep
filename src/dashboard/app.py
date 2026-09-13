@@ -1274,21 +1274,37 @@ def _main_report_layout(
     if datasets["cockpit_metrics"].dataframe.empty:
         return _main_first_run_state(currency, year, month)
 
-    return html.Div(
+    sections = [
+        _cockpit_section(datasets["cockpit_metrics"], theme=theme),
+        _grid_section(datasets["yearly_stats"], height="300px", theme=theme),
+        _grid_section(datasets["fx_rates"], height="260px", theme=theme),
+        _graph_section(datasets["income_expense"], theme=theme),
+        _graph_section(datasets["delta"], theme=theme),
+        _graph_section(datasets["savings_rate"], theme=theme),
+        _graph_section(datasets["capital"], height="640px", theme=theme),
+        _graph_section(datasets["fx_revaluation"], height="420px", theme=theme),
+        _graph_section(datasets["asset_currency_allocation"], height="520px", theme=theme),
+        _graph_section(datasets["fx_changes"], theme=theme),
+        _grid_section(datasets["top_purchases"], height="680px", theme=theme),
+    ]
+    metrics = datasets["cockpit_metrics"].dataframe
+    if metrics.attrs.get("selected_period_available") is False:
+        sections.insert(0, _main_missing_month_notice(str(metrics.attrs["selected_period"])))
+    return html.Div(sections, className="d-grid gap-4")
+
+
+def _main_missing_month_notice(period: str):
+    return dbc.Alert(
         [
-            _cockpit_section(datasets["cockpit_metrics"], theme=theme),
-            _grid_section(datasets["yearly_stats"], height="300px", theme=theme),
-            _grid_section(datasets["fx_rates"], height="260px", theme=theme),
-            _graph_section(datasets["income_expense"], theme=theme),
-            _graph_section(datasets["delta"], theme=theme),
-            _graph_section(datasets["savings_rate"], theme=theme),
-            _graph_section(datasets["capital"], height="640px", theme=theme),
-            _graph_section(datasets["fx_revaluation"], height="420px", theme=theme),
-            _graph_section(datasets["asset_currency_allocation"], height="520px", theme=theme),
-            _graph_section(datasets["fx_changes"], theme=theme),
-            _grid_section(datasets["top_purchases"], height="680px", theme=theme),
+            html.Div(f"Нет данных за {period}", className="fw-semibold"),
+            html.Div(
+                "Показатели выбранного месяца недоступны. История и показатели с указанной последней датой остаются видимыми.",
+                className="small mt-1",
+            ),
         ],
-        className="d-grid gap-4",
+        id="main-missing-month-notice",
+        color="warning",
+        className="mb-0",
     )
 
 
