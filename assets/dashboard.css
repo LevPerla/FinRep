@@ -909,6 +909,10 @@ body {
   text-align: left;
 }
 
+.finrep-mobile-more #mobile-more-close {
+  min-height: 48px;
+}
+
 .mobile-more-item-icon {
   display: inline-grid;
   width: 28px;
