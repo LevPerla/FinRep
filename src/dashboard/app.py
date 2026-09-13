@@ -800,6 +800,7 @@ def register_callbacks(app: Dash) -> None:
                 theme,
                 read_only=config.is_test_mode(),
                 transaction_save_result=transaction_save_result,
+                locale=locale,
             )
 
         try:
@@ -931,28 +932,38 @@ def register_callbacks(app: Dash) -> None:
         Output("transaction-import-period", "value"),
         Input("kaspi-upload", "contents", allow_optional=True),
         State("kaspi-upload", "filename", allow_optional=True),
+        State("dashboard-locale", "data"),
         prevent_initial_call=True,
     )
-    def preview_kaspi_pdf(contents, filename):
+    def preview_kaspi_pdf(contents, filename, locale):
         if not contents:
             raise PreventUpdate
         display_filename = _safe_upload_filename(filename)
         try:
             data = parse_bank_upload_contents(contents)
             internal_count = int(data["skip_reason"].eq("internal_transfer").sum()) if "skip_reason" in data else 0
-            message = (
-                f"{display_filename}: найдено строк {len(data)}, "
-                f"к импорту {int(data['import_action'].eq('import').sum())}, "
-                f"skip {int(data['import_action'].eq('skip').sum())}, "
-                f"требуют решения {int(data['import_action'].eq('review').sum())}, "
-                f"внутренние переводы {internal_count}."
-            )
+            if normalize_locale(locale) == "en":
+                message = (
+                    f"{display_filename}: {len(data)} rows found, "
+                    f"{int(data['import_action'].eq('import').sum())} to import, "
+                    f"{int(data['import_action'].eq('skip').sum())} skipped, "
+                    f"{int(data['import_action'].eq('review').sum())} require review, "
+                    f"{internal_count} internal transfers."
+                )
+            else:
+                message = (
+                    f"{display_filename}: найдено строк {len(data)}, "
+                    f"к импорту {int(data['import_action'].eq('import').sum())}, "
+                    f"skip {int(data['import_action'].eq('skip').sum())}, "
+                    f"требуют решения {int(data['import_action'].eq('review').sum())}, "
+                    f"внутренние переводы {internal_count}."
+                )
             period_options, period_value = _import_period_selection(data)
             if len(period_options) > 1:
-                message += " Выписка содержит несколько месяцев — выбери период перед Preview."
+                message += " The statement contains multiple months — select a period before Preview." if normalize_locale(locale) == "en" else " Выписка содержит несколько месяцев — выбери период перед Preview."
             return (
                 _dataframe_records(data),
-                _kaspi_import_column_defs(),
+                _localized_input_column_defs(_kaspi_import_column_defs(), locale),
                 message,
                 "secondary",
                 period_options,
@@ -965,13 +976,13 @@ def register_callbacks(app: Dash) -> None:
                 type(exc).__name__,
                 exc_info=True,
             )
-            return [], _kaspi_import_column_defs(), f"{display_filename}: {exc}", "danger", [], None
+            return [], _localized_input_column_defs(_kaspi_import_column_defs(), locale), f"{display_filename}: {report_text(str(exc), locale)}", "danger", [], None
         except Exception:
             logger.exception("Unexpected bank PDF import failure: filename=%r", display_filename)
             return (
                 [],
-                _kaspi_import_column_defs(),
-                f"{display_filename}: импорт не выполнен из-за внутренней ошибки.",
+                _localized_input_column_defs(_kaspi_import_column_defs(), locale),
+                (f"{display_filename}: import failed due to an internal error." if normalize_locale(locale) == "en" else f"{display_filename}: импорт не выполнен из-за внутренней ошибки."),
                 "danger",
                 [],
                 None,
@@ -990,6 +1001,7 @@ def register_callbacks(app: Dash) -> None:
         State("transaction-input-amount", "value", allow_optional=True),
         State("transaction-input-comment", "value", allow_optional=True),
         State("transaction-add-request-id", "data"),
+        State("dashboard-locale", "data"),
         prevent_initial_call=True,
     )
     def add_manual_transaction(
@@ -1000,6 +1012,7 @@ def register_callbacks(app: Dash) -> None:
         input_amount,
         input_comment,
         add_request_id,
+        locale,
     ):
         if not add_clicks:
             raise PreventUpdate
@@ -1029,9 +1042,9 @@ def register_callbacks(app: Dash) -> None:
                 if result["accepted_rows"]
                 else "Черновик уже был добавлен; повтор не создан."
             )
-            return message, "success", None, "", uuid4().hex
+            return report_text(message, locale), "success", None, "", uuid4().hex
         except Exception as exc:
-            return str(exc), "danger", no_update, no_update, next_add_request_id
+            return report_text(str(exc), locale), "danger", no_update, no_update, next_add_request_id
 
     @app.callback(
         Output("transaction-export-preview-grid", "rowData"),
@@ -1049,6 +1062,7 @@ def register_callbacks(app: Dash) -> None:
         State("transaction-import-period", "value", allow_optional=True),
         State("transaction-export-preview-grid", "rowData", allow_optional=True),
         State("transaction-export-preview-state", "data", allow_optional=True),
+        State("dashboard-locale", "data"),
         prevent_initial_call=True,
     )
     def preview_or_export_transaction_month(
@@ -1061,6 +1075,7 @@ def register_callbacks(app: Dash) -> None:
         import_period,
         preview_rows,
         preview_state,
+        locale,
     ):
         trigger = ctx.triggered_id
         try:
@@ -1086,8 +1101,8 @@ def register_callbacks(app: Dash) -> None:
                 )
                 return (
                     _dataframe_records(preview),
-                    _simple_column_defs(preview),
-                    f"Месяц {year}-{str(month).zfill(2)} сохранён.",
+                    _localized_input_column_defs(_simple_column_defs(preview), locale),
+                    report_text(f"Месяц {year}-{str(month).zfill(2)} сохранён.", locale),
                     "success",
                     None,
                     save_result,
@@ -1111,18 +1126,15 @@ def register_callbacks(app: Dash) -> None:
                 preview_state["import_summary"] = _transaction_import_summary(
                     import_rows, import_result
                 )
-            message = f"Preview построен для {year}-{str(month).zfill(2)}."
+            message = str(report_text(f"Preview построен для {year}-{str(month).zfill(2)}.", locale))
             if import_result is not None:
-                message += (
-                    f" Принято из выписки: {import_result['accepted_rows']}; "
-                    f"пропущено: {import_result['skipped_rows']}."
-                )
+                message += (f" Accepted from statement: {import_result['accepted_rows']}; skipped: {import_result['skipped_rows']}." if normalize_locale(locale) == "en" else f" Принято из выписки: {import_result['accepted_rows']}; пропущено: {import_result['skipped_rows']}.")
                 if import_result.get("replaced_pending_rows"):
-                    message += f" Заменено pending: {import_result['replaced_pending_rows']}."
-            message += " Месячный CSV ещё не изменён."
+                    message += (f" Pending replaced: {import_result['replaced_pending_rows']}." if normalize_locale(locale) == "en" else f" Заменено pending: {import_result['replaced_pending_rows']}.")
+            message += " The monthly CSV has not changed yet." if normalize_locale(locale) == "en" else " Месячный CSV ещё не изменён."
             return (
                 _dataframe_records(preview),
-                _simple_column_defs(preview),
+                _localized_input_column_defs(_simple_column_defs(preview), locale),
                 message,
                 "secondary",
                 preview_state,
@@ -1133,14 +1145,14 @@ def register_callbacks(app: Dash) -> None:
                 failed_preview = pd.DataFrame(preview_rows)
                 return (
                     preview_rows,
-                    _simple_column_defs(failed_preview),
-                    str(exc),
+                    _localized_input_column_defs(_simple_column_defs(failed_preview), locale),
+                    report_text(str(exc), locale),
                     "danger",
                     preview_state,
                     no_update,
                 )
             empty = pd.DataFrame()
-            return [], _simple_column_defs(empty), str(exc), "danger", preview_state, no_update
+            return [], _localized_input_column_defs(_simple_column_defs(empty), locale), report_text(str(exc), locale), "danger", preview_state, no_update
 
     @app.callback(
         Output("active-receivable-debts-grid", "rowData"),
@@ -1290,8 +1302,9 @@ def register_callbacks(app: Dash) -> None:
         State("dashboard-month", "value"),
         State("assets-input-grid", "rowData", allow_optional=True),
         State("assets-input-grid", "selectedRows", allow_optional=True),
+        State("dashboard-locale", "data"),
     )
-    def sync_assets_snapshot(load_clicks, add_clicks, delete_clicks, apply_clicks, year, month, row_data, selected_rows):
+    def sync_assets_snapshot(load_clicks, add_clicks, delete_clicks, apply_clicks, year, month, row_data, selected_rows, locale):
         trigger = ctx.triggered_id
         try:
             if trigger in {"assets-add-row-button", "assets-delete-row-button", "assets-apply-button"}:
@@ -1299,7 +1312,8 @@ def register_callbacks(app: Dash) -> None:
             if trigger == "assets-add-row-button":
                 rows = list(row_data or [])
                 rows.append({"account": "", "amount": 0, "currency": DEFAULT_CURRENCY})
-                return rows, "Добавлена пустая строка. Заполни счет, сумму и валюту, затем нажми Применить.", "secondary"
+                message = "An empty row was added. Enter the account, amount, and currency, then select Apply." if normalize_locale(locale) == "en" else "Добавлена пустая строка. Заполни счет, сумму и валюту, затем нажми Применить."
+                return rows, message, "secondary"
 
             if trigger == "assets-delete-row-button":
                 rows = list(row_data or [])
@@ -1307,24 +1321,21 @@ def register_callbacks(app: Dash) -> None:
                     raise ValueError("Выбери строки активов для удаления.")
                 selected_keys = {_asset_row_key(row) for row in selected_rows}
                 rows = [row for row in rows if _asset_row_key(row) not in selected_keys]
-                return rows, f"Удалено строк: {len(selected_rows)}. Нажми Применить, чтобы записать изменения в CSV.", "warning"
+                message = (f"Rows deleted: {len(selected_rows)}. Select Apply to write the changes to CSV." if normalize_locale(locale) == "en" else f"Удалено строк: {len(selected_rows)}. Нажми Применить, чтобы записать изменения в CSV.")
+                return rows, message, "warning"
 
             if trigger == "assets-apply-button":
                 result = write_asset_snapshot(row_data or [], year, month)
                 clear_data_cache()
                 clear_table_cache()
                 clear_main_dashboard_cache()
-                message = (
-                    f"Активы сохранены: {result['rows']} строк. "
-                    f"Файл: {result['path']}. "
-                    f"Backup: {result['backup_path'] or 'не создавался'}."
-                )
+                message = ((f"Assets saved: {result['rows']} rows. File: {result['path']}. Backup: {result['backup_path'] or 'not created'}." ) if normalize_locale(locale) == "en" else (f"Активы сохранены: {result['rows']} строк. Файл: {result['path']}. Backup: {result['backup_path'] or 'не создавался'}."))
                 return _asset_input_records(year, month), message, "success"
 
-            message, color = _asset_input_status(year, month)
+            message, color = _asset_input_status(year, month, locale)
             return _asset_input_records(year, month), message, color
         except Exception as exc:
-            return row_data or [], str(exc), "danger"
+            return row_data or [], report_text(str(exc), locale), "danger"
 
 
 def _ag_grid_changed_column(change_event, column_name: str) -> bool:
@@ -1888,6 +1899,7 @@ def _input_report_layout(
     load_asset_records: bool = True,
     read_only: bool = False,
     transaction_save_result: dict | None = None,
+    locale: str = DEFAULT_LOCALE,
 ):
     return dbc.Tabs(
         [
@@ -1899,11 +1911,12 @@ def _input_report_layout(
                     theme,
                     read_only=read_only,
                     transaction_save_result=transaction_save_result,
+                    locale=locale,
                 ),
-                label="Транзакции",
+                label=report_text("Транзакции", locale),
                 tab_id="input-transactions",
             ),
-            dbc.Tab(_assets_input_layout(year, month, theme, load_records=load_asset_records, read_only=read_only), label="Активы", tab_id="input-assets"),
+            dbc.Tab(_assets_input_layout(year, month, theme, load_records=load_asset_records, read_only=read_only, locale=locale), label=report_text("Активы", locale), tab_id="input-assets"),
         ],
         id="input-inner-tabs",
         active_tab="input-transactions",
@@ -1953,21 +1966,25 @@ def _transaction_input_layout(
     theme: str | None,
     read_only: bool = False,
     transaction_save_result: dict | None = None,
+    locale: str = DEFAULT_LOCALE,
 ):
     category_options = _transaction_category_options()
     currency_options = [{"label": ticker, "value": ticker} for ticker in config.UNIQUE_TICKERS]
     month_value = f"{year}-{str(month).zfill(2)}"
+    upload_limit_label = BANK_PDF_UPLOAD_LIMIT_LABEL
+    if normalize_locale(locale) == "en":
+        upload_limit_label = upload_limit_label.replace(" и ", " and ").replace(" страниц", " pages")
 
     return html.Div(
         [
             html.Section(
                 [
-                    html.H2("Ручной ввод транзакции", className="h5 mb-3"),
+                    html.H2(report_text("Ручной ввод транзакции", locale), className="h5 mb-3"),
                     dbc.Row(
                         [
                             dbc.Col(
                                 [
-                                    dbc.Label("Дата", html_for="transaction-input-date", className="small mb-1"),
+                                    dbc.Label(report_text("Дата", locale), html_for="transaction-input-date", className="small mb-1"),
                                     dbc.Input(id="transaction-input-date", type="date", value=datetime.now().date().isoformat(), className="finrep-native-input", style=_form_control_style(theme)),
                                 ],
                                 xs=12,
@@ -1975,7 +1992,7 @@ def _transaction_input_layout(
                             ),
                             dbc.Col(
                                 [
-                                    dbc.Label("Категория", id="transaction-input-category-label", className="small mb-1"),
+                                    dbc.Label(report_text("Категория", locale), id="transaction-input-category-label", className="small mb-1"),
                                     dcc.Dropdown(id="transaction-input-category", options=category_options, value=category_options[0]["value"] if category_options else None, clearable=False, className="dash-dropdown"),
                                 ],
                                 xs=12,
@@ -1983,7 +2000,7 @@ def _transaction_input_layout(
                             ),
                             dbc.Col(
                                 [
-                                    dbc.Label("Валюта", id="transaction-input-currency-label", className="small mb-1"),
+                                    dbc.Label(report_text("Валюта", locale), id="transaction-input-currency-label", className="small mb-1"),
                                     dcc.Dropdown(id="transaction-input-currency", options=currency_options, value=currency, clearable=False, className="dash-dropdown"),
                                 ],
                                 xs=12,
@@ -1991,7 +2008,7 @@ def _transaction_input_layout(
                             ),
                             dbc.Col(
                                 [
-                                    dbc.Label("Сумма", html_for="transaction-input-amount", className="small mb-1"),
+                                    dbc.Label(report_text("Сумма", locale), html_for="transaction-input-amount", className="small mb-1"),
                                     dbc.Input(id="transaction-input-amount", type="number", step="any", className="finrep-native-input", style=_form_control_style(theme)),
                                 ],
                                 xs=12,
@@ -1999,13 +2016,13 @@ def _transaction_input_layout(
                             ),
                             dbc.Col(
                                 [
-                                    dbc.Label("Комментарий", html_for="transaction-input-comment", className="small mb-1"),
+                                    dbc.Label(report_text("Комментарий", locale), html_for="transaction-input-comment", className="small mb-1"),
                                     dbc.Input(id="transaction-input-comment", type="text", className="finrep-native-input", style=_form_control_style(theme)),
                                 ],
                                 xs=12,
                                 md=3,
                             ),
-                            dbc.Col(dbc.Button("Добавить", id="transaction-add-button", color="primary", className="w-100", disabled=read_only), xs=12, md=1, className="d-flex align-items-end"),
+                            dbc.Col(dbc.Button(report_text("Добавить", locale), id="transaction-add-button", color="primary", className="w-100", disabled=read_only), xs=12, md=1, className="d-flex align-items-end"),
                         ],
                         className="g-2",
                     ),
@@ -2015,14 +2032,14 @@ def _transaction_input_layout(
             ),
             html.Section(
                 [
-                    html.H2("Импорт банковского PDF", className="h5 mb-3"),
+                    html.H2(report_text("Импорт банковского PDF", locale), className="h5 mb-3"),
                     dcc.Upload(
                         id="kaspi-upload",
                         children=html.Div(
                             [
-                                html.Div("Перетащи Kaspi, BCC или Ozon PDF сюда", className="fw-semibold"),
-                                html.Div("или нажми для выбора файла", className="small opacity-75"),
-                                html.Div(f"до {BANK_PDF_UPLOAD_LIMIT_LABEL}", className="small opacity-75"),
+                                html.Div(report_text("Перетащи Kaspi, BCC или Ozon PDF сюда", locale), className="fw-semibold"),
+                                html.Div(report_text("или нажми для выбора файла", locale), className="small opacity-75"),
+                                html.Div((f"up to {upload_limit_label}" if normalize_locale(locale) == "en" else f"до {upload_limit_label}"), className="small opacity-75"),
                             ],
                             className="kaspi-upload-content",
                         ),
@@ -2042,17 +2059,16 @@ def _transaction_input_layout(
                             **_section_style(theme),
                         },
                     ),
-                    dbc.Alert(id="kaspi-import-message", children="Операции из PDF появятся здесь. Дубли среди черновиков и сохранённых операций будут пропущены.", color="secondary", is_open=True, className="my-3 py-2"),
+                    dbc.Alert(id="kaspi-import-message", children=report_text("Операции из PDF появятся здесь. Дубли среди черновиков и сохранённых операций будут пропущены.", locale), color="secondary", is_open=True, className="my-3 py-2"),
                     html.Div(
-                        "Категории: клик — одна ячейка, Shift+клик — диапазон, "
-                        "Ctrl/Cmd+клик — несколько; Ctrl/Cmd+C и Ctrl/Cmd+V — копировать и вставить.",
+                        report_text("Категории: клик — одна ячейка, Shift+клик — диапазон, Ctrl/Cmd+клик — несколько; Ctrl/Cmd+C и Ctrl/Cmd+V — копировать и вставить.", locale),
                         className="small opacity-75 mb-2",
                     ),
                     html.Div(
                         dag.AgGrid(
                             id="kaspi-import-grid",
                             rowData=[],
-                            columnDefs=_kaspi_import_column_defs(),
+                            columnDefs=_localized_input_column_defs(_kaspi_import_column_defs(), locale),
                             defaultColDef=_ag_grid_default_col_def(editable=False),
                             dashGridOptions={"pagination": False, "suppressFieldDotNotation": True, "stopEditingWhenCellsLoseFocus": True},
                             eventListeners={
@@ -2073,15 +2089,15 @@ def _transaction_input_layout(
                     dcc.Store(id="transaction-export-preview-state"),
                     html.Div(
                         id="transaction-save-result-panel",
-                        children=_transaction_save_result_panel(transaction_save_result),
+                        children=_transaction_save_result_panel(transaction_save_result, locale),
                     ),
                     html.Div(
                         [
-                            html.H2("Проверка и сохранение месяца", className="h5 mb-0"),
+                            html.H2(report_text("Проверка и сохранение месяца", locale), className="h5 mb-0"),
                             html.Div(
                                 [
                                     dbc.Button("Preview", id="transaction-preview-export-button", color="secondary", outline=True, size="sm"),
-                                    dbc.Button("Сохранить месяц", id="transaction-confirm-export-button", color="primary", outline=False, size="sm", disabled=read_only),
+                                    dbc.Button(report_text("Сохранить месяц", locale), id="transaction-confirm-export-button", color="primary", outline=False, size="sm", disabled=read_only),
                                 ],
                                 className="d-flex flex-wrap gap-2",
                             ),
@@ -2092,13 +2108,13 @@ def _transaction_input_layout(
                         [
                             dbc.Col(
                                 [
-                                    dbc.Label("Период Preview", html_for="transaction-import-period", className="small mb-1"),
+                                    dbc.Label(report_text("Период Preview", locale), html_for="transaction-import-period", className="small mb-1"),
                                     dcc.Dropdown(
                                         id="transaction-import-period",
                                         options=[{"label": month_value, "value": month_value}],
                                         value=month_value,
                                         clearable=False,
-                                        placeholder="Выбери месяц выписки",
+                                        placeholder=report_text("Выбери месяц выписки", locale),
                                         className="dash-dropdown",
                                     ),
                                 ],
@@ -2108,7 +2124,7 @@ def _transaction_input_layout(
                         ],
                         className="g-2 mb-3",
                     ),
-                    dbc.Alert(id="transaction-export-message", children="Проверь импорт выше и нажми Preview. Без загруженной выписки используется выбранный период отчёта. Данные месяца изменятся только после нажатия «Сохранить месяц».", color="secondary", is_open=True, className="mb-3 py-2"),
+                    dbc.Alert(id="transaction-export-message", children=report_text("Проверь импорт выше и нажми Preview. Без загруженной выписки используется выбранный период отчёта. Данные месяца изменятся только после нажатия «Сохранить месяц».", locale), color="secondary", is_open=True, className="mb-3 py-2"),
                     _ag_grid_scroll(
                         dag.AgGrid(
                             id="transaction-export-preview-grid",
@@ -2226,22 +2242,22 @@ def _debt_input_layout(currency: str, theme: str | None, include_create: bool = 
     )
 
 
-def _assets_input_layout(year: str, month: str, theme: str | None, load_records: bool = True, read_only: bool = False):
+def _assets_input_layout(year: str, month: str, theme: str | None, load_records: bool = True, read_only: bool = False, locale: str = DEFAULT_LOCALE):
     records = _asset_input_records(year, month) if load_records else []
-    message, message_color = _asset_input_status(year, month)
+    message, message_color = _asset_input_status(year, month, locale)
     return html.Div(
         [
             html.Section(
                 [
                     html.Div(
                         [
-                            html.H2("Активы", className="h5 mb-0"),
+                            html.H2(report_text("Активы", locale), className="h5 mb-0"),
                             html.Div(
                                 [
-                                    dbc.Button("Загрузить", id="assets-load-button", color="secondary", outline=True, size="sm"),
-                                    dbc.Button("Добавить строку", id="assets-add-row-button", color="secondary", outline=True, size="sm", disabled=read_only),
-                                    dbc.Button("Удалить выбранные", id="assets-delete-row-button", color="danger", outline=True, size="sm", disabled=read_only),
-                                    dbc.Button("Применить", id="assets-apply-button", color="primary", outline=True, size="sm", disabled=read_only),
+                                    dbc.Button(report_text("Загрузить", locale), id="assets-load-button", color="secondary", outline=True, size="sm"),
+                                    dbc.Button(report_text("Добавить строку", locale), id="assets-add-row-button", color="secondary", outline=True, size="sm", disabled=read_only),
+                                    dbc.Button(report_text("Удалить выбранные", locale), id="assets-delete-row-button", color="danger", outline=True, size="sm", disabled=read_only),
+                                    dbc.Button(report_text("Применить", locale), id="assets-apply-button", color="primary", outline=True, size="sm", disabled=read_only),
                                 ],
                                 className="d-flex flex-wrap gap-2",
                             ),
@@ -2259,7 +2275,7 @@ def _assets_input_layout(year: str, month: str, theme: str | None, load_records:
                         dag.AgGrid(
                             id="assets-input-grid",
                             rowData=records,
-                            columnDefs=_asset_input_column_defs(),
+                            columnDefs=_localized_input_column_defs(_asset_input_column_defs(), locale),
                             defaultColDef=_ag_grid_default_col_def(editable=not read_only),
                             dashGridOptions={"pagination": False, "suppressFieldDotNotation": True, "rowSelection": "multiple", "stopEditingWhenCellsLoseFocus": True, "undoRedoCellEditing": True},
                             className=_ag_grid_class_name(theme),
@@ -2433,7 +2449,7 @@ def _format_saved_month_amount(value, currency: str) -> str:
     return f"{amount:,.2f}".replace(",", " ") + config.UNIQUE_TICKERS[currency]
 
 
-def _transaction_save_result_panel(result: dict | None):
+def _transaction_save_result_panel(result: dict | None, locale: str = DEFAULT_LOCALE):
     if not result or result.get("data_mode") != config.get_data_mode():
         return []
     period = f"{result['year']}-{result['month']}"
@@ -2441,9 +2457,9 @@ def _transaction_save_result_panel(result: dict | None):
     import_summary = result.get("import_summary") or {}
     skip_reasons = import_summary.get("skip_reasons") or []
     children = [
-        html.Div(f"Месяц {period} сохранён", className="fw-semibold mb-1"),
+        html.Div((f"Month {period} saved" if normalize_locale(locale) == "en" else f"Месяц {period} сохранён"), className="fw-semibold mb-1"),
         html.Div(
-            f"Проведено операций: {int(result.get('exported_rows', 0))}.",
+            (f"Transactions saved: {int(result.get('exported_rows', 0))}." if normalize_locale(locale) == "en" else f"Проведено операций: {int(result.get('exported_rows', 0))}."),
             className="mb-2",
         ),
     ]
@@ -2454,7 +2470,7 @@ def _transaction_save_result_panel(result: dict | None):
                     dbc.Col(
                         html.Div(
                             [
-                                html.Div(name, className="small opacity-75"),
+                                html.Div(report_text(name, locale), className="small opacity-75"),
                                 html.Div(value, className="fw-semibold"),
                             ],
                             className="border rounded px-3 py-2 h-100",
@@ -2470,30 +2486,29 @@ def _transaction_save_result_panel(result: dict | None):
     elif result.get("metrics_unavailable"):
         children.append(
             html.Div(
-                "Месяц сохранён, но итоговые показатели сейчас недоступны. Открой сверку, чтобы повторить расчёт.",
+                report_text("Месяц сохранён, но итоговые показатели сейчас недоступны. Открой сверку, чтобы повторить расчёт.", locale),
                 className="small mb-2",
             )
         )
     if import_summary:
         children.append(
             html.Div(
-                f"Текущая выписка: принято {int(import_summary.get('accepted_rows', 0))}, "
-                f"пропущено {int(import_summary.get('skipped_rows', 0))}.",
+                ((f"Current statement: {int(import_summary.get('accepted_rows', 0))} accepted, {int(import_summary.get('skipped_rows', 0))} skipped.") if normalize_locale(locale) == "en" else (f"Текущая выписка: принято {int(import_summary.get('accepted_rows', 0))}, пропущено {int(import_summary.get('skipped_rows', 0))}.")),
                 className="small",
             )
         )
     if skip_reasons:
         children.append(
             html.Div(
-                "Причины пропуска: "
-                + "; ".join(f"{item['label']} — {item['count']}" for item in skip_reasons)
+                ("Skip reasons: " if normalize_locale(locale) == "en" else "Причины пропуска: ")
+                + "; ".join(f"{report_text(item['label'], locale)} — {item['count']}" for item in skip_reasons)
                 + ".",
                 className="small mb-2",
             )
         )
     children.append(
         dbc.Button(
-            "Перейти к сверке",
+            report_text("Перейти к сверке", locale),
             color="success",
             size="sm",
             href=(
@@ -2516,25 +2531,21 @@ def _asset_input_records(year: str, month: str) -> list[dict]:
     return _dataframe_records(data)
 
 
-def _asset_input_status(year: str, month: str) -> tuple[str, str]:
+def _asset_input_status(year: str, month: str, locale: str = DEFAULT_LOCALE) -> tuple[str, str]:
     period = f"{int(year):04d}-{int(month):02d}"
     target = asset_snapshot_path(year, month)
     if target.exists():
-        return f"Загружен сохранённый снимок активов за {period}. Файл: {target}", "secondary"
+        message = f"Saved asset snapshot for {period} loaded. File: {target}" if normalize_locale(locale) == "en" else f"Загружен сохранённый снимок активов за {period}. Файл: {target}"
+        return message, "secondary"
 
     template = previous_asset_snapshot_path(year, month)
     if template is not None:
         template_period = template.stem.replace("_", "-")
-        return (
-            f"Показана несохранённая копия снимка за {template_period}. "
-            f"Проверь значения и нажми Применить, чтобы создать снимок за {period}.",
-            "warning",
-        )
+        message = (f"An unsaved copy of the {template_period} snapshot is shown. Review the values and select Apply to create the {period} snapshot." if normalize_locale(locale) == "en" else f"Показана несохранённая копия снимка за {template_period}. Проверь значения и нажми Применить, чтобы создать снимок за {period}.")
+        return message, "warning"
 
-    return (
-        f"Снимка активов за {period} ещё нет. Добавь строки и нажми Применить, чтобы создать его.",
-        "warning",
-    )
+    message = (f"There is no asset snapshot for {period} yet. Add rows and select Apply to create it." if normalize_locale(locale) == "en" else f"Снимка активов за {period} ещё нет. Добавь строки и нажми Применить, чтобы создать его.")
+    return message, "warning"
 
 
 def _active_debts_grid(currency: str, theme: str | None, debt_type: str):
@@ -2654,6 +2665,18 @@ def _asset_input_column_defs() -> list[dict]:
         {"field": "currency", "headerName": "Валюта", "editable": True, "cellEditor": "agSelectCellEditor", "cellEditorParams": {"values": currencies}, "width": 120},
         {"field": "amount_sort", "hide": True, "sort": "desc", "sortIndex": 0},
     ]
+
+
+def _localized_input_column_defs(column_defs: list[dict], locale: str | None) -> list[dict]:
+    """Translate grid headers without changing field names or editor values."""
+    localized = []
+    for column in column_defs:
+        copy = column.copy()
+        label = copy.get("headerName") or copy.get("field")
+        if label:
+            copy["headerName"] = report_column_label(str(label), locale)
+        localized.append(copy)
+    return localized
 
 
 def _asset_row_key(row: dict) -> tuple[str, str, str]:

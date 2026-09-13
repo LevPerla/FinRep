@@ -8,10 +8,14 @@ os.environ.setdefault("FINREP_DASH_PASSWORD", "test-password")
 os.environ.setdefault("FINREP_DASH_SECRET_KEY", "test-session-secret")
 
 from src.dashboard.app import (
+    _asset_input_column_defs,
+    _kaspi_import_column_defs,
+    _localized_input_column_defs,
     _localized_column_defs,
     _localized_text_values,
     _month_report_layout,
     _resolve_locale_update,
+    _transaction_input_layout,
     _year_report_layout,
     create_app,
 )
@@ -239,6 +243,36 @@ def test_localized_grid_headers_keep_raw_fields_for_callbacks_and_styles():
     localized = localize_report_datasets({"planning_goals": dataset}, "en")["planning_goals"]
     assert localized.display_dataframe.loc[0, "Показатель"] == "Капитал"
     assert localized.dataframe.loc[0, "Показатель"] == "Капитал"
+
+
+def test_data_entry_layout_translates_copy_but_keeps_category_values(monkeypatch):
+    monkeypatch.setattr(
+        "src.dashboard.app._transaction_category_options",
+        lambda: [{"label": "Прочее", "value": "Прочее"}],
+    )
+
+    layout = _transaction_input_layout("RUB", "2026", "09", "dark", locale="en")
+    category = _layout_component(layout, "transaction-input-category")
+    import_grid = _layout_component(layout, "kaspi-import-grid")
+
+    assert "Add a transaction manually" in str(layout)
+    assert "Review and save the month" in str(layout)
+    assert "up to 10 MiB and 50 pages" in str(layout)
+    assert category.options == [{"label": "Прочее", "value": "Прочее"}]
+    assert next(column for column in import_grid.columnDefs if column["field"] == "category")["headerName"] == "Category"
+
+
+def test_data_entry_grid_translation_changes_headers_only():
+    raw_import = _kaspi_import_column_defs()
+    localized_import = _localized_input_column_defs(raw_import, "en")
+    raw_assets = _asset_input_column_defs()
+    localized_assets = _localized_input_column_defs(raw_assets, "en")
+
+    assert [column["field"] for column in localized_import] == [column["field"] for column in raw_import]
+    assert localized_import[0]["cellEditorParams"] == raw_import[0]["cellEditorParams"]
+    assert [column["field"] for column in localized_assets] == [column["field"] for column in raw_assets]
+    assert localized_assets[2]["cellEditorParams"] == raw_assets[2]["cellEditorParams"]
+    assert localized_assets[0]["headerName"] == "Account"
 
 
 def test_report_empty_states_switch_language_without_changing_route_values():

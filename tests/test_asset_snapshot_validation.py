@@ -200,7 +200,7 @@ def test_load_callback_displays_error_and_does_not_invent_zero(assets_root, monk
     key = next(key for key in app.callback_map if "assets-input-message.children" in key)
     callback = app.callback_map[key]
     values = {"assets-load-button":1,"assets-add-row-button":0,"assets-delete-row-button":0,"assets-apply-button":0,
-              "dashboard-year":"2026","dashboard-month":"01","assets-input-grid":[]}
+              "dashboard-year":"2026","dashboard-month":"01","assets-input-grid":[],"dashboard-locale":"ru"}
     payload = {"output":key,"outputs":[{"id":item.component_id,"property":item.component_property} for item in callback["output"]],
                "inputs":[{**item,"value":values.get(item["id"])} for item in callback["inputs"]],
                "state":[{**item,"value":values.get(item["id"])} for item in callback["state"]],
