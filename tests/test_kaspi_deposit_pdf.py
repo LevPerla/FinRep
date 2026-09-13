@@ -1,8 +1,45 @@
+from unittest.mock import patch
+
+import pandas as pd
+
+from src import config
+from src.data.importers import common, kaspi_deposit_pdf
 from src.data.importers.kaspi_deposit_pdf import (
     _rows_from_table,
     is_kaspi_deposit_statement,
 )
 from src.data.importers.common import is_internal_transfer
+
+
+def test_parse_kaspi_deposit_bytes_returns_common_import_contract(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "DATA_PATH", str(tmp_path))
+    monkeypatch.setattr(
+        kaspi_deposit_pdf,
+        "_extract_rows_from_pdf",
+        lambda _source: [
+            {
+                "date": "2026-09-12",
+                "signed_amount": 28.42,
+                "currency": "USD",
+                "details": "Interest after tax 5,02 USD",
+            }
+        ],
+    )
+
+    with patch.object(common, "get_transactions", return_value=pd.DataFrame()):
+        result = kaspi_deposit_pdf.parse_kaspi_deposit_pdf_bytes(
+            b"synthetic-kaspi-deposit-pdf"
+        )
+
+    row = result.iloc[0]
+    assert row["source"] == "kaspi_deposit_pdf"
+    assert row["date"] == "2026-09-12"
+    assert row["direction"] == "credit"
+    assert row["amount"] == 28.42
+    assert row["comment"] == "Interest after tax 5,02 USD"
+    assert row["status"] == "draft"
+    assert row["import_action"] == "import"
+    assert len(row["source_id"]) == 64
 
 
 def test_parse_kaspi_deposit_rows_for_kzt_and_usd():
