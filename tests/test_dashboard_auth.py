@@ -455,6 +455,7 @@ def test_test_mode_is_read_only_and_missing_asset_snapshot_is_not_created(tmp_pa
     sample_root = tmp_path / "sample"
     assets_root = sample_root / "assets_info"
     assets_root.mkdir(parents=True)
+    monkeypatch.setattr(config, "DATA_PATH", str(sample_root))
     monkeypatch.setattr(config, "SAMPLE_DATA_PATH", str(sample_root))
     app = create_app()
 

@@ -382,6 +382,7 @@ def _format_goals_progress(data: pd.DataFrame, currency: str) -> pd.DataFrame:
     money_mask = display["Тип"] == "money"
     percent_mask = display["Тип"] == "percent"
     for column in ["Факт", "Цель", "Отклонение"]:
+        display[column] = display[column].astype(object)
         display.loc[money_mask, column] = display.loc[money_mask, column].map(lambda value: _format_money(value, currency))
         display.loc[percent_mask, column] = display.loc[percent_mask, column].map(_format_percent)
     display["Прогресс (%)"] = display["Прогресс (%)"].map(_format_percent)

@@ -13,7 +13,6 @@ dependencies = [
     "plotly==5.17.0",
     "beautifulsoup4==4.12.2",
     "lxml==4.9.3",
-    "twelvedata>=1.2.25",
     "dash>=4.1.0",
     "dash-bootstrap-components>=2.0.4",
     "dash-ag-grid>=35.2.0",

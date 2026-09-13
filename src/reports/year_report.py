@@ -228,12 +228,12 @@ def _create_cost_plot_table(cost_stats_df):
 
 def _crete_inc_cost_stats(balance_df, year, currency):
     inc_cost_stats_df = (balance_df.loc[year, ['Доход', 'Расход']]
-            .agg({'Доход': ['sum', 'mean', np.median, np.std, np.min, np.max],
-                  'Расход': ['sum', 'mean', np.median, np.std, np.min, np.max]
+            .agg({'Доход': ['sum', 'mean', 'median', 'std', 'min', 'max'],
+                  'Расход': ['sum', 'mean', 'median', 'std', 'min', 'max']
                   }, axis=0)
             .rename(index={'sum': 'Сумма', 'mean': 'Среднее',
                            'median': 'Медиана', 'std': 'Ст. отклонение',
-                           'amin': 'Минимум', 'amax': 'Максимум'})
+                           'min': 'Минимум', 'max': 'Максимум'})
             .reset_index()
             .rename(columns={'index': 'Статистика'})
     )

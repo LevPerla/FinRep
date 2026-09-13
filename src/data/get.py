@@ -1,13 +1,23 @@
 import pandas as pd
 import numpy as np
 import os
-import warnings
 from functools import lru_cache
-
-warnings.filterwarnings('ignore')
 
 from src import config
 from src.data.staging import TRANSACTION_BOUNDARY_RE, sanitize_transaction_comment
+
+
+TRANSACTION_COLUMNS = ['Дата', 'Категория', 'Валюта', 'Значение', 'Комментарий', 'Год', 'Квартал', 'Месяц']
+ASSET_COLUMNS = ['Счет', 'Валюта', 'Значение', 'Год', 'Квартал', 'Месяц']
+
+
+def _empty_frame(columns):
+    data = {column: pd.Series(dtype='object') for column in columns}
+    if 'Дата' in data:
+        data['Дата'] = pd.Series(dtype='datetime64[ns]')
+    if 'Значение' in data:
+        data['Значение'] = pd.Series(dtype='float64')
+    return pd.DataFrame(data)
 
 
 def _split_transaction_values(value):
@@ -37,6 +47,8 @@ def get_transactions():
 
 @lru_cache(maxsize=1)
 def _get_transactions_cached(transactions_root: str):
+    if not os.path.isdir(transactions_root):
+        return _empty_frame(TRANSACTION_COLUMNS)
     transactions_df = pd.DataFrame()
     for folder_name in os.listdir(transactions_root):
         if folder_name == '.DS_Store':
@@ -49,8 +61,7 @@ def _get_transactions_cached(transactions_root: str):
                                    decimal=',',
                                    parse_dates=True,
                                    dayfirst=True,
-                                   index_col='Дата',
-                                   infer_datetime_format=True)
+                                   index_col='Дата')
             month_df = month_df.rename(columns={'Долги (у меня)': 'Дебиторская задолженность',
                                                 'Крупные покупки/ Поездки': 'Поездки'},
                                        errors='ignore')
@@ -72,6 +83,8 @@ def _get_transactions_cached(transactions_root: str):
             assert len(
                 set(month_df['Валюта'].unique()) - config.UNIQUE_TICKERS.keys()) == 0, 'Есть недопустимые тикеры валют'
             transactions_df = pd.concat([transactions_df, month_df], axis=0)
+    if transactions_df.empty:
+        return _empty_frame(TRANSACTION_COLUMNS)
     return transactions_df.reset_index().drop('index', axis=1)
 
 
@@ -81,6 +94,8 @@ def get_assets():
 
 @lru_cache(maxsize=1)
 def _get_assets_cached(assets_root: str):
+    if not os.path.isdir(assets_root):
+        return _empty_frame(ASSET_COLUMNS)
     assets_df = pd.DataFrame()
     for folder_name in os.listdir(assets_root):
         if folder_name == '.DS_Store':
@@ -115,6 +130,8 @@ def _get_assets_cached(assets_root: str):
                 set(month_df['Валюта'].unique()) - config.UNIQUE_TICKERS.keys()) == 0, 'Есть недопустимые тикеры валют'
 
             assets_df = pd.concat([assets_df, month_df], axis=0)
+    if assets_df.empty:
+        return _empty_frame(ASSET_COLUMNS)
     return assets_df.reset_index().drop('index', axis=1)
 
 

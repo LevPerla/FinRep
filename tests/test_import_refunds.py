@@ -7,7 +7,7 @@ import pytest
 
 from src import config
 from src.data import get, staging
-from src.data.importers import kaspi_pdf
+from src.data.importers import common
 
 
 @pytest.fixture
@@ -31,7 +31,7 @@ def _row(signed_amount: float, details: str = "Shop A") -> list[dict]:
 
 
 def _preview(signed_amount: float, statement_id: str) -> pd.DataFrame:
-    return kaspi_pdf._import_frame_from_rows(
+    return common.import_frame_from_rows(
         _row(signed_amount), statement_id=statement_id
     )
 
@@ -46,7 +46,7 @@ def test_refund_for_known_expense_defaults_to_savings(import_data):
             }
         ]
     )
-    with patch.object(kaspi_pdf, "get_transactions", return_value=history):
+    with patch.object(common, "get_transactions", return_value=history):
         preview = _preview(40, "refund")
 
     assert preview.iloc[0]["category"] == "Сбережения"
@@ -64,8 +64,8 @@ def test_direct_income_history_is_preserved(import_data):
             }
         ]
     )
-    with patch.object(kaspi_pdf, "get_transactions", return_value=history):
-        preview = kaspi_pdf._import_frame_from_rows(
+    with patch.object(common, "get_transactions", return_value=history):
+        preview = common.import_frame_from_rows(
             _row(1000, "Employer"), statement_id="salary"
         )
 
@@ -73,33 +73,33 @@ def test_direct_income_history_is_preserved(import_data):
 
 
 def test_unknown_credit_keeps_existing_income_default(import_data):
-    with patch.object(kaspi_pdf, "get_transactions", return_value=pd.DataFrame()):
+    with patch.object(common, "get_transactions", return_value=pd.DataFrame()):
         preview = _preview(40, "unknown-credit")
 
     assert preview.iloc[0]["category"] == "Доход"
 
 
 def test_credit_cannot_be_saved_in_expense_category(import_data):
-    with patch.object(kaspi_pdf, "get_transactions", return_value=pd.DataFrame()):
+    with patch.object(common, "get_transactions", return_value=pd.DataFrame()):
         preview = _preview(40, "credit")
     rows = preview.to_dict("records")
     rows[0]["category"] = "Прочее"
 
     with pytest.raises(ValueError, match="нельзя сохранить как расход"):
-        kaspi_pdf.save_kaspi_import_to_staging(rows)
+        common.save_import_to_staging(rows)
 
     assert staging.read_transaction_drafts().empty
 
 
 def test_expense_and_refund_have_net_cash_effect_of_minus_sixty(import_data):
     expense = _preview(-100, "expense")
-    kaspi_pdf.save_kaspi_import_to_staging(expense.to_dict("records"))
+    common.save_import_to_staging(expense.to_dict("records"))
     staging.export_monthly_transaction_drafts("2026", "09")
     get.clear_data_cache()
 
     refund = _preview(40, "refund")
     assert refund.iloc[0]["category"] == "Сбережения"
-    kaspi_pdf.save_kaspi_import_to_staging(refund.to_dict("records"))
+    common.save_import_to_staging(refund.to_dict("records"))
     staging.export_monthly_transaction_drafts("2026", "09")
     get.clear_data_cache()
 

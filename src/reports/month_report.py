@@ -135,8 +135,7 @@ def _get_month_transactions(year: str, month: str) -> pd.DataFrame:
                            sep=';',
                            decimal=',',
                            parse_dates=True,
-                           dayfirst=True,
-                           infer_datetime_format=True)
+                           dayfirst=True)
     month_df = month_df.rename(columns={'Долги (у меня)': 'Дебиторская задолженность',
                                         'Крупные покупки/ Поездки': 'Поездки'},
                                errors='ignore')

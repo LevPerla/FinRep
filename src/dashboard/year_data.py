@@ -1,4 +1,3 @@
-import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 
@@ -35,6 +34,15 @@ def _build_year_dashboard_data(
         raise ValueError(f"currency must be one of {tuple(config.UNIQUE_TICKERS)}")
 
     balance = get_balance_by_month(currency)
+    balance_years = pd.to_datetime(balance.index, errors="coerce").year
+    if balance.empty or int(year) not in set(balance_years.dropna()):
+        return {
+            "year_empty": DashboardDataset(
+                id="year_empty",
+                title="Нет данных за выбранный год",
+                dataframe=pd.DataFrame([{"Год": year, "Валюта": currency}]),
+            )
+        }
     year_balance = balance.loc[year]
 
     quarter_stats = _quarter_stats(year_balance)
@@ -200,8 +208,8 @@ def _income_cost_stats(year_balance: pd.DataFrame) -> pd.DataFrame:
         year_balance[["Доход", "Расход"]]
         .agg(
             {
-                "Доход": ["sum", "mean", np.median, np.std, np.min, np.max],
-                "Расход": ["sum", "mean", np.median, np.std, np.min, np.max],
+                "Доход": ["sum", "mean", "median", "std", "min", "max"],
+                "Расход": ["sum", "mean", "median", "std", "min", "max"],
             },
             axis=0,
         )
@@ -211,8 +219,8 @@ def _income_cost_stats(year_balance: pd.DataFrame) -> pd.DataFrame:
                 "mean": "Среднее",
                 "median": "Медиана",
                 "std": "Ст. отклонение",
-                "amin": "Минимум",
-                "amax": "Максимум",
+                "min": "Минимум",
+                "max": "Максимум",
             }
         )
         .reset_index()

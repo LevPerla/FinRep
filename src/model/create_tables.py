@@ -118,7 +118,7 @@ def _get_balance_by_month_cached(data_root: str, currency: str) -> pd.DataFrame:
         # sell_df = convert_transaction(sell_df, to_curr=currency, target_col='Прибыль/убыток')
 
     all_stats_df = (transactions_df[transactions_df.Категория.isin(config.NOT_COST_COLS)]
-                    .pivot_table(values='Значение', index=['Дата'], columns=['Категория'], aggfunc=np.sum)
+                    .pivot_table(values='Значение', index=['Дата'], columns=['Категория'], aggfunc='sum')
                     .fillna(0)
                     .resample('M').sum()
                     )
@@ -128,6 +128,16 @@ def _get_balance_by_month_cached(data_root: str, currency: str) -> pd.DataFrame:
     # all_stats_df['Потенциальная прибыль'] = buy_df.set_index('Дата').resample('M')['Потенциальная прибыль'].sum()
     # all_stats_df['Доход от инвестирования'] = sell_df.set_index('Дата').resample('M')['Прибыль/убыток'].sum()
     all_stats_df = all_stats_df.fillna(0)
+    for column in [
+        'Доход',
+        'Сбережения',
+        'Дебиторская задолженность',
+        'Погашение деб. зад.',
+        'Кредиторская задолженность',
+        'Погашение кред. зад.',
+    ]:
+        if column not in all_stats_df.columns:
+            all_stats_df[column] = 0.0
 
     all_stats_df['Баланс'] = (all_stats_df['Доход'] + all_stats_df['Сбережения']
                             #   + all_stats_df['Потенциальная прибыль']
@@ -405,7 +415,9 @@ def get_assets_by_currencies(year, month) -> pd.DataFrame:
     # Go by cols to covert
     for curr_from in [curr_1 for curr_1 in gr_asset_df.columns if curr_1 not in ['Счет']]:
         # Get not na cols to convert
-        sml_df = gr_asset_df[(gr_asset_df[curr_from].notna()) & (gr_asset_df['Счет'] != 'Всего в валюте')]
+        sml_df = gr_asset_df[
+            (gr_asset_df[curr_from].notna()) & (gr_asset_df['Счет'] != 'Всего в валюте')
+        ].copy()
 
         # Go by another cols
         for curr_to in [curr_2 for curr_2 in sml_df.columns if curr_2 not in ['Счет', curr_from]]:
@@ -424,16 +436,17 @@ def get_assets_by_currencies(year, month) -> pd.DataFrame:
         gr_asset_df_.loc['Всего'] = gr_asset_df_[total_rows].sum(axis=0, min_count=1)
     gr_asset_df_ = gr_asset_df_
 
-    # Format table
-    for col_name in gr_asset_df_:
+    # Format a display copy after all numeric calculations are complete.
+    display_asset_df = gr_asset_df_.astype(object)
+    for col_name in display_asset_df:
         # print(gr_asset_df_.loc[gr_asset_df_.index != 'Всего в валюте,%'])
         
         if col_name not in ['Счет']:
-            gr_asset_df_.loc[gr_asset_df_.index != 'Всего в валюте,%', col_name] = (gr_asset_df_.loc[gr_asset_df_.index != 'Всего в валюте,%', col_name]
+            display_asset_df.loc[display_asset_df.index != 'Всего в валюте,%', col_name] = (display_asset_df.loc[display_asset_df.index != 'Всего в валюте,%', col_name]
                                                                                           .astype(float).map('{:,.2f}'.format).str.replace(',', ' ') + config.UNIQUE_TICKERS[col_name])
-            gr_asset_df_.loc[gr_asset_df_.index == 'Всего в валюте,%', col_name] = (gr_asset_df_.loc[gr_asset_df_.index == 'Всего в валюте,%', col_name]
+            display_asset_df.loc[display_asset_df.index == 'Всего в валюте,%', col_name] = (display_asset_df.loc[display_asset_df.index == 'Всего в валюте,%', col_name]
                                                                                           .astype(float).map('{:,.2f}'.format).str.replace(',', ' ') + "%")
-    return gr_asset_df_.reset_index().round(2)
+    return display_asset_df.reset_index().round(2)
 
 
 def get_month_transactions(currency, year, month):
@@ -463,7 +476,7 @@ def _get_month_transactions_cached(data_root, currency, year, month):
     
 
     month_tr_df = (smpl_tr_df
-                    .pivot_table(values='Значение', index=['Дата'], columns=['Категория'], aggfunc=np.sum)
+                    .pivot_table(values='Значение', index=['Дата'], columns=['Категория'], aggfunc='sum')
                     .fillna(0)
                     .resample('D').sum()
                     .reset_index()

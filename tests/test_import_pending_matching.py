@@ -7,7 +7,7 @@ import pytest
 
 from src import config
 from src.data import staging
-from src.data.importers import kaspi_pdf
+from src.data.importers import common
 
 
 @pytest.fixture
@@ -37,14 +37,14 @@ def _bank_row(
 
 
 def _preview(rows: list[dict], statement_id: str) -> pd.DataFrame:
-    with patch.object(kaspi_pdf, "get_transactions", return_value=pd.DataFrame()):
-        return kaspi_pdf._import_frame_from_rows(
+    with patch.object(common, "get_transactions", return_value=pd.DataFrame()):
+        return common.import_frame_from_rows(
             rows, source="bcc_pdf", statement_id=statement_id
         )
 
 
 def _save(rows: list[dict], statement_id: str) -> dict:
-    return kaspi_pdf.save_kaspi_import_to_staging(
+    return common.save_import_to_staging(
         _preview(rows, statement_id).to_dict("records")
     )
 
@@ -67,7 +67,7 @@ def test_matching_reference_replaces_pending_even_after_seven_days(import_data):
     preview = _preview(
         [_bank_row("posted", date="2026-09-20", reference="REF-1")], "posted"
     )
-    result = kaspi_pdf.save_kaspi_import_to_staging(preview.to_dict("records"))
+    result = common.save_import_to_staging(preview.to_dict("records"))
 
     drafts = staging.read_transaction_drafts()
     assert preview.iloc[0]["replaces_source_id"]
@@ -90,7 +90,7 @@ def test_unique_semantic_match_within_seven_days_replaces_pending(import_data):
         [_bank_row("posted", date="2026-09-08", reference="POST-1")], "posted"
     )
 
-    result = kaspi_pdf.save_kaspi_import_to_staging(preview.to_dict("records"))
+    result = common.save_import_to_staging(preview.to_dict("records"))
 
     assert preview.iloc[0]["skip_reason"] == "replaces_pending"
     assert result["replaced_pending_rows"] == 1
@@ -103,7 +103,7 @@ def test_semantic_match_outside_seven_days_does_not_replace(import_data):
         [_bank_row("posted", date="2026-09-09", reference="POST-1")], "posted"
     )
 
-    result = kaspi_pdf.save_kaspi_import_to_staging(preview.to_dict("records"))
+    result = common.save_import_to_staging(preview.to_dict("records"))
 
     assert preview.iloc[0]["replaces_source_id"] == ""
     assert result == {"accepted_rows": 1, "skipped_rows": 0}
@@ -132,12 +132,12 @@ def test_ambiguous_pending_matches_require_review_and_preserve_posted_rows(impor
 
     assert preview["import_action"].tolist() == ["review", "review"]
     with pytest.raises(ValueError, match="выбери import или skip"):
-        kaspi_pdf.save_kaspi_import_to_staging(preview.to_dict("records"))
+        common.save_import_to_staging(preview.to_dict("records"))
 
     decided = preview.to_dict("records")
     for row in decided:
         row["import_action"] = "import"
-    result = kaspi_pdf.save_kaspi_import_to_staging(decided)
+    result = common.save_import_to_staging(decided)
 
     drafts = staging.read_transaction_drafts()
     assert result == {"accepted_rows": 2, "skipped_rows": 0}
@@ -155,7 +155,7 @@ def test_pending_replacement_rejects_stale_staging(import_data):
     )
 
     with pytest.raises(staging.DraftRevisionConflict, match="изменились"):
-        kaspi_pdf.save_kaspi_import_to_staging(preview.to_dict("records"))
+        common.save_import_to_staging(preview.to_dict("records"))
 
     drafts = staging.read_transaction_drafts()
     assert set(drafts["bank_status"]) == {"pending", ""}
