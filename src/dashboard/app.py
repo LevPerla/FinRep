@@ -4,7 +4,7 @@ from decimal import Decimal
 from datetime import datetime
 from io import BytesIO
 from pathlib import Path
-from urllib.parse import parse_qs
+from urllib.parse import parse_qs, urlencode
 from uuid import uuid4
 
 from dash import ALL, Dash, Input, MATCH, Output, State, ctx, dcc, html, no_update
@@ -697,21 +697,12 @@ def register_callbacks(app: Dash) -> None:
             return _error_state("Не удалось загрузить данные основного отчета.", exc)
 
         _apply_theme_to_datasets(datasets, theme)
-        return html.Div(
-            [
-                _cockpit_section(datasets["cockpit_metrics"], theme=theme),
-                _grid_section(datasets["yearly_stats"], height="300px", theme=theme),
-                _grid_section(datasets["fx_rates"], height="260px", theme=theme),
-                _graph_section(datasets["income_expense"], theme=theme),
-                _graph_section(datasets["delta"], theme=theme),
-                _graph_section(datasets["savings_rate"], theme=theme),
-                _graph_section(datasets["capital"], height="640px", theme=theme),
-                _graph_section(datasets["fx_revaluation"], height="420px", theme=theme),
-                _graph_section(datasets["asset_currency_allocation"], height="520px", theme=theme),
-                _graph_section(datasets["fx_changes"], theme=theme),
-                _grid_section(datasets["top_purchases"], height="680px", theme=theme),
-            ],
-            className="d-grid gap-4",
+        return _main_report_layout(
+            datasets,
+            theme=theme,
+            currency=currency,
+            year=year,
+            month=month,
         )
 
     @app.callback(
@@ -1270,6 +1261,74 @@ def _placeholder_report(title: str):
             html.Div("Этот отчет будет добавлен после MVP основного отчета.", className="text-muted"),
         ],
         className="py-4",
+    )
+
+
+def _main_report_layout(
+    datasets: dict[str, DashboardDataset],
+    theme: str,
+    currency: str,
+    year: str,
+    month: str,
+):
+    if datasets["cockpit_metrics"].dataframe.empty:
+        return _main_first_run_state(currency, year, month)
+
+    return html.Div(
+        [
+            _cockpit_section(datasets["cockpit_metrics"], theme=theme),
+            _grid_section(datasets["yearly_stats"], height="300px", theme=theme),
+            _grid_section(datasets["fx_rates"], height="260px", theme=theme),
+            _graph_section(datasets["income_expense"], theme=theme),
+            _graph_section(datasets["delta"], theme=theme),
+            _graph_section(datasets["savings_rate"], theme=theme),
+            _graph_section(datasets["capital"], height="640px", theme=theme),
+            _graph_section(datasets["fx_revaluation"], height="420px", theme=theme),
+            _graph_section(datasets["asset_currency_allocation"], height="520px", theme=theme),
+            _graph_section(datasets["fx_changes"], theme=theme),
+            _grid_section(datasets["top_purchases"], height="680px", theme=theme),
+        ],
+        className="d-grid gap-4",
+    )
+
+
+def _main_first_run_state(currency: str, year: str, month: str):
+    input_href = "?" + urlencode(
+        {"currency": currency, "year": year, "month": month, "tab": "input"}
+    )
+    return html.Section(
+        [
+            html.Div("Первый запуск", className="finrep-first-run-kicker"),
+            html.H2("Добавьте первые операции", className="h3 mb-2"),
+            html.P(
+                "После сохранения месяца здесь появятся баланс, динамика расходов и показатели для сверки.",
+                className="finrep-first-run-intro",
+            ),
+            html.Ol(
+                [
+                    html.Li("Откройте раздел «Ввод данных»."),
+                    html.Li("Загрузите банковскую выписку или добавьте операцию вручную."),
+                    html.Li("Проверьте Preview и нажмите «Сохранить месяц»."),
+                ],
+                className="finrep-first-run-steps",
+            ),
+            dcc.Link(
+                dbc.Button(
+                    "Перейти к вводу данных",
+                    color="primary",
+                    className="finrep-first-run-action",
+                ),
+                id="main-first-run-input-link",
+                href=input_href,
+            ),
+            html.Div(
+                "На телефоне: Ещё → Ввод данных.",
+                id="main-first-run-mobile-hint",
+                className="finrep-first-run-mobile-hint",
+            ),
+        ],
+        id="main-first-run",
+        className="finrep-first-run",
     )
 
 

@@ -98,6 +98,64 @@ body {
   color: #fde68a;
 }
 
+.finrep-first-run {
+  max-width: 720px;
+  margin: 28px auto;
+  padding: 32px;
+  border: 1px solid var(--finrep-border);
+  border-radius: 12px;
+  background: var(--finrep-surface);
+  box-shadow: var(--finrep-shadow);
+}
+
+.finrep-first-run-kicker {
+  margin-bottom: 8px;
+  color: var(--finrep-focus);
+  font-size: 0.8rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.finrep-first-run-intro,
+.finrep-first-run-mobile-hint {
+  color: var(--finrep-muted);
+}
+
+.finrep-first-run-steps {
+  margin: 22px 0;
+  padding-left: 1.25rem;
+}
+
+.finrep-first-run-steps li + li {
+  margin-top: 8px;
+}
+
+.finrep-first-run-action {
+  min-height: 44px;
+}
+
+.finrep-first-run-mobile-hint {
+  display: none;
+  margin-top: 14px;
+  font-size: 0.9rem;
+}
+
+@media (max-width: 575.98px) {
+  .finrep-first-run {
+    margin: 8px 0;
+    padding: 22px 18px;
+  }
+
+  .finrep-first-run-action {
+    width: 100%;
+  }
+
+  .finrep-first-run-mobile-hint {
+    display: block;
+  }
+}
+
 .finrep-cockpit-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
