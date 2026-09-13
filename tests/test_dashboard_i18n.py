@@ -105,11 +105,15 @@ def test_dashboard_locale_store_is_local_and_selector_stays_inside_settings():
     layout = client.get("/_dash-layout").get_json()
 
     store = _layout_component(layout, "dashboard-locale")
+    document_store = _layout_component(layout, "dashboard-document-locale")
     settings = _layout_component(layout, "dashboard-settings")
     selector = _layout_component(settings, "dashboard-locale-select")
 
     assert store["props"]["storage_type"] == "local"
     assert store["props"]["data"] == "ru"
+    assert document_store["props"]["data"] == "ru"
+    assert "dashboard-document-locale.data" in app.callback_map
+    assert "dashboard-shell.lang" not in app.callback_map
     assert selector["props"]["options"] == [
         {"label": "RU", "value": "ru"},
         {"label": "EN", "value": "en"},

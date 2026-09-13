@@ -307,6 +307,7 @@ def create_layout():
             dcc.Location(id="dashboard-location"),
             dcc.Store(id="dashboard-theme", data="dark"),
             dcc.Store(id="dashboard-locale", data=DEFAULT_LOCALE, storage_type="local"),
+            dcc.Store(id="dashboard-document-locale", data=DEFAULT_LOCALE),
             dcc.Store(id="dashboard-refresh-token", data=0),
             dcc.Store(id="transaction-save-result", storage_type="session"),
             dcc.Store(
@@ -520,7 +521,7 @@ def register_callbacks(app: Dash) -> None:
             return normalized;
         }
         """,
-        Output("dashboard-shell", "lang"),
+        Output("dashboard-document-locale", "data"),
         Input("dashboard-locale", "data"),
     )
 
