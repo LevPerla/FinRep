@@ -1481,6 +1481,25 @@ def _cockpit_status_class(status) -> str:
 
 
 def _year_report_layout(datasets: dict[str, DashboardDataset], theme: str | None):
+    if "year_empty" in datasets:
+        year = str(datasets["year_empty"].dataframe.iloc[0]["Год"])
+        return html.Section(
+            [
+                html.Div("Год без операций", className="finrep-first-run-kicker"),
+                html.H2(
+                    f"Нет данных за {year} год",
+                    id="year-empty-title",
+                    className="h3 mb-2",
+                ),
+                html.P(
+                    "Выберите другой год или добавьте и сохраните операции за этот период.",
+                    className="finrep-first-run-intro mb-0",
+                ),
+            ],
+            id="year-empty-state",
+            className="finrep-first-run",
+        )
+
     return html.Div(
         [
             _grid_section(datasets["year_quarter_stats"], height="260px", theme=theme),

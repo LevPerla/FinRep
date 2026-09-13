@@ -34,6 +34,15 @@ def _build_year_dashboard_data(
         raise ValueError(f"currency must be one of {tuple(config.UNIQUE_TICKERS)}")
 
     balance = get_balance_by_month(currency)
+    balance_years = pd.to_datetime(balance.index, errors="coerce").year
+    if balance.empty or int(year) not in set(balance_years.dropna()):
+        return {
+            "year_empty": DashboardDataset(
+                id="year_empty",
+                title="Нет данных за выбранный год",
+                dataframe=pd.DataFrame([{"Год": year, "Валюта": currency}]),
+            )
+        }
     year_balance = balance.loc[year]
 
     quarter_stats = _quarter_stats(year_balance)
