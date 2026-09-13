@@ -8,12 +8,14 @@ from pathlib import Path
 from src import config, utils
 from src.model.create_tables import get_balance_by_month
 from src.data.get_finance import set_fx_network_enabled
+from src.dashboard.i18n import DEFAULT_LOCALE, localize_figure
 from src.reports.helpers import add_exchange_rates_table, add_table, write_report_html
 
 def create_main_report(currency: str,
                        return_image: bool = False,
                        return_fig: bool = False,
-                       fx_network_enabled: bool = True) -> None:
+                       fx_network_enabled: bool = True,
+                       locale: str = DEFAULT_LOCALE) -> None:
     """
     function to create month report of all years
 
@@ -104,6 +106,7 @@ def create_main_report(currency: str,
         legend_tracegroupgap=180,
         title_text=f"Основной отчет в валюте {currency}",
     )
+    fig = localize_figure(fig, locale)
 
     if return_fig:
         return fig

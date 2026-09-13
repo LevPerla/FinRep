@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 from decimal import Decimal
@@ -48,6 +49,15 @@ from src.data.staging import (
 from src.dashboard.export import ExportBusyError, export_dashboard_page
 from src.dashboard.auth import configure_auth
 from src.dashboard.investment_data import build_investment_dashboard_data
+from src.dashboard.i18n import (
+    DEFAULT_LOCALE,
+    localize_report_datasets,
+    localize_export_dataframe,
+    normalize_locale,
+    report_column_label,
+    report_text,
+    tr,
+)
 from src.dashboard.main_data import DashboardDataset, build_main_dashboard_data, clear_main_dashboard_cache
 from src.dashboard.month_data import build_month_dashboard_data, get_day_transaction_details
 from src.dashboard.planning_data import build_planning_dashboard_data, save_goal_targets
@@ -106,6 +116,31 @@ MOBILE_TAB_ICONS = {
     "input": "+",
     "more": "•••",
 }
+
+
+def _i18n_text(key: str, *, initial_key: str | None = None, **kwargs):
+    return html.Span(
+        tr(initial_key or key, DEFAULT_LOCALE),
+        id={"type": "i18n-text", "key": key},
+        **kwargs,
+    )
+
+
+def _localized_text_values(component_ids: list[dict], locale: str | None, theme: str | None) -> list[str]:
+    normalized_theme = theme if theme in {"light", "dark"} else "dark"
+    values = []
+    for component_id in component_ids:
+        key = component_id["key"]
+        if key == "dashboard.theme_toggle":
+            key = "dashboard.theme_light" if normalized_theme == "dark" else "dashboard.theme_dark"
+        values.append(tr(key, locale))
+    return values
+
+
+def _resolve_locale_update(triggered_id, selected_locale: str | None, stored_locale: str | None) -> str:
+    if triggered_id == "dashboard-locale-select" and selected_locale in {"ru", "en"}:
+        return normalize_locale(selected_locale)
+    return normalize_locale(stored_locale)
 
 
 def _app_index_string() -> str:
@@ -177,7 +212,11 @@ def _default_dashboard_period() -> tuple[str, str]:
 def _dashboard_tabs() -> dbc.Tabs:
     return dbc.Tabs(
         [
-            dbc.Tab(label=desktop_label, tab_id=tab_id)
+            dbc.Tab(
+                label=desktop_label,
+                tab_id=tab_id,
+                id={"type": "i18n-tab-label", "key": f"nav.{tab_id}.desktop"},
+            )
             for tab_id, desktop_label, _mobile_label in MAIN_DASHBOARD_TABS
         ],
         id="dashboard-tabs",
@@ -193,7 +232,7 @@ def _mobile_bottom_nav() -> html.Nav:
                 html.Button(
                     [
                         html.Span(MOBILE_TAB_ICONS[tab_id], className="mobile-dashboard-tab-icon", **{"aria-hidden": "true"}),
-                        html.Span(mobile_label, className="mobile-dashboard-tab-label"),
+                        _i18n_text(f"nav.{tab_id}.mobile", className="mobile-dashboard-tab-label"),
                     ],
                     id=f"mobile-tab-{tab_id}",
                     type="button",
@@ -206,7 +245,7 @@ def _mobile_bottom_nav() -> html.Nav:
                 html.Button(
                     [
                         html.Span(MOBILE_TAB_ICONS["more"], className="mobile-dashboard-tab-icon", **{"aria-hidden": "true"}),
-                        html.Span("Ещё", className="mobile-dashboard-tab-label"),
+                        _i18n_text("nav.more.mobile", className="mobile-dashboard-tab-label"),
                     ],
                     id="mobile-tab-more",
                     type="button",
@@ -216,8 +255,9 @@ def _mobile_bottom_nav() -> html.Nav:
             ],
             className="mobile-dashboard-tabs-control",
         ),
+        id="mobile-bottom-nav",
         className="mobile-bottom-tabs",
-        **{"aria-label": "Основные разделы"},
+        **{"aria-label": tr("nav.primary_label")},
     )
 
 
@@ -229,7 +269,7 @@ def _mobile_more_menu(theme: str = "dark") -> dbc.Offcanvas:
                     dbc.Button(
                         [
                             html.Span(MOBILE_TAB_ICONS[tab_id], className="mobile-more-item-icon", **{"aria-hidden": "true"}),
-                            html.Span(mobile_label),
+                            _i18n_text(f"nav.{tab_id}.mobile"),
                         ],
                         id=f"mobile-more-{tab_id}",
                         color="secondary",
@@ -240,10 +280,10 @@ def _mobile_more_menu(theme: str = "dark") -> dbc.Offcanvas:
                 ],
                 className="mobile-more-list",
             ),
-            dbc.Button("Закрыть", id="mobile-more-close", color="secondary", className="mt-3 w-100"),
+            dbc.Button(_i18n_text("action.close.mobile_more"), id="mobile-more-close", color="secondary", className="mt-3 w-100"),
         ],
         id="mobile-more-menu",
-        title="Другие разделы",
+        title=_i18n_text("nav.more_title"),
         placement="bottom",
         is_open=False,
         scrollable=False,
@@ -266,6 +306,8 @@ def create_layout():
         [
             dcc.Location(id="dashboard-location"),
             dcc.Store(id="dashboard-theme", data="dark"),
+            dcc.Store(id="dashboard-locale", data=DEFAULT_LOCALE, storage_type="local"),
+            dcc.Store(id="dashboard-document-locale", data=DEFAULT_LOCALE),
             dcc.Store(id="dashboard-refresh-token", data=0),
             dcc.Store(id="transaction-save-result", storage_type="session"),
             dcc.Store(
@@ -293,9 +335,9 @@ def create_layout():
             dbc.Row(
                 [
                     dbc.Col(
-                        html.H1("Finance Dashboard", className="h3 mb-0"),
+                        html.H1(_i18n_text("dashboard.title"), className="h3 mb-0"),
                         xs=12,
-                        md=4,
+                        md=3,
                     ),
                     dbc.Col(
                         html.Div(
@@ -305,7 +347,7 @@ def create_layout():
                                         html.Summary(
                                             [
                                                 html.Span("⚙", className="dashboard-settings-icon", **{"aria-hidden": "true"}),
-                                                html.Span("Параметры"),
+                                                _i18n_text("dashboard.settings"),
                                             ],
                                             className="dashboard-settings-summary",
                                         ),
@@ -335,13 +377,45 @@ def create_layout():
                                                     className="dashboard-filter",
                                                     style={"width": "78px"},
                                                 ),
-                                                dbc.Button("Обновить", id="refresh-reports", color="secondary", outline=True),
-                                                dbc.Button("Обновить курс", id="refresh-fx-rates", color="warning", outline=True, disabled=test_mode),
-                                                dbc.Button("Светлая", id="theme-toggle", color="secondary", outline=True),
+                                                dbc.Button(_i18n_text("dashboard.refresh"), id="refresh-reports", color="secondary", outline=True),
+                                                dbc.Button(_i18n_text("dashboard.refresh_fx"), id="refresh-fx-rates", color="warning", outline=True, disabled=test_mode),
+                                                dbc.Button(
+                                                    _i18n_text("dashboard.theme_toggle", initial_key="dashboard.theme_light"),
+                                                    id="theme-toggle",
+                                                    color="secondary",
+                                                    outline=True,
+                                                ),
                                                 dbc.Button("PNG", id="export-png", color="primary", outline=True, disabled=test_mode),
                                                 dbc.Button("PDF", id="export-pdf", color="primary", outline=True, disabled=test_mode),
+                                                html.Div(
+                                                    [
+                                                        dbc.RadioItems(
+                                                            id="dashboard-locale-select",
+                                                            options=[
+                                                                {"label": "RU", "value": "ru"},
+                                                                {"label": "EN", "value": "en"},
+                                                            ],
+                                                            value=None,
+                                                            inline=True,
+                                                            className="finrep-locale-options",
+                                                            inputClassName="btn-check",
+                                                            labelClassName="finrep-locale-option",
+                                                            labelCheckedClassName="is-active",
+                                                        ),
+                                                    ],
+                                                    id="dashboard-locale-control",
+                                                    role="group",
+                                                    className="finrep-locale-control",
+                                                    **{"aria-label": tr("dashboard.locale_label")},
+                                                ),
                                                 html.Form(
-                                                    dbc.Button("Выйти", type="submit", color="secondary", outline=True),
+                                                    dbc.Button(
+                                                        _i18n_text("dashboard.logout"),
+                                                        id="dashboard-logout-button",
+                                                        type="submit",
+                                                        color="secondary",
+                                                        outline=True,
+                                                    ),
                                                     id="dashboard-logout-form",
                                                     action="/logout",
                                                     method="post",
@@ -356,7 +430,7 @@ def create_layout():
                                     open=True,
                                 ),
                                 dbc.Badge(
-                                    "TEST MODE" if test_mode else "LIVE",
+                                    _i18n_text("dashboard.mode_test" if test_mode else "dashboard.mode_live"),
                                     id="dashboard-mode-badge",
                                     color="warning" if test_mode else "success",
                                     className="px-2 py-2",
@@ -365,7 +439,7 @@ def create_layout():
                             className="dashboard-header-actions",
                         ),
                         xs=12,
-                        md=8,
+                        md=9,
                         className="mt-3 mt-md-0",
                     ),
                 ],
@@ -374,7 +448,7 @@ def create_layout():
             ),
             dbc.Alert(
                 id="page-export-message",
-                children="PNG/PDF доступны только в LIVE." if test_mode else "",
+                children=_i18n_text("dashboard.export_live_only") if test_mode else "",
                 color="warning" if test_mode else "secondary",
                 is_open=test_mode,
                 className="py-2 mb-3",
@@ -388,7 +462,7 @@ def create_layout():
                 [
                     dbc.ModalHeader(dbc.ModalTitle(id="month-transaction-modal-title"), close_button=False),
                     dbc.ModalBody(id="month-transaction-modal-body"),
-                    dbc.ModalFooter(dbc.Button("Закрыть", id="month-transaction-modal-close", color="secondary")),
+                    dbc.ModalFooter(dbc.Button(_i18n_text("action.close.month_modal"), id="month-transaction-modal-close", color="secondary")),
                 ],
                 id="month-transaction-modal",
                 className="finrep-transaction-modal finrep-modal-dark",
@@ -408,6 +482,49 @@ def create_layout():
 
 
 def register_callbacks(app: Dash) -> None:
+    @app.callback(
+        Output("dashboard-locale", "data"),
+        Output("dashboard-locale-select", "value"),
+        Input("dashboard-locale", "modified_timestamp"),
+        Input("dashboard-locale-select", "value"),
+        State("dashboard-locale", "data"),
+    )
+    def sync_dashboard_locale(_modified_timestamp, selected_locale, stored_locale):
+        locale = _resolve_locale_update(ctx.triggered_id, selected_locale, stored_locale)
+        stored_update = no_update if stored_locale == locale else locale
+        return stored_update, locale
+
+    @app.callback(
+        Output({"type": "i18n-text", "key": ALL}, "children"),
+        Output({"type": "i18n-tab-label", "key": ALL}, "label"),
+        Output("mobile-bottom-nav", "aria-label"),
+        Output("dashboard-locale-control", "aria-label"),
+        Input("dashboard-locale", "data"),
+        Input("dashboard-theme", "data"),
+        State({"type": "i18n-text", "key": ALL}, "id"),
+        State({"type": "i18n-tab-label", "key": ALL}, "id"),
+    )
+    def localize_dashboard_chrome(locale, theme, component_ids, tab_ids):
+        return (
+            _localized_text_values(component_ids, locale, theme),
+            _localized_text_values(tab_ids, locale, theme),
+            tr("nav.primary_label", locale),
+            tr("dashboard.locale_label", locale),
+        )
+
+    app.clientside_callback(
+        """
+        function(locale) {
+            const normalized = locale === "en" ? "en" : "ru";
+            document.documentElement.lang = normalized;
+            document.title = normalized === "en" ? "Finance" : "Финансы";
+            return normalized;
+        }
+        """,
+        Output("dashboard-document-locale", "data"),
+        Input("dashboard-locale", "data"),
+    )
+
     @app.callback(
         Output("dashboard-refresh-token", "data"),
         Input("refresh-reports", "n_clicks"),
@@ -486,7 +603,6 @@ def register_callbacks(app: Dash) -> None:
         Output("dashboard-theme", "data"),
         Output("dashboard-shell", "className"),
         Output("dashboard-shell", "style"),
-        Output("theme-toggle", "children"),
         Output("month-transaction-modal", "className"),
         Output("mobile-more-menu", "className"),
         Input("theme-toggle", "n_clicks"),
@@ -496,13 +612,11 @@ def register_callbacks(app: Dash) -> None:
         theme = current_theme if current_theme in {"light", "dark"} else "light"
         if n_clicks:
             theme = "dark" if theme == "light" else "light"
-        label = "Светлая" if theme == "dark" else "Темная"
         shell_style = _theme_shell_style(theme)
         return (
             theme,
             f"finrep-shell finrep-theme-{theme}",
             shell_style,
-            label,
             _transaction_modal_class(theme),
             f"finrep-mobile-more finrep-mobile-more-{theme}",
         )
@@ -610,12 +724,13 @@ def register_callbacks(app: Dash) -> None:
         Input("dashboard-month", "value"),
         Input("dashboard-tabs", "active_tab"),
         Input("dashboard-theme", "data"),
+        Input("dashboard-locale", "data"),
         Input("dashboard-refresh-token", "data"),
         Input("refresh-fx-rates", "n_clicks"),
         Input("transaction-save-result", "data"),
         State("crypto-refresh-status", "data"),
     )
-    def render_dashboard_content(currency: str, year: str, month: str, active_tab: str, theme: str, refresh_token: int, fx_refresh_clicks: int | None, transaction_save_result: dict | None, crypto_status: dict | None):
+    def render_dashboard_content(currency: str, year: str, month: str, active_tab: str, theme: str, locale: str, refresh_token: int, fx_refresh_clicks: int | None, transaction_save_result: dict | None, crypto_status: dict | None):
         fx_network_enabled = ctx.triggered_id == "refresh-fx-rates" and not config.is_test_mode()
         if fx_network_enabled:
             clear_table_cache()
@@ -629,10 +744,11 @@ def register_callbacks(app: Dash) -> None:
                     fx_network_enabled=fx_network_enabled,
                 )
             except Exception as exc:
-                return _error_state("Не удалось загрузить данные годового отчета.", exc)
+                return _error_state(str(report_text("Не удалось загрузить данные годового отчета.", locale)), exc, locale=locale)
 
+            datasets = localize_report_datasets(datasets, locale)
             _apply_theme_to_datasets(datasets, theme)
-            return _year_report_layout(datasets, theme)
+            return _year_report_layout(datasets, theme, locale=locale)
 
         if active_tab == "planning":
             try:
@@ -642,10 +758,11 @@ def register_callbacks(app: Dash) -> None:
                     fx_network_enabled=fx_network_enabled,
                 )
             except Exception as exc:
-                return _error_state("Не удалось загрузить данные плана и прогноза.", exc)
+                return _error_state(str(report_text("Не удалось загрузить данные плана и прогноза.", locale)), exc, locale=locale)
 
+            datasets = localize_report_datasets(datasets, locale)
             _apply_theme_to_datasets(datasets, theme)
-            return _planning_report_layout(datasets, theme, read_only=config.is_test_mode())
+            return _planning_report_layout(datasets, theme, read_only=config.is_test_mode(), locale=locale)
 
         if active_tab == "month":
             try:
@@ -656,10 +773,11 @@ def register_callbacks(app: Dash) -> None:
                     fx_network_enabled=fx_network_enabled,
                 )
             except Exception as exc:
-                return _error_state("Не удалось загрузить данные месячного отчета.", exc)
+                return _error_state(str(report_text("Не удалось загрузить данные месячного отчета.", locale)), exc, locale=locale)
 
+            datasets = localize_report_datasets(datasets, locale)
             _apply_theme_to_datasets(datasets, theme)
-            return _month_report_layout(datasets, theme)
+            return _month_report_layout(datasets, theme, locale=locale)
 
         if active_tab == "investments":
             try:
@@ -684,6 +802,7 @@ def register_callbacks(app: Dash) -> None:
                 theme,
                 read_only=config.is_test_mode(),
                 transaction_save_result=transaction_save_result,
+                locale=locale,
             )
 
         try:
@@ -694,8 +813,9 @@ def register_callbacks(app: Dash) -> None:
                 month=month,
             )
         except Exception as exc:
-            return _error_state("Не удалось загрузить данные основного отчета.", exc)
+            return _error_state(str(report_text("Не удалось загрузить данные основного отчета.", locale)), exc, locale=locale)
 
+        datasets = localize_report_datasets(datasets, locale)
         _apply_theme_to_datasets(datasets, theme)
         return _main_report_layout(
             datasets,
@@ -703,6 +823,7 @@ def register_callbacks(app: Dash) -> None:
             currency=currency,
             year=year,
             month=month,
+            locale=locale,
         )
 
     @app.callback(
@@ -712,9 +833,10 @@ def register_callbacks(app: Dash) -> None:
         Input({"type": "month-transaction-day", "date": ALL}, "n_clicks"),
         Input("month-transaction-modal-close", "n_clicks"),
         State("dashboard-currency", "value"),
+        State("dashboard-locale", "data"),
         prevent_initial_call=True,
     )
-    def toggle_month_transaction_modal(day_clicks, close_clicks, currency: str):
+    def toggle_month_transaction_modal(day_clicks, close_clicks, currency: str, locale: str):
         if ctx.triggered_id == "month-transaction-modal-close":
             return False, "", []
         triggered_value = ctx.triggered[0].get("value") if ctx.triggered else None
@@ -724,8 +846,12 @@ def register_callbacks(app: Dash) -> None:
 
         details = get_day_transaction_details(date, currency)
         title_date = pd.to_datetime(date, errors="coerce")
-        title = f"Транзакции за {title_date.strftime('%d.%m.%Y')}" if not pd.isna(title_date) else "Транзакции за день"
-        return True, title, _month_transaction_modal_body(details, currency)
+        title = (
+            f"{report_text('Транзакции', locale)} — {title_date.strftime('%d.%m.%Y')}"
+            if not pd.isna(title_date)
+            else str(report_text("Транзакции за день", locale))
+        )
+        return True, title, _month_transaction_modal_body(details, currency, locale=locale)
 
     @app.callback(
         Output({"type": "dataset-download", "dataset_id": MATCH}, "data"),
@@ -735,6 +861,7 @@ def register_callbacks(app: Dash) -> None:
         State("dashboard-year", "value"),
         State("dashboard-month", "value"),
         State("dashboard-tabs", "active_tab"),
+        State("dashboard-locale", "data"),
         prevent_initial_call=True,
     )
     def download_dataset(
@@ -744,6 +871,7 @@ def register_callbacks(app: Dash) -> None:
         year: str,
         month: str,
         active_tab: str,
+        locale: str,
     ):
         if not n_clicks:
             raise PreventUpdate
@@ -754,8 +882,10 @@ def register_callbacks(app: Dash) -> None:
             raise PreventUpdate
 
         dataset = datasets[dataset_id]
+        export_data = localize_export_dataframe(dataset.dataframe, locale)
+        export_title = str(report_text(dataset.title, locale))
         filename = _download_filename(dataset, currency, active_tab, year, month)
-        return dcc.send_bytes(_dataframe_to_xlsx_bytes(dataset.dataframe, dataset.title), filename)
+        return dcc.send_bytes(_dataframe_to_xlsx_bytes(export_data, export_title), filename)
 
     @app.callback(
         Output("page-export-download", "data"),
@@ -768,6 +898,7 @@ def register_callbacks(app: Dash) -> None:
         State("dashboard-year", "value"),
         State("dashboard-month", "value"),
         State("dashboard-tabs", "active_tab"),
+        State("dashboard-locale", "data"),
         prevent_initial_call=True,
     )
     def export_page(
@@ -777,12 +908,13 @@ def register_callbacks(app: Dash) -> None:
         year: str,
         month: str,
         active_tab: str,
+        locale: str,
     ):
         if not png_clicks and not pdf_clicks:
             raise PreventUpdate
 
         if config.is_test_mode():
-            return no_update, "PNG/PDF доступны только в LIVE.", "warning", True
+            return no_update, tr("dashboard.export_live_only", locale), "warning", True
 
         export_format = "png" if ctx.triggered_id == "export-png" else "pdf"
         try:
@@ -794,10 +926,13 @@ def register_callbacks(app: Dash) -> None:
                 month=month if active_tab == "month" else None,
                 session_cookie=request.cookies.get(app.server.config.get("SESSION_COOKIE_NAME", "session")),
                 session_cookie_name=app.server.config.get("SESSION_COOKIE_NAME", "session"),
+                locale=locale,
             )
         except ExportBusyError as exc:
-            return no_update, str(exc), "warning", True
-        return dcc.send_file(str(export_path)), "Экспорт готов.", "success", True
+            message = "An export is already running. Try again after it finishes." if normalize_locale(locale) == "en" else str(exc)
+            return no_update, message, "warning", True
+        message = "Export ready." if normalize_locale(locale) == "en" else "Экспорт готов."
+        return dcc.send_file(str(export_path)), message, "success", True
 
     @app.callback(
         Output("kaspi-import-grid", "rowData"),
@@ -808,28 +943,38 @@ def register_callbacks(app: Dash) -> None:
         Output("transaction-import-period", "value"),
         Input("kaspi-upload", "contents", allow_optional=True),
         State("kaspi-upload", "filename", allow_optional=True),
+        State("dashboard-locale", "data"),
         prevent_initial_call=True,
     )
-    def preview_kaspi_pdf(contents, filename):
+    def preview_kaspi_pdf(contents, filename, locale):
         if not contents:
             raise PreventUpdate
         display_filename = _safe_upload_filename(filename)
         try:
             data = parse_bank_upload_contents(contents)
             internal_count = int(data["skip_reason"].eq("internal_transfer").sum()) if "skip_reason" in data else 0
-            message = (
-                f"{display_filename}: найдено строк {len(data)}, "
-                f"к импорту {int(data['import_action'].eq('import').sum())}, "
-                f"skip {int(data['import_action'].eq('skip').sum())}, "
-                f"требуют решения {int(data['import_action'].eq('review').sum())}, "
-                f"внутренние переводы {internal_count}."
-            )
+            if normalize_locale(locale) == "en":
+                message = (
+                    f"{display_filename}: {len(data)} rows found, "
+                    f"{int(data['import_action'].eq('import').sum())} to import, "
+                    f"{int(data['import_action'].eq('skip').sum())} skipped, "
+                    f"{int(data['import_action'].eq('review').sum())} require review, "
+                    f"{internal_count} internal transfers."
+                )
+            else:
+                message = (
+                    f"{display_filename}: найдено строк {len(data)}, "
+                    f"к импорту {int(data['import_action'].eq('import').sum())}, "
+                    f"skip {int(data['import_action'].eq('skip').sum())}, "
+                    f"требуют решения {int(data['import_action'].eq('review').sum())}, "
+                    f"внутренние переводы {internal_count}."
+                )
             period_options, period_value = _import_period_selection(data)
             if len(period_options) > 1:
-                message += " Выписка содержит несколько месяцев — выбери период перед Preview."
+                message += " The statement contains multiple months — select a period before Preview." if normalize_locale(locale) == "en" else " Выписка содержит несколько месяцев — выбери период перед Preview."
             return (
                 _dataframe_records(data),
-                _kaspi_import_column_defs(),
+                _localized_input_column_defs(_kaspi_import_column_defs(), locale),
                 message,
                 "secondary",
                 period_options,
@@ -842,13 +987,13 @@ def register_callbacks(app: Dash) -> None:
                 type(exc).__name__,
                 exc_info=True,
             )
-            return [], _kaspi_import_column_defs(), f"{display_filename}: {exc}", "danger", [], None
+            return [], _localized_input_column_defs(_kaspi_import_column_defs(), locale), f"{display_filename}: {report_text(str(exc), locale)}", "danger", [], None
         except Exception:
             logger.exception("Unexpected bank PDF import failure: filename=%r", display_filename)
             return (
                 [],
-                _kaspi_import_column_defs(),
-                f"{display_filename}: импорт не выполнен из-за внутренней ошибки.",
+                _localized_input_column_defs(_kaspi_import_column_defs(), locale),
+                (f"{display_filename}: import failed due to an internal error." if normalize_locale(locale) == "en" else f"{display_filename}: импорт не выполнен из-за внутренней ошибки."),
                 "danger",
                 [],
                 None,
@@ -867,6 +1012,7 @@ def register_callbacks(app: Dash) -> None:
         State("transaction-input-amount", "value", allow_optional=True),
         State("transaction-input-comment", "value", allow_optional=True),
         State("transaction-add-request-id", "data"),
+        State("dashboard-locale", "data"),
         prevent_initial_call=True,
     )
     def add_manual_transaction(
@@ -877,6 +1023,7 @@ def register_callbacks(app: Dash) -> None:
         input_amount,
         input_comment,
         add_request_id,
+        locale,
     ):
         if not add_clicks:
             raise PreventUpdate
@@ -906,9 +1053,9 @@ def register_callbacks(app: Dash) -> None:
                 if result["accepted_rows"]
                 else "Черновик уже был добавлен; повтор не создан."
             )
-            return message, "success", None, "", uuid4().hex
+            return report_text(message, locale), "success", None, "", uuid4().hex
         except Exception as exc:
-            return str(exc), "danger", no_update, no_update, next_add_request_id
+            return report_text(str(exc), locale), "danger", no_update, no_update, next_add_request_id
 
     @app.callback(
         Output("transaction-export-preview-grid", "rowData"),
@@ -926,6 +1073,7 @@ def register_callbacks(app: Dash) -> None:
         State("transaction-import-period", "value", allow_optional=True),
         State("transaction-export-preview-grid", "rowData", allow_optional=True),
         State("transaction-export-preview-state", "data", allow_optional=True),
+        State("dashboard-locale", "data"),
         prevent_initial_call=True,
     )
     def preview_or_export_transaction_month(
@@ -938,6 +1086,7 @@ def register_callbacks(app: Dash) -> None:
         import_period,
         preview_rows,
         preview_state,
+        locale,
     ):
         trigger = ctx.triggered_id
         try:
@@ -963,8 +1112,8 @@ def register_callbacks(app: Dash) -> None:
                 )
                 return (
                     _dataframe_records(preview),
-                    _simple_column_defs(preview),
-                    f"Месяц {year}-{str(month).zfill(2)} сохранён.",
+                    _localized_input_column_defs(_simple_column_defs(preview), locale),
+                    report_text(f"Месяц {year}-{str(month).zfill(2)} сохранён.", locale),
                     "success",
                     None,
                     save_result,
@@ -988,18 +1137,15 @@ def register_callbacks(app: Dash) -> None:
                 preview_state["import_summary"] = _transaction_import_summary(
                     import_rows, import_result
                 )
-            message = f"Preview построен для {year}-{str(month).zfill(2)}."
+            message = str(report_text(f"Preview построен для {year}-{str(month).zfill(2)}.", locale))
             if import_result is not None:
-                message += (
-                    f" Принято из выписки: {import_result['accepted_rows']}; "
-                    f"пропущено: {import_result['skipped_rows']}."
-                )
+                message += (f" Accepted from statement: {import_result['accepted_rows']}; skipped: {import_result['skipped_rows']}." if normalize_locale(locale) == "en" else f" Принято из выписки: {import_result['accepted_rows']}; пропущено: {import_result['skipped_rows']}.")
                 if import_result.get("replaced_pending_rows"):
-                    message += f" Заменено pending: {import_result['replaced_pending_rows']}."
-            message += " Месячный CSV ещё не изменён."
+                    message += (f" Pending replaced: {import_result['replaced_pending_rows']}." if normalize_locale(locale) == "en" else f" Заменено pending: {import_result['replaced_pending_rows']}.")
+            message += " The monthly CSV has not changed yet." if normalize_locale(locale) == "en" else " Месячный CSV ещё не изменён."
             return (
                 _dataframe_records(preview),
-                _simple_column_defs(preview),
+                _localized_input_column_defs(_simple_column_defs(preview), locale),
                 message,
                 "secondary",
                 preview_state,
@@ -1010,14 +1156,14 @@ def register_callbacks(app: Dash) -> None:
                 failed_preview = pd.DataFrame(preview_rows)
                 return (
                     preview_rows,
-                    _simple_column_defs(failed_preview),
-                    str(exc),
+                    _localized_input_column_defs(_simple_column_defs(failed_preview), locale),
+                    report_text(str(exc), locale),
                     "danger",
                     preview_state,
                     no_update,
                 )
             empty = pd.DataFrame()
-            return [], _simple_column_defs(empty), str(exc), "danger", preview_state, no_update
+            return [], _localized_input_column_defs(_simple_column_defs(empty), locale), report_text(str(exc), locale), "danger", preview_state, no_update
 
     @app.callback(
         Output("active-receivable-debts-grid", "rowData"),
@@ -1167,8 +1313,9 @@ def register_callbacks(app: Dash) -> None:
         State("dashboard-month", "value"),
         State("assets-input-grid", "rowData", allow_optional=True),
         State("assets-input-grid", "selectedRows", allow_optional=True),
+        State("dashboard-locale", "data"),
     )
-    def sync_assets_snapshot(load_clicks, add_clicks, delete_clicks, apply_clicks, year, month, row_data, selected_rows):
+    def sync_assets_snapshot(load_clicks, add_clicks, delete_clicks, apply_clicks, year, month, row_data, selected_rows, locale):
         trigger = ctx.triggered_id
         try:
             if trigger in {"assets-add-row-button", "assets-delete-row-button", "assets-apply-button"}:
@@ -1176,7 +1323,8 @@ def register_callbacks(app: Dash) -> None:
             if trigger == "assets-add-row-button":
                 rows = list(row_data or [])
                 rows.append({"account": "", "amount": 0, "currency": DEFAULT_CURRENCY})
-                return rows, "Добавлена пустая строка. Заполни счет, сумму и валюту, затем нажми Применить.", "secondary"
+                message = "An empty row was added. Enter the account, amount, and currency, then select Apply." if normalize_locale(locale) == "en" else "Добавлена пустая строка. Заполни счет, сумму и валюту, затем нажми Применить."
+                return rows, message, "secondary"
 
             if trigger == "assets-delete-row-button":
                 rows = list(row_data or [])
@@ -1184,24 +1332,21 @@ def register_callbacks(app: Dash) -> None:
                     raise ValueError("Выбери строки активов для удаления.")
                 selected_keys = {_asset_row_key(row) for row in selected_rows}
                 rows = [row for row in rows if _asset_row_key(row) not in selected_keys]
-                return rows, f"Удалено строк: {len(selected_rows)}. Нажми Применить, чтобы записать изменения в CSV.", "warning"
+                message = (f"Rows deleted: {len(selected_rows)}. Select Apply to write the changes to CSV." if normalize_locale(locale) == "en" else f"Удалено строк: {len(selected_rows)}. Нажми Применить, чтобы записать изменения в CSV.")
+                return rows, message, "warning"
 
             if trigger == "assets-apply-button":
                 result = write_asset_snapshot(row_data or [], year, month)
                 clear_data_cache()
                 clear_table_cache()
                 clear_main_dashboard_cache()
-                message = (
-                    f"Активы сохранены: {result['rows']} строк. "
-                    f"Файл: {result['path']}. "
-                    f"Backup: {result['backup_path'] or 'не создавался'}."
-                )
+                message = ((f"Assets saved: {result['rows']} rows. File: {result['path']}. Backup: {result['backup_path'] or 'not created'}." ) if normalize_locale(locale) == "en" else (f"Активы сохранены: {result['rows']} строк. Файл: {result['path']}. Backup: {result['backup_path'] or 'не создавался'}."))
                 return _asset_input_records(year, month), message, "success"
 
-            message, color = _asset_input_status(year, month)
+            message, color = _asset_input_status(year, month, locale)
             return _asset_input_records(year, month), message, color
         except Exception as exc:
-            return row_data or [], str(exc), "danger"
+            return row_data or [], report_text(str(exc), locale), "danger"
 
 
 def _ag_grid_changed_column(change_event, column_name: str) -> bool:
@@ -1270,35 +1415,36 @@ def _main_report_layout(
     currency: str,
     year: str,
     month: str,
+    locale: str = DEFAULT_LOCALE,
 ):
     if datasets["cockpit_metrics"].dataframe.empty:
-        return _main_first_run_state(currency, year, month)
+        return _main_first_run_state(currency, year, month, locale=locale)
 
     sections = [
-        _cockpit_section(datasets["cockpit_metrics"], theme=theme),
-        _grid_section(datasets["yearly_stats"], height="300px", theme=theme),
-        _grid_section(datasets["fx_rates"], height="260px", theme=theme),
-        _graph_section(datasets["income_expense"], theme=theme),
-        _graph_section(datasets["delta"], theme=theme),
-        _graph_section(datasets["savings_rate"], theme=theme),
-        _graph_section(datasets["capital"], height="640px", theme=theme),
-        _graph_section(datasets["fx_revaluation"], height="420px", theme=theme),
-        _graph_section(datasets["asset_currency_allocation"], height="520px", theme=theme),
-        _graph_section(datasets["fx_changes"], theme=theme),
-        _grid_section(datasets["top_purchases"], height="680px", theme=theme),
+        _cockpit_section(datasets["cockpit_metrics"], theme=theme, locale=locale),
+        _grid_section(datasets["yearly_stats"], height="300px", theme=theme, locale=locale),
+        _grid_section(datasets["fx_rates"], height="260px", theme=theme, locale=locale),
+        _graph_section(datasets["income_expense"], theme=theme, locale=locale),
+        _graph_section(datasets["delta"], theme=theme, locale=locale),
+        _graph_section(datasets["savings_rate"], theme=theme, locale=locale),
+        _graph_section(datasets["capital"], height="640px", theme=theme, locale=locale),
+        _graph_section(datasets["fx_revaluation"], height="420px", theme=theme, locale=locale),
+        _graph_section(datasets["asset_currency_allocation"], height="520px", theme=theme, locale=locale),
+        _graph_section(datasets["fx_changes"], theme=theme, locale=locale),
+        _grid_section(datasets["top_purchases"], height="680px", theme=theme, locale=locale),
     ]
     metrics = datasets["cockpit_metrics"].dataframe
     if metrics.attrs.get("selected_period_available") is False:
-        sections.insert(0, _main_missing_month_notice(str(metrics.attrs["selected_period"])))
+        sections.insert(0, _main_missing_month_notice(str(metrics.attrs["selected_period"]), locale=locale))
     return html.Div(sections, className="d-grid gap-4")
 
 
-def _main_missing_month_notice(period: str):
+def _main_missing_month_notice(period: str, locale: str = DEFAULT_LOCALE):
     return dbc.Alert(
         [
-            html.Div(f"Нет данных за {period}", className="fw-semibold"),
+            html.Div((f"No data for {period}" if normalize_locale(locale) == "en" else f"Нет данных за {period}"), className="fw-semibold"),
             html.Div(
-                "Показатели выбранного месяца недоступны. История и показатели с указанной последней датой остаются видимыми.",
+                report_text("Показатели выбранного месяца недоступны. История и показатели с указанной последней датой остаются видимыми.", locale),
                 className="small mt-1",
             ),
         ],
@@ -1308,29 +1454,29 @@ def _main_missing_month_notice(period: str):
     )
 
 
-def _main_first_run_state(currency: str, year: str, month: str):
+def _main_first_run_state(currency: str, year: str, month: str, locale: str = DEFAULT_LOCALE):
     input_href = "?" + urlencode(
         {"currency": currency, "year": year, "month": month, "tab": "input"}
     )
     return html.Section(
         [
-            html.Div("Первый запуск", className="finrep-first-run-kicker"),
-            html.H2("Добавьте первые операции", className="h3 mb-2"),
+            html.Div(report_text("Первый запуск", locale), className="finrep-first-run-kicker"),
+            html.H2(report_text("Добавьте первые операции", locale), className="h3 mb-2"),
             html.P(
-                "После сохранения месяца здесь появятся баланс, динамика расходов и показатели для сверки.",
+                report_text("После сохранения месяца здесь появятся баланс, динамика расходов и показатели для сверки.", locale),
                 className="finrep-first-run-intro",
             ),
             html.Ol(
                 [
-                    html.Li("Откройте раздел «Ввод данных»."),
-                    html.Li("Загрузите банковскую выписку или добавьте операцию вручную."),
-                    html.Li("Проверьте Preview и нажмите «Сохранить месяц»."),
+                    html.Li(report_text("Откройте раздел «Ввод данных».", locale)),
+                    html.Li(report_text("Загрузите банковскую выписку или добавьте операцию вручную.", locale)),
+                    html.Li(report_text("Проверьте Preview и нажмите «Сохранить месяц».", locale)),
                 ],
                 className="finrep-first-run-steps",
             ),
             dcc.Link(
                 dbc.Button(
-                    "Перейти к вводу данных",
+                    report_text("Перейти к вводу данных", locale),
                     color="primary",
                     className="finrep-first-run-action",
                 ),
@@ -1338,7 +1484,7 @@ def _main_first_run_state(currency: str, year: str, month: str):
                 href=input_href,
             ),
             html.Div(
-                "На телефоне: Ещё → Ввод данных.",
+                report_text("На телефоне: Ещё → Ввод данных.", locale),
                 id="main-first-run-mobile-hint",
                 className="finrep-first-run-mobile-hint",
             ),
@@ -1348,10 +1494,10 @@ def _main_first_run_state(currency: str, year: str, month: str):
     )
 
 
-def _cockpit_section(dataset: DashboardDataset, theme: str | None = None):
+def _cockpit_section(dataset: DashboardDataset, theme: str | None = None, locale: str = DEFAULT_LOCALE):
     data = dataset.display_dataframe if dataset.display_dataframe is not None else dataset.dataframe
     if data.empty:
-        return _empty_section(dataset)
+        return _empty_section(dataset, locale=locale)
 
     rows_by_metric = {
         str(row.get("ID") or row.get("Показатель", "")): row
@@ -1386,13 +1532,13 @@ def _cockpit_section(dataset: DashboardDataset, theme: str | None = None):
                 [
                     _cockpit_metric_group(
                         "main-metrics-reconciliation",
-                        "Сверка",
+                        str(report_text("Сверка", locale)),
                         reconciliation_metrics,
                         rows_by_metric,
                     ),
                     _cockpit_metric_group(
                         "main-metrics-stability",
-                        "Устойчивость",
+                        str(report_text("Устойчивость", locale)),
                         stability_metrics,
                         rows_by_metric,
                     ),
@@ -1431,16 +1577,16 @@ def _cockpit_card(row, compact: bool = False):
     )
 
 
-def _month_summary_section(dataset: DashboardDataset, theme: str | None = None):
+def _month_summary_section(dataset: DashboardDataset, theme: str | None = None, locale: str = DEFAULT_LOCALE):
     data = dataset.display_dataframe if dataset.display_dataframe is not None else dataset.dataframe
     if data.empty:
-        return _empty_section(dataset)
+        return _empty_section(dataset, locale=locale)
 
     groups = [
-        ("cash-flow", "Денежный поток", ("Доход", "Расход", "Сбережения", "Дельта", "Баланс")),
+        ("cash-flow", str(report_text("Денежный поток", locale)), ("Доход", "Расход", "Сбережения", "Дельта", "Баланс")),
         (
             "debts",
-            "Задолженности",
+            str(report_text("Задолженности", locale)),
             (
                 "Дебиторская задолженность",
                 "Погашение деб. зад.",
@@ -1450,15 +1596,18 @@ def _month_summary_section(dataset: DashboardDataset, theme: str | None = None):
         ),
         (
             "capital",
-            "Капитал и активы",
+            str(report_text("Капитал и активы", locale)),
             ("Капитал", "Капитал по активам", "Инвестиции", "Расхождение с активами", "Валютная переоценка"),
         ),
     ]
-    rows_by_metric = {str(row.get("Показатель", "")): row for _, row in data.iterrows()}
+    rows_by_metric = {
+        str(dataset.dataframe.iloc[index].get("Показатель", "")): row
+        for index, (_, row) in enumerate(data.iterrows())
+    }
     grouped_metrics = {metric for _group_id, _title, metrics in groups for metric in metrics}
     other_metrics = [metric for metric in rows_by_metric if metric not in grouped_metrics]
     if other_metrics:
-        groups.append(("other", "Прочие показатели", tuple(other_metrics)))
+        groups.append(("other", str(report_text("Прочие показатели", locale)), tuple(other_metrics)))
 
     return html.Section(
         [
@@ -1496,19 +1645,19 @@ def _cockpit_status_class(status) -> str:
     return "neutral"
 
 
-def _year_report_layout(datasets: dict[str, DashboardDataset], theme: str | None):
+def _year_report_layout(datasets: dict[str, DashboardDataset], theme: str | None, locale: str = DEFAULT_LOCALE):
     if "year_empty" in datasets:
         year = str(datasets["year_empty"].dataframe.iloc[0]["Год"])
         return html.Section(
             [
-                html.Div("Год без операций", className="finrep-first-run-kicker"),
+                html.Div(report_text("Год без операций", locale), className="finrep-first-run-kicker"),
                 html.H2(
-                    f"Нет данных за {year} год",
+                    f"No data for {year}" if normalize_locale(locale) == "en" else f"Нет данных за {year} год",
                     id="year-empty-title",
                     className="h3 mb-2",
                 ),
                 html.P(
-                    "Выберите другой год или добавьте и сохраните операции за этот период.",
+                    report_text("Выберите другой год или добавьте и сохраните операции за этот период.", locale),
                     className="finrep-first-run-intro mb-0",
                 ),
             ],
@@ -1518,50 +1667,50 @@ def _year_report_layout(datasets: dict[str, DashboardDataset], theme: str | None
 
     return html.Div(
         [
-            _grid_section(datasets["year_quarter_stats"], height="260px", theme=theme),
-            _grid_section(datasets["year_fx_rates"], height="260px", theme=theme),
-            _graph_section(datasets["year_cost_distribution_chart"], theme=theme),
-            _grid_section(datasets["year_cost_distribution"], height="620px", theme=theme),
-            _grid_section(datasets["year_top_purchases"], height="680px", theme=theme),
+            _grid_section(datasets["year_quarter_stats"], height="260px", theme=theme, locale=locale),
+            _grid_section(datasets["year_fx_rates"], height="260px", theme=theme, locale=locale),
+            _graph_section(datasets["year_cost_distribution_chart"], theme=theme, locale=locale),
+            _grid_section(datasets["year_cost_distribution"], height="620px", theme=theme, locale=locale),
+            _grid_section(datasets["year_top_purchases"], height="680px", theme=theme, locale=locale),
             dbc.Row(
                 [
-                    dbc.Col(_grid_section(datasets["year_income_by_month"], height="560px", theme=theme), xs=12, lg=3),
-                    dbc.Col(_graph_section(datasets["year_income_expense"], height="560px", theme=theme), xs=12, lg=6),
-                    dbc.Col(_grid_section(datasets["year_cost_by_month"], height="560px", theme=theme), xs=12, lg=3),
+                    dbc.Col(_grid_section(datasets["year_income_by_month"], height="560px", theme=theme, locale=locale), xs=12, lg=3),
+                    dbc.Col(_graph_section(datasets["year_income_expense"], height="560px", theme=theme, locale=locale), xs=12, lg=6),
+                    dbc.Col(_grid_section(datasets["year_cost_by_month"], height="560px", theme=theme, locale=locale), xs=12, lg=3),
                 ],
                 className="g-4",
             ),
-            _grid_section(datasets["year_income_cost_stats"], height="360px", theme=theme),
-            _grid_section(datasets["year_capital_by_month"], height="560px", theme=theme),
-            _graph_section(datasets["year_capital_chart"], height="560px", theme=theme),
-            _graph_section(datasets["year_fx_revaluation"], height="420px", theme=theme),
+            _grid_section(datasets["year_income_cost_stats"], height="360px", theme=theme, locale=locale),
+            _grid_section(datasets["year_capital_by_month"], height="560px", theme=theme, locale=locale),
+            _graph_section(datasets["year_capital_chart"], height="560px", theme=theme, locale=locale),
+            _graph_section(datasets["year_fx_revaluation"], height="420px", theme=theme, locale=locale),
         ],
         className="d-grid gap-4",
     )
 
 
-def _planning_report_layout(datasets: dict[str, DashboardDataset], theme: str | None, read_only: bool = False):
+def _planning_report_layout(datasets: dict[str, DashboardDataset], theme: str | None, read_only: bool = False, locale: str = DEFAULT_LOCALE):
     return html.Div(
         [
-            _grid_section(datasets["planning_goals"], height="260px", theme=theme, read_only=read_only),
+            _grid_section(datasets["planning_goals"], height="260px", theme=theme, read_only=read_only, locale=locale),
             dbc.Row(
                 [
-                    dbc.Col(_graph_section(datasets["planning_capital_forecast"], height="520px", theme=theme), xs=12, lg=8),
-                    dbc.Col(_runway_section(datasets["planning_runway"], theme=theme), xs=12, lg=4),
+                    dbc.Col(_graph_section(datasets["planning_capital_forecast"], height="520px", theme=theme, locale=locale), xs=12, lg=8),
+                    dbc.Col(_runway_section(datasets["planning_runway"], theme=theme, locale=locale), xs=12, lg=4),
                 ],
                 className="g-4",
             ),
-            _grid_section(datasets["planning_fx_scenarios"], height="320px", theme=theme),
-            _graph_section(datasets["planning_fx_scenarios"], height="360px", theme=theme),
+            _grid_section(datasets["planning_fx_scenarios"], height="320px", theme=theme, locale=locale),
+            _graph_section(datasets["planning_fx_scenarios"], height="360px", theme=theme, locale=locale),
         ],
         className="d-grid gap-4",
     )
 
 
-def _runway_section(dataset: DashboardDataset, theme: str | None = None):
+def _runway_section(dataset: DashboardDataset, theme: str | None = None, locale: str = DEFAULT_LOCALE):
     data = dataset.display_dataframe if dataset.display_dataframe is not None else dataset.dataframe
     if data.empty:
-        return _empty_section(dataset)
+        return _empty_section(dataset, locale=locale)
 
     row = data.iloc[0]
     card_style = {
@@ -1593,10 +1742,10 @@ def _runway_section(dataset: DashboardDataset, theme: str | None = None):
             _section_header(dataset),
             html.Div(
                 [
-                    card("Финансовый запас по денежному потоку, месяцев", str(row.get("Runway, мес.", "не рассчитано"))),
-                    card("Финансовый запас по денежному потоку, лет", str(row.get("Runway, лет", "не рассчитано"))),
-                    card("Капитал по денежному потоку", str(row.get("Капитал по cash-flow", "не задано"))),
-                    card("Средний расход/мес", str(row.get("Средний расход", "не задано"))),
+                    card(str(report_text("Финансовый запас по денежному потоку, месяцев", locale)), str(row.get("Runway, мес.", report_text("не рассчитано", locale)))),
+                    card(str(report_text("Финансовый запас по денежному потоку, лет", locale)), str(row.get("Runway, лет", report_text("не рассчитано", locale)))),
+                    card(str(report_text("Капитал по денежному потоку", locale)), str(row.get("Капитал по cash-flow", report_text("не задано", locale)))),
+                    card(str(report_text("Средний расход/мес", locale)), str(row.get("Средний расход", report_text("не задано", locale)))),
                 ],
                 className="d-grid gap-3",
             ),
@@ -1605,24 +1754,24 @@ def _runway_section(dataset: DashboardDataset, theme: str | None = None):
     )
 
 
-def _month_report_layout(datasets: dict[str, DashboardDataset], theme: str | None):
+def _month_report_layout(datasets: dict[str, DashboardDataset], theme: str | None, locale: str = DEFAULT_LOCALE):
     if "month_empty" in datasets:
-        return _month_empty_state(datasets["month_empty"])
+        return _month_empty_state(datasets["month_empty"], locale=locale)
 
     return html.Div(
         [
-            _month_summary_section(datasets["month_summary"], theme=theme),
-            _grid_section(datasets["month_transactions"], height="1450px", theme=theme),
-            _grid_section(datasets["month_fx_rates"], height="260px", theme=theme),
-            _graph_section(datasets["month_cost_distribution_chart"], theme=theme),
-            _grid_section(datasets["month_cost_distribution"], height="520px", theme=theme),
-            _grid_section(datasets["month_assets"], height="1120px", theme=theme),
+            _month_summary_section(datasets["month_summary"], theme=theme, locale=locale),
+            _grid_section(datasets["month_transactions"], height="1450px", theme=theme, locale=locale),
+            _grid_section(datasets["month_fx_rates"], height="260px", theme=theme, locale=locale),
+            _graph_section(datasets["month_cost_distribution_chart"], theme=theme, locale=locale),
+            _grid_section(datasets["month_cost_distribution"], height="520px", theme=theme, locale=locale),
+            _grid_section(datasets["month_assets"], height="1120px", theme=theme, locale=locale),
         ],
         className="d-grid gap-4",
     )
 
 
-def _month_empty_state(dataset: DashboardDataset):
+def _month_empty_state(dataset: DashboardDataset, locale: str = DEFAULT_LOCALE):
     row = dataset.dataframe.iloc[0]
     year = str(row["Год"])
     month = str(row["Месяц"]).zfill(2)
@@ -1632,15 +1781,15 @@ def _month_empty_state(dataset: DashboardDataset):
     )
     return html.Section(
         [
-            html.Div("Месяц не сохранён", className="finrep-first-run-kicker"),
-            html.H2(f"Нет данных за {year}-{month}", className="h3 mb-2"),
+            html.Div(report_text("Месяц не сохранён", locale), className="finrep-first-run-kicker"),
+            html.H2(f"No data for {year}-{month}" if normalize_locale(locale) == "en" else f"Нет данных за {year}-{month}", className="h3 mb-2"),
             html.P(
-                "Выбранный месяц ещё не создан. Добавьте или импортируйте операции, проверьте Preview и сохраните месяц.",
+                report_text("Выбранный месяц ещё не создан. Добавьте или импортируйте операции, проверьте Preview и сохраните месяц.", locale),
                 className="finrep-first-run-intro",
             ),
             dcc.Link(
                 dbc.Button(
-                    "Перейти к вводу данных",
+                    report_text("Перейти к вводу данных", locale),
                     color="primary",
                     className="finrep-first-run-action",
                 ),
@@ -1653,15 +1802,15 @@ def _month_empty_state(dataset: DashboardDataset):
     )
 
 
-def _fx_dense_table_section(dataset: DashboardDataset, theme: str | None):
+def _fx_dense_table_section(dataset: DashboardDataset, theme: str | None, locale: str = DEFAULT_LOCALE):
     rows = _fx_display_rows(dataset)
     if not rows:
-        return _empty_section(dataset)
+        return _empty_section(dataset, locale=locale)
 
     return html.Section(
         [
             _section_header(dataset),
-            html.Div(_fx_dense_table(rows), className="finrep-table-scroll"),
+            html.Div(_fx_dense_table(rows, locale=locale), className="finrep-table-scroll"),
         ],
         style=_section_style(theme),
     )
@@ -1681,10 +1830,10 @@ def _fx_change_class(value) -> str:
     return "is-flat"
 
 
-def _fx_dense_table(rows: list[dict]):
+def _fx_dense_table(rows: list[dict], locale: str = DEFAULT_LOCALE):
     return html.Table(
         [
-            html.Thead(html.Tr([html.Th(label) for label in ["Валюта", "Курс", "Обратный", "Изм.", "Источник"]])),
+            html.Thead(html.Tr([html.Th(report_column_label(label, locale)) for label in ["Валюта", "Курс", "Обратный", "Изм.", "Источник"]])),
             html.Tbody(
                 [
                     html.Tr(
@@ -1761,6 +1910,7 @@ def _input_report_layout(
     load_asset_records: bool = True,
     read_only: bool = False,
     transaction_save_result: dict | None = None,
+    locale: str = DEFAULT_LOCALE,
 ):
     return dbc.Tabs(
         [
@@ -1772,11 +1922,12 @@ def _input_report_layout(
                     theme,
                     read_only=read_only,
                     transaction_save_result=transaction_save_result,
+                    locale=locale,
                 ),
-                label="Транзакции",
+                label=report_text("Транзакции", locale),
                 tab_id="input-transactions",
             ),
-            dbc.Tab(_assets_input_layout(year, month, theme, load_records=load_asset_records, read_only=read_only), label="Активы", tab_id="input-assets"),
+            dbc.Tab(_assets_input_layout(year, month, theme, load_records=load_asset_records, read_only=read_only, locale=locale), label=report_text("Активы", locale), tab_id="input-assets"),
         ],
         id="input-inner-tabs",
         active_tab="input-transactions",
@@ -1826,21 +1977,25 @@ def _transaction_input_layout(
     theme: str | None,
     read_only: bool = False,
     transaction_save_result: dict | None = None,
+    locale: str = DEFAULT_LOCALE,
 ):
     category_options = _transaction_category_options()
     currency_options = [{"label": ticker, "value": ticker} for ticker in config.UNIQUE_TICKERS]
     month_value = f"{year}-{str(month).zfill(2)}"
+    upload_limit_label = BANK_PDF_UPLOAD_LIMIT_LABEL
+    if normalize_locale(locale) == "en":
+        upload_limit_label = upload_limit_label.replace(" и ", " and ").replace(" страниц", " pages")
 
     return html.Div(
         [
             html.Section(
                 [
-                    html.H2("Ручной ввод транзакции", className="h5 mb-3"),
+                    html.H2(report_text("Ручной ввод транзакции", locale), className="h5 mb-3"),
                     dbc.Row(
                         [
                             dbc.Col(
                                 [
-                                    dbc.Label("Дата", html_for="transaction-input-date", className="small mb-1"),
+                                    dbc.Label(report_text("Дата", locale), html_for="transaction-input-date", className="small mb-1"),
                                     dbc.Input(id="transaction-input-date", type="date", value=datetime.now().date().isoformat(), className="finrep-native-input", style=_form_control_style(theme)),
                                 ],
                                 xs=12,
@@ -1848,7 +2003,7 @@ def _transaction_input_layout(
                             ),
                             dbc.Col(
                                 [
-                                    dbc.Label("Категория", id="transaction-input-category-label", className="small mb-1"),
+                                    dbc.Label(report_text("Категория", locale), id="transaction-input-category-label", className="small mb-1"),
                                     dcc.Dropdown(id="transaction-input-category", options=category_options, value=category_options[0]["value"] if category_options else None, clearable=False, className="dash-dropdown"),
                                 ],
                                 xs=12,
@@ -1856,7 +2011,7 @@ def _transaction_input_layout(
                             ),
                             dbc.Col(
                                 [
-                                    dbc.Label("Валюта", id="transaction-input-currency-label", className="small mb-1"),
+                                    dbc.Label(report_text("Валюта", locale), id="transaction-input-currency-label", className="small mb-1"),
                                     dcc.Dropdown(id="transaction-input-currency", options=currency_options, value=currency, clearable=False, className="dash-dropdown"),
                                 ],
                                 xs=12,
@@ -1864,7 +2019,7 @@ def _transaction_input_layout(
                             ),
                             dbc.Col(
                                 [
-                                    dbc.Label("Сумма", html_for="transaction-input-amount", className="small mb-1"),
+                                    dbc.Label(report_text("Сумма", locale), html_for="transaction-input-amount", className="small mb-1"),
                                     dbc.Input(id="transaction-input-amount", type="number", step="any", className="finrep-native-input", style=_form_control_style(theme)),
                                 ],
                                 xs=12,
@@ -1872,13 +2027,13 @@ def _transaction_input_layout(
                             ),
                             dbc.Col(
                                 [
-                                    dbc.Label("Комментарий", html_for="transaction-input-comment", className="small mb-1"),
+                                    dbc.Label(report_text("Комментарий", locale), html_for="transaction-input-comment", className="small mb-1"),
                                     dbc.Input(id="transaction-input-comment", type="text", className="finrep-native-input", style=_form_control_style(theme)),
                                 ],
                                 xs=12,
                                 md=3,
                             ),
-                            dbc.Col(dbc.Button("Добавить", id="transaction-add-button", color="primary", className="w-100", disabled=read_only), xs=12, md=1, className="d-flex align-items-end"),
+                            dbc.Col(dbc.Button(report_text("Добавить", locale), id="transaction-add-button", color="primary", className="w-100", disabled=read_only), xs=12, md=1, className="d-flex align-items-end"),
                         ],
                         className="g-2",
                     ),
@@ -1888,14 +2043,14 @@ def _transaction_input_layout(
             ),
             html.Section(
                 [
-                    html.H2("Импорт банковского PDF", className="h5 mb-3"),
+                    html.H2(report_text("Импорт банковского PDF", locale), className="h5 mb-3"),
                     dcc.Upload(
                         id="kaspi-upload",
                         children=html.Div(
                             [
-                                html.Div("Перетащи Kaspi, BCC или Ozon PDF сюда", className="fw-semibold"),
-                                html.Div("или нажми для выбора файла", className="small opacity-75"),
-                                html.Div(f"до {BANK_PDF_UPLOAD_LIMIT_LABEL}", className="small opacity-75"),
+                                html.Div(report_text("Перетащи Kaspi, BCC или Ozon PDF сюда", locale), className="fw-semibold"),
+                                html.Div(report_text("или нажми для выбора файла", locale), className="small opacity-75"),
+                                html.Div((f"up to {upload_limit_label}" if normalize_locale(locale) == "en" else f"до {upload_limit_label}"), className="small opacity-75"),
                             ],
                             className="kaspi-upload-content",
                         ),
@@ -1915,17 +2070,16 @@ def _transaction_input_layout(
                             **_section_style(theme),
                         },
                     ),
-                    dbc.Alert(id="kaspi-import-message", children="Операции из PDF появятся здесь. Дубли среди черновиков и сохранённых операций будут пропущены.", color="secondary", is_open=True, className="my-3 py-2"),
+                    dbc.Alert(id="kaspi-import-message", children=report_text("Операции из PDF появятся здесь. Дубли среди черновиков и сохранённых операций будут пропущены.", locale), color="secondary", is_open=True, className="my-3 py-2"),
                     html.Div(
-                        "Категории: клик — одна ячейка, Shift+клик — диапазон, "
-                        "Ctrl/Cmd+клик — несколько; Ctrl/Cmd+C и Ctrl/Cmd+V — копировать и вставить.",
+                        report_text("Категории: клик — одна ячейка, Shift+клик — диапазон, Ctrl/Cmd+клик — несколько; Ctrl/Cmd+C и Ctrl/Cmd+V — копировать и вставить.", locale),
                         className="small opacity-75 mb-2",
                     ),
                     html.Div(
                         dag.AgGrid(
                             id="kaspi-import-grid",
                             rowData=[],
-                            columnDefs=_kaspi_import_column_defs(),
+                            columnDefs=_localized_input_column_defs(_kaspi_import_column_defs(), locale),
                             defaultColDef=_ag_grid_default_col_def(editable=False),
                             dashGridOptions={"pagination": False, "suppressFieldDotNotation": True, "stopEditingWhenCellsLoseFocus": True},
                             eventListeners={
@@ -1946,15 +2100,15 @@ def _transaction_input_layout(
                     dcc.Store(id="transaction-export-preview-state"),
                     html.Div(
                         id="transaction-save-result-panel",
-                        children=_transaction_save_result_panel(transaction_save_result),
+                        children=_transaction_save_result_panel(transaction_save_result, locale),
                     ),
                     html.Div(
                         [
-                            html.H2("Проверка и сохранение месяца", className="h5 mb-0"),
+                            html.H2(report_text("Проверка и сохранение месяца", locale), className="h5 mb-0"),
                             html.Div(
                                 [
                                     dbc.Button("Preview", id="transaction-preview-export-button", color="secondary", outline=True, size="sm"),
-                                    dbc.Button("Сохранить месяц", id="transaction-confirm-export-button", color="primary", outline=False, size="sm", disabled=read_only),
+                                    dbc.Button(report_text("Сохранить месяц", locale), id="transaction-confirm-export-button", color="primary", outline=False, size="sm", disabled=read_only),
                                 ],
                                 className="d-flex flex-wrap gap-2",
                             ),
@@ -1965,13 +2119,13 @@ def _transaction_input_layout(
                         [
                             dbc.Col(
                                 [
-                                    dbc.Label("Период Preview", html_for="transaction-import-period", className="small mb-1"),
+                                    dbc.Label(report_text("Период Preview", locale), html_for="transaction-import-period", className="small mb-1"),
                                     dcc.Dropdown(
                                         id="transaction-import-period",
                                         options=[{"label": month_value, "value": month_value}],
                                         value=month_value,
                                         clearable=False,
-                                        placeholder="Выбери месяц выписки",
+                                        placeholder=report_text("Выбери месяц выписки", locale),
                                         className="dash-dropdown",
                                     ),
                                 ],
@@ -1981,7 +2135,7 @@ def _transaction_input_layout(
                         ],
                         className="g-2 mb-3",
                     ),
-                    dbc.Alert(id="transaction-export-message", children="Проверь импорт выше и нажми Preview. Без загруженной выписки используется выбранный период отчёта. Данные месяца изменятся только после нажатия «Сохранить месяц».", color="secondary", is_open=True, className="mb-3 py-2"),
+                    dbc.Alert(id="transaction-export-message", children=report_text("Проверь импорт выше и нажми Preview. Без загруженной выписки используется выбранный период отчёта. Данные месяца изменятся только после нажатия «Сохранить месяц».", locale), color="secondary", is_open=True, className="mb-3 py-2"),
                     _ag_grid_scroll(
                         dag.AgGrid(
                             id="transaction-export-preview-grid",
@@ -2099,22 +2253,22 @@ def _debt_input_layout(currency: str, theme: str | None, include_create: bool = 
     )
 
 
-def _assets_input_layout(year: str, month: str, theme: str | None, load_records: bool = True, read_only: bool = False):
+def _assets_input_layout(year: str, month: str, theme: str | None, load_records: bool = True, read_only: bool = False, locale: str = DEFAULT_LOCALE):
     records = _asset_input_records(year, month) if load_records else []
-    message, message_color = _asset_input_status(year, month)
+    message, message_color = _asset_input_status(year, month, locale)
     return html.Div(
         [
             html.Section(
                 [
                     html.Div(
                         [
-                            html.H2("Активы", className="h5 mb-0"),
+                            html.H2(report_text("Активы", locale), className="h5 mb-0"),
                             html.Div(
                                 [
-                                    dbc.Button("Загрузить", id="assets-load-button", color="secondary", outline=True, size="sm"),
-                                    dbc.Button("Добавить строку", id="assets-add-row-button", color="secondary", outline=True, size="sm", disabled=read_only),
-                                    dbc.Button("Удалить выбранные", id="assets-delete-row-button", color="danger", outline=True, size="sm", disabled=read_only),
-                                    dbc.Button("Применить", id="assets-apply-button", color="primary", outline=True, size="sm", disabled=read_only),
+                                    dbc.Button(report_text("Загрузить", locale), id="assets-load-button", color="secondary", outline=True, size="sm"),
+                                    dbc.Button(report_text("Добавить строку", locale), id="assets-add-row-button", color="secondary", outline=True, size="sm", disabled=read_only),
+                                    dbc.Button(report_text("Удалить выбранные", locale), id="assets-delete-row-button", color="danger", outline=True, size="sm", disabled=read_only),
+                                    dbc.Button(report_text("Применить", locale), id="assets-apply-button", color="primary", outline=True, size="sm", disabled=read_only),
                                 ],
                                 className="d-flex flex-wrap gap-2",
                             ),
@@ -2132,7 +2286,7 @@ def _assets_input_layout(year: str, month: str, theme: str | None, load_records:
                         dag.AgGrid(
                             id="assets-input-grid",
                             rowData=records,
-                            columnDefs=_asset_input_column_defs(),
+                            columnDefs=_localized_input_column_defs(_asset_input_column_defs(), locale),
                             defaultColDef=_ag_grid_default_col_def(editable=not read_only),
                             dashGridOptions={"pagination": False, "suppressFieldDotNotation": True, "rowSelection": "multiple", "stopEditingWhenCellsLoseFocus": True, "undoRedoCellEditing": True},
                             className=_ag_grid_class_name(theme),
@@ -2306,7 +2460,7 @@ def _format_saved_month_amount(value, currency: str) -> str:
     return f"{amount:,.2f}".replace(",", " ") + config.UNIQUE_TICKERS[currency]
 
 
-def _transaction_save_result_panel(result: dict | None):
+def _transaction_save_result_panel(result: dict | None, locale: str = DEFAULT_LOCALE):
     if not result or result.get("data_mode") != config.get_data_mode():
         return []
     period = f"{result['year']}-{result['month']}"
@@ -2314,9 +2468,9 @@ def _transaction_save_result_panel(result: dict | None):
     import_summary = result.get("import_summary") or {}
     skip_reasons = import_summary.get("skip_reasons") or []
     children = [
-        html.Div(f"Месяц {period} сохранён", className="fw-semibold mb-1"),
+        html.Div((f"Month {period} saved" if normalize_locale(locale) == "en" else f"Месяц {period} сохранён"), className="fw-semibold mb-1"),
         html.Div(
-            f"Проведено операций: {int(result.get('exported_rows', 0))}.",
+            (f"Transactions saved: {int(result.get('exported_rows', 0))}." if normalize_locale(locale) == "en" else f"Проведено операций: {int(result.get('exported_rows', 0))}."),
             className="mb-2",
         ),
     ]
@@ -2327,7 +2481,7 @@ def _transaction_save_result_panel(result: dict | None):
                     dbc.Col(
                         html.Div(
                             [
-                                html.Div(name, className="small opacity-75"),
+                                html.Div(report_text(name, locale), className="small opacity-75"),
                                 html.Div(value, className="fw-semibold"),
                             ],
                             className="border rounded px-3 py-2 h-100",
@@ -2343,30 +2497,29 @@ def _transaction_save_result_panel(result: dict | None):
     elif result.get("metrics_unavailable"):
         children.append(
             html.Div(
-                "Месяц сохранён, но итоговые показатели сейчас недоступны. Открой сверку, чтобы повторить расчёт.",
+                report_text("Месяц сохранён, но итоговые показатели сейчас недоступны. Открой сверку, чтобы повторить расчёт.", locale),
                 className="small mb-2",
             )
         )
     if import_summary:
         children.append(
             html.Div(
-                f"Текущая выписка: принято {int(import_summary.get('accepted_rows', 0))}, "
-                f"пропущено {int(import_summary.get('skipped_rows', 0))}.",
+                ((f"Current statement: {int(import_summary.get('accepted_rows', 0))} accepted, {int(import_summary.get('skipped_rows', 0))} skipped.") if normalize_locale(locale) == "en" else (f"Текущая выписка: принято {int(import_summary.get('accepted_rows', 0))}, пропущено {int(import_summary.get('skipped_rows', 0))}.")),
                 className="small",
             )
         )
     if skip_reasons:
         children.append(
             html.Div(
-                "Причины пропуска: "
-                + "; ".join(f"{item['label']} — {item['count']}" for item in skip_reasons)
+                ("Skip reasons: " if normalize_locale(locale) == "en" else "Причины пропуска: ")
+                + "; ".join(f"{report_text(item['label'], locale)} — {item['count']}" for item in skip_reasons)
                 + ".",
                 className="small mb-2",
             )
         )
     children.append(
         dbc.Button(
-            "Перейти к сверке",
+            report_text("Перейти к сверке", locale),
             color="success",
             size="sm",
             href=(
@@ -2389,25 +2542,21 @@ def _asset_input_records(year: str, month: str) -> list[dict]:
     return _dataframe_records(data)
 
 
-def _asset_input_status(year: str, month: str) -> tuple[str, str]:
+def _asset_input_status(year: str, month: str, locale: str = DEFAULT_LOCALE) -> tuple[str, str]:
     period = f"{int(year):04d}-{int(month):02d}"
     target = asset_snapshot_path(year, month)
     if target.exists():
-        return f"Загружен сохранённый снимок активов за {period}. Файл: {target}", "secondary"
+        message = f"Saved asset snapshot for {period} loaded. File: {target}" if normalize_locale(locale) == "en" else f"Загружен сохранённый снимок активов за {period}. Файл: {target}"
+        return message, "secondary"
 
     template = previous_asset_snapshot_path(year, month)
     if template is not None:
         template_period = template.stem.replace("_", "-")
-        return (
-            f"Показана несохранённая копия снимка за {template_period}. "
-            f"Проверь значения и нажми Применить, чтобы создать снимок за {period}.",
-            "warning",
-        )
+        message = (f"An unsaved copy of the {template_period} snapshot is shown. Review the values and select Apply to create the {period} snapshot." if normalize_locale(locale) == "en" else f"Показана несохранённая копия снимка за {template_period}. Проверь значения и нажми Применить, чтобы создать снимок за {period}.")
+        return message, "warning"
 
-    return (
-        f"Снимка активов за {period} ещё нет. Добавь строки и нажми Применить, чтобы создать его.",
-        "warning",
-    )
+    message = (f"There is no asset snapshot for {period} yet. Add rows and select Apply to create it." if normalize_locale(locale) == "en" else f"Снимка активов за {period} ещё нет. Добавь строки и нажми Применить, чтобы создать его.")
+    return message, "warning"
 
 
 def _active_debts_grid(currency: str, theme: str | None, debt_type: str):
@@ -2529,6 +2678,18 @@ def _asset_input_column_defs() -> list[dict]:
     ]
 
 
+def _localized_input_column_defs(column_defs: list[dict], locale: str | None) -> list[dict]:
+    """Translate grid headers without changing field names or editor values."""
+    localized = []
+    for column in column_defs:
+        copy = column.copy()
+        label = copy.get("headerName") or copy.get("field")
+        if label:
+            copy["headerName"] = report_column_label(str(label), locale)
+        localized.append(copy)
+    return localized
+
+
 def _asset_row_key(row: dict) -> tuple[str, str, str]:
     return (str(row.get("account", "")), str(row.get("amount", "")), str(row.get("currency", "")))
 
@@ -2581,19 +2742,19 @@ def _kaspi_import_column_defs() -> list[dict]:
     ]
 
 
-def _error_state(message: str, exc: Exception):
+def _error_state(message: str, exc: Exception, locale: str = DEFAULT_LOCALE):
     return dbc.Alert(
         [
             html.Div(message, className="fw-semibold"),
-            html.Div(str(exc), className="small mt-1"),
+            html.Div(str(report_text(str(exc), locale)), className="small mt-1"),
         ],
         color="danger",
     )
 
 
-def _graph_section(dataset: DashboardDataset, height: str = "520px", theme: str | None = None):
+def _graph_section(dataset: DashboardDataset, height: str = "520px", theme: str | None = None, locale: str = DEFAULT_LOCALE):
     if dataset.dataframe.empty:
-        return _empty_section(dataset)
+        return _empty_section(dataset, locale=locale)
 
     graph_config = {"displaylogo": False, "responsive": True, "scrollZoom": False}
     if dataset.graph_config:
@@ -2636,19 +2797,48 @@ REPORT_SCROLL_TABLE_IDS = {
 }
 
 
-def _grid_section(dataset: DashboardDataset, height: str = "360px", theme: str | None = None, read_only: bool = False):
+def _localized_column_defs(
+    dataset: DashboardDataset,
+    data: pd.DataFrame,
+    theme: str | None,
+    *,
+    read_only: bool,
+    locale: str,
+) -> list[dict]:
+    column_defs = _grid_column_defs(dataset, data, theme, read_only=read_only)
+    if normalize_locale(locale) != "en":
+        return column_defs
+    localized = []
+    for column_def in column_defs:
+        definition = {
+            **column_def,
+            "headerName": report_column_label(str(column_def["field"]), locale),
+        }
+        if dataset.id == "planning_goals" and column_def["field"] == "Показатель":
+            labels = {
+                label: report_text(label, "en")
+                for label in ("Капитал", "Средний доход/мес", "Средний расход/мес")
+            }
+            definition["valueFormatter"] = {
+                "function": f"({json.dumps(labels, ensure_ascii=False)})[params.value] || params.value"
+            }
+        localized.append(definition)
+    return localized
+
+
+def _grid_section(dataset: DashboardDataset, height: str = "360px", theme: str | None = None, read_only: bool = False, locale: str = DEFAULT_LOCALE):
     if dataset.id in {"fx_rates", "year_fx_rates", "month_fx_rates"}:
-        return _fx_dense_table_section(dataset, theme)
+        return _fx_dense_table_section(dataset, theme, locale=locale)
 
     data = dataset.display_dataframe if dataset.display_dataframe is not None else dataset.dataframe
     if data.empty:
-        return _empty_section(dataset)
+        return _empty_section(dataset, locale=locale)
 
     if dataset.id == "planning_goals":
-        return _limited_ag_grid_section(dataset, data, height, theme, read_only=read_only)
+        return _limited_ag_grid_section(dataset, data, height, theme, read_only=read_only, locale=locale)
 
     if dataset.id in REPORT_SCROLL_TABLE_IDS:
-        return _report_table_section(dataset, data, height, theme)
+        return _report_table_section(dataset, data, height, theme, locale=locale)
 
     return html.Section(
         [
@@ -2657,7 +2847,7 @@ def _grid_section(dataset: DashboardDataset, height: str = "360px", theme: str |
                 dag.AgGrid(
                     id=f"{dataset.id}-grid",
                     rowData=_grid_row_data(dataset, data),
-                    columnDefs=_grid_column_defs(dataset, data, theme),
+                    columnDefs=_localized_column_defs(dataset, data, theme, read_only=read_only, locale=locale),
                     defaultColDef=_ag_grid_default_col_def(),
                     columnSize="autoSize" if dataset.id in {"fx_rates", "year_fx_rates", "month_fx_rates"} else "sizeToFit",
                     dashGridOptions={
@@ -2673,7 +2863,7 @@ def _grid_section(dataset: DashboardDataset, height: str = "360px", theme: str |
     )
 
 
-def _limited_ag_grid_section(dataset: DashboardDataset, data: pd.DataFrame, max_height: str, theme: str | None = None, read_only: bool = False):
+def _limited_ag_grid_section(dataset: DashboardDataset, data: pd.DataFrame, max_height: str, theme: str | None = None, read_only: bool = False, locale: str = DEFAULT_LOCALE):
     return html.Section(
         [
             _section_header(dataset),
@@ -2681,7 +2871,7 @@ def _limited_ag_grid_section(dataset: DashboardDataset, data: pd.DataFrame, max_
                 dag.AgGrid(
                     id=f"{dataset.id}-grid",
                     rowData=_grid_row_data(dataset, data),
-                    columnDefs=_grid_column_defs(dataset, data, theme, read_only=read_only),
+                    columnDefs=_localized_column_defs(dataset, data, theme, read_only=read_only, locale=locale),
                     defaultColDef=_ag_grid_default_col_def(),
                     columnSize="sizeToFit",
                     dashGridOptions={
@@ -2699,7 +2889,7 @@ def _limited_ag_grid_section(dataset: DashboardDataset, data: pd.DataFrame, max_
     )
 
 
-def _report_table_section(dataset: DashboardDataset, data: pd.DataFrame, max_height: str, theme: str | None = None):
+def _report_table_section(dataset: DashboardDataset, data: pd.DataFrame, max_height: str, theme: str | None = None, locale: str = DEFAULT_LOCALE):
     rows = _grid_row_data(dataset, data)
     columns = list(data.columns)
     style_maps = _report_table_style_maps(dataset, data)
@@ -2710,7 +2900,7 @@ def _report_table_section(dataset: DashboardDataset, data: pd.DataFrame, max_hei
             html.Div(
                 html.Table(
                     [
-                        html.Thead(html.Tr([html.Th(column) for column in columns])),
+                        html.Thead(html.Tr([html.Th(report_column_label(column, locale)) for column in columns])),
                         html.Tbody(
                             [
                                 html.Tr(
@@ -2722,7 +2912,7 @@ def _report_table_section(dataset: DashboardDataset, data: pd.DataFrame, max_hei
                                         )
                                         for column in columns
                                     ],
-                                    **_report_row_props(dataset, row),
+                                    **_report_row_props(dataset, row, locale=locale),
                                 )
                                 for row in rows
                             ]
@@ -2738,7 +2928,7 @@ def _report_table_section(dataset: DashboardDataset, data: pd.DataFrame, max_hei
     )
 
 
-def _report_row_props(dataset: DashboardDataset, row: dict) -> dict:
+def _report_row_props(dataset: DashboardDataset, row: dict, locale: str = DEFAULT_LOCALE) -> dict:
     classes = [_report_row_class(row)]
     props = {}
     if dataset.id == "month_transactions" and row.get("Дата"):
@@ -2747,7 +2937,7 @@ def _report_row_props(dataset: DashboardDataset, row: dict) -> dict:
             {
                 "id": {"type": "month-transaction-day", "date": str(row["Дата"])},
                 "n_clicks": 0,
-                "title": "Открыть детализацию транзакций за день",
+                "title": report_text("Открыть детализацию транзакций за день", locale),
                 "role": "button",
                 "tabIndex": 0,
             }
@@ -2756,9 +2946,9 @@ def _report_row_props(dataset: DashboardDataset, row: dict) -> dict:
     return props
 
 
-def _month_transaction_modal_body(details: pd.DataFrame, currency: str):
+def _month_transaction_modal_body(details: pd.DataFrame, currency: str, locale: str = DEFAULT_LOCALE):
     if details.empty:
-        return dbc.Alert("В этот день нет ненулевых транзакций.", color="secondary", className="mb-0")
+        return dbc.Alert(report_text("В этот день нет ненулевых транзакций.", locale), color="secondary", className="mb-0")
 
     rows = []
     for _, row in details.iterrows():
@@ -2781,11 +2971,11 @@ def _month_transaction_modal_body(details: pd.DataFrame, currency: str):
                 html.Thead(
                     html.Tr(
                         [
-                            html.Th("Категория"),
-                            html.Th("Исходная сумма"),
-                            html.Th("Валюта"),
-                            html.Th(f"В валюте отчета ({str(currency).upper()})"),
-                            html.Th("Комментарий"),
+                            html.Th(report_column_label("Категория", locale)),
+                            html.Th(report_column_label("Исходная сумма", locale)),
+                            html.Th(report_column_label("Валюта", locale)),
+                            html.Th(report_column_label(f"В валюте отчета ({str(currency).upper()})", locale)),
+                            html.Th(report_column_label("Комментарий", locale)),
                         ]
                     )
                 ),
@@ -2819,11 +3009,11 @@ def _format_modal_money(value, currency: str) -> str:
     return f"{number:,.2f}".replace(",", " ") + f" {str(currency).upper()}"
 
 
-def _empty_section(dataset: DashboardDataset):
+def _empty_section(dataset: DashboardDataset, locale: str = DEFAULT_LOCALE):
     return html.Section(
         [
             _section_header(dataset),
-            dbc.Alert("Нет данных для отображения.", color="warning", className="mb-0"),
+            dbc.Alert(report_text("Нет данных для отображения.", locale), color="warning", className="mb-0"),
         ]
     )
 

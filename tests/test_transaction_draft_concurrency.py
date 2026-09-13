@@ -151,7 +151,7 @@ def test_test_mode_read_does_not_create_sidecar(drafts_path, monkeypatch):
     assert not lock_path.exists()
 
 
-def _manual_callback_request(app, client, *, add_request_id="browser-add-request"):
+def _manual_callback_request(app, client, *, add_request_id="browser-add-request", locale="ru"):
     key = next(key for key in app.callback_map if "transaction-input-message.children" in key)
     callback = app.callback_map[key]
     values = {
@@ -162,6 +162,7 @@ def _manual_callback_request(app, client, *, add_request_id="browser-add-request
         "transaction-input-amount": 100,
         "transaction-input-comment": "",
         "transaction-add-request-id": add_request_id,
+        "dashboard-locale": locale,
     }
     payload = {
         "output": key,
@@ -203,3 +204,56 @@ def test_manual_submit_clears_sent_fields_and_retry_does_not_duplicate(
     saved = staging.read_transaction_drafts(drafts_path)
     assert len(saved) == 1
     assert saved.iloc[0]["source_id"] == "manual:manual-submit-A"
+
+
+def test_manual_submit_feedback_uses_selected_locale(drafts_path, monkeypatch):
+    monkeypatch.setenv("FINREP_DASH_PASSWORD", "synthetic-password")
+    monkeypatch.setenv("FINREP_DASH_SECRET_KEY", "synthetic-key")
+    from src.dashboard.app import create_app
+
+    app = create_app()
+    client = app.server.test_client()
+    with client.session_transaction() as session:
+        session["authenticated"] = True
+        session["data_mode"] = "live"
+
+    response = _manual_callback_request(
+        app, client, add_request_id="manual-submit-en", locale="en"
+    )
+
+    assert response.status_code == 200
+    result = response.get_json()["response"]
+    assert result["transaction-input-message"]["children"] == "Draft added."
+    saved = staging.read_transaction_drafts(drafts_path)
+    assert saved.iloc[0]["category"] == "Прочее"
+    assert saved.iloc[0]["source_id"] == "manual:manual-submit-en"
+
+
+def test_direct_manual_callback_cannot_write_in_test_mode(drafts_path, monkeypatch):
+    monkeypatch.setenv("FINREP_DASH_PASSWORD", "synthetic-password")
+    monkeypatch.setenv("FINREP_DASH_SECRET_KEY", "synthetic-key")
+    live_root = drafts_path.parents[1] / "live"
+    sample_root = drafts_path.parents[1] / "sample"
+    sample_drafts = sample_root / "staging" / "transaction_drafts.csv"
+    monkeypatch.setattr(config, "DATA_PATH", str(live_root))
+    monkeypatch.setattr(config, "SAMPLE_DATA_PATH", str(sample_root))
+    from src.dashboard.app import create_app
+
+    app = create_app()
+    client = app.server.test_client()
+    with client.session_transaction() as session:
+        session["authenticated"] = True
+        session["data_mode"] = "test"
+    before = sample_drafts.read_bytes() if sample_drafts.exists() else None
+
+    response = _manual_callback_request(
+        app,
+        client,
+        add_request_id="forged-test-write",
+    )
+
+    assert response.status_code == 200
+    result = response.get_json()["response"]
+    assert result["transaction-input-message"]["color"] == "danger"
+    after = sample_drafts.read_bytes() if sample_drafts.exists() else None
+    assert after == before

@@ -123,7 +123,7 @@ def test_upload_limit_error_clears_preview_without_writing(tmp_path, monkeypatch
             for item in callback["inputs"]
         ],
         "state": [
-            {**item, "value": "too-large.pdf"}
+            {**item, "value": "ru" if item["id"] == "dashboard-locale" else "too-large.pdf"}
             for item in callback["state"]
         ],
         "changedPropIds": ["kaspi-upload.contents"],
@@ -205,7 +205,7 @@ def test_dashboard_hides_private_error_details_and_logs_diagnostics(
         ],
         "inputs": [{**item, "value": _contents(b"malformed")} for item in callback["inputs"]],
         "state": [
-            {**item, "value": "/Users/owner/private-statement.pdf"}
+            {**item, "value": "ru" if item["id"] == "dashboard-locale" else "/Users/owner/private-statement.pdf"}
             for item in callback["state"]
         ],
         "changedPropIds": ["kaspi-upload.contents"],

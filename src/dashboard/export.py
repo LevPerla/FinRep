@@ -1,3 +1,4 @@
+import json
 import os
 import re
 from pathlib import Path
@@ -9,6 +10,7 @@ from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import sync_playwright
 
 from src import config
+from src.dashboard.i18n import DEFAULT_LOCALE, normalize_locale
 
 
 EXPORT_VIEWPORT = {"width": 1440, "height": 1200}
@@ -79,6 +81,7 @@ def export_dashboard_page(
     month: str | None = None,
     session_cookie: str | None = None,
     session_cookie_name: str = "session",
+    locale: str = DEFAULT_LOCALE,
 ) -> Path:
     if not isinstance(export_format, str):
         raise ValueError("export_format must be 'png' or 'pdf'")
@@ -86,6 +89,7 @@ def export_dashboard_page(
     if export_format not in {"png", "pdf"}:
         raise ValueError("export_format must be 'png' or 'pdf'")
 
+    locale = normalize_locale(locale)
     dashboard_url = build_dashboard_url(currency, tab, year, month)
     if not _EXPORT_LOCK.acquire(blocking=False):
         raise ExportBusyError("Экспорт уже выполняется. Повторите после завершения.")
@@ -101,6 +105,9 @@ def export_dashboard_page(
             with sync_playwright() as playwright:
                 browser = playwright.chromium.launch()
                 context = browser.new_context(viewport=EXPORT_VIEWPORT, service_workers="block")
+                context.add_init_script(
+                    f"window.localStorage.setItem('dashboard-locale', {json.dumps(json.dumps(locale))});"
+                )
                 context.route("**/*", lambda route: _route_export_request(route, origin_url))
                 # A routed WebSocket stays local unless connect_to_server() is called.
                 context.route_web_socket("**/*", lambda websocket: None)

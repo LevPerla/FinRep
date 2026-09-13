@@ -43,6 +43,18 @@ def _layout_component(node, component_id: str):
     return None
 
 
+def _component_text(node) -> str:
+    if node is None:
+        return ""
+    if isinstance(node, (str, int, float)):
+        return str(node)
+    if isinstance(node, dict):
+        return _component_text(node.get("props", {}).get("children"))
+    if isinstance(node, list):
+        return "".join(_component_text(value) for value in node)
+    return _component_text(getattr(node, "children", None))
+
+
 def test_authentication_protects_dash_but_not_healthcheck():
     app = create_app()
     client = app.server.test_client()
@@ -113,13 +125,13 @@ def test_test_mode_never_requires_password():
         assert session["authenticated"] is True
         assert session["data_mode"] == "test"
     layout_response = client.get("/_dash-layout")
-    assert b"TEST MODE" in layout_response.data
+    assert b"dashboard.mode_test" in layout_response.data
     assert _layout_component(layout_response.get_json(), "dashboard-year")["props"]["value"] == "2026"
     assert _layout_component(layout_response.get_json(), "dashboard-month")["props"]["value"] == "05"
-    assert _layout_component(layout_response.get_json(), "dashboard-mode-badge")["props"]["children"] == "TEST MODE"
+    assert _component_text(_layout_component(layout_response.get_json(), "dashboard-mode-badge")) == "ДЕМО"
     assert _layout_component(layout_response.get_json(), "dashboard-logout-form")["props"]["action"] == "/logout"
     desktop_tabs = _layout_component(layout_response.get_json(), "dashboard-tabs")["props"]["children"]
-    desktop_labels = {tab["props"]["tab_id"]: tab["props"]["label"] for tab in desktop_tabs}
+    desktop_labels = {tab["props"]["tab_id"]: _component_text(tab["props"]["label"]) for tab in desktop_tabs}
     assert desktop_labels["debts"] == "Долги · Beta"
     assert desktop_labels["investments"] == "Инвестиции · Beta"
 

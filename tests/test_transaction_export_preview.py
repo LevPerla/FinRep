@@ -58,6 +58,7 @@ def _callback_request(
         "transaction-import-period": import_period,
         "transaction-export-preview-grid": rows,
         "transaction-export-preview-state": state,
+        "dashboard-locale": "ru",
     }
     payload = {
         "output": key,

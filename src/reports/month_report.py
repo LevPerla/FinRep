@@ -11,6 +11,7 @@ from src import config, utils
 from src.model.create_tables import get_balance_by_month, get_act_receivables, get_month_transactions, \
     get_act_liabilities, get_cost_distribution, get_assets_by_currencies
 from src.data.get_finance import set_fx_network_enabled
+from src.dashboard.i18n import DEFAULT_LOCALE, localize_figure
 from src.reports.helpers import add_exchange_rates_table, add_table, write_report_html
 
 
@@ -18,7 +19,8 @@ def create_month_report(year: str,
                         currency: str,
                         month: str,
                         return_image: bool = False,
-                        fx_network_enabled: bool = True) -> None:
+                        fx_network_enabled: bool = True,
+                        locale: str = DEFAULT_LOCALE) -> None:
     """
     function to create month report
     :param transactions_df: df with transactions
@@ -106,6 +108,7 @@ def create_month_report(year: str,
         font=dict(size=12),
         title_text=f"Отчет за {month} месяц {year} года, в валюте {currency}",
     )
+    fig = localize_figure(fig, locale)
 
     if return_image:
         # Create a BytesIO object to hold the bytes
