@@ -1,12 +1,18 @@
 import os
 import re
 
+import pandas as pd
+import plotly.graph_objects as go
+
 os.environ.setdefault("FINREP_DASH_PASSWORD", "test-password")
 os.environ.setdefault("FINREP_DASH_SECRET_KEY", "test-session-secret")
 
 from src.dashboard.app import (
+    _localized_column_defs,
     _localized_text_values,
+    _month_report_layout,
     _resolve_locale_update,
+    _year_report_layout,
     create_app,
 )
 from src.dashboard.auth import LOGIN_TEMPLATE
@@ -15,12 +21,17 @@ from src.dashboard.i18n import (
     DYNAMIC_TRANSLATION_KEYS,
     LOCALE_STORAGE_KEY,
     LOCALE_TIMESTAMP_STORAGE_KEY,
+    REPORT_TEXT_EN,
     SUPPORTED_LOCALES,
     TRANSLATIONS,
+    localize_report_datasets,
     normalize_locale,
+    report_column_label,
+    report_text,
     tr,
     translation_payload,
 )
+from src.dashboard.main_data import DashboardDataset
 
 
 def _layout_component(node, component_id):
@@ -159,3 +170,100 @@ def test_login_uses_the_same_browser_locale_key_and_returns_english_error():
     assert '<html lang="en">' in english_html
     assert "LIVE is unavailable or the password is incorrect." in english_html
     assert "Sign in to LIVE" in english_html
+
+
+def test_report_translation_keeps_category_values_and_internal_columns_stable():
+    raw = pd.DataFrame(
+        [
+            {
+                "Показатель": "Доход",
+                "Статус": "В норме",
+                "Категория": "Доход",
+                "Значение": 125.5,
+            }
+        ]
+    )
+    display = raw.copy(deep=True)
+    figure = go.Figure(go.Bar(x=["Доход"], y=[125.5], name="Доход"))
+    figure.update_layout(title="Динамика доходов и расходов")
+    dataset = DashboardDataset(
+        id="example",
+        title="Ключевые метрики",
+        dataframe=raw,
+        display_dataframe=display,
+        figure=figure,
+    )
+
+    localized = localize_report_datasets({"example": dataset}, "en")["example"]
+
+    assert localized.dataframe is raw
+    pd.testing.assert_frame_equal(localized.dataframe, raw)
+    assert list(localized.display_dataframe.columns) == list(display.columns)
+    assert localized.display_dataframe.loc[0, "Показатель"] == "Income"
+    assert localized.display_dataframe.loc[0, "Статус"] == "On track"
+    assert localized.display_dataframe.loc[0, "Категория"] == "Доход"
+    assert localized.display_dataframe.loc[0, "Значение"] == 125.5
+    assert localized.title == "Key metrics"
+    assert localized.figure.layout.title.text == "Income and expense trend"
+    assert localized.figure.data[0].name == "Income"
+    assert list(localized.figure.data[0].x) == ["Доход"]
+    assert dataset.title == "Ключевые метрики"
+    assert dataset.figure.data[0].name == "Доход"
+
+
+def test_report_text_handles_dynamic_copy_and_russian_fallback():
+    assert report_text("Топ-15 самых больших покупок за 2026 год", "en") == "Top 15 largest purchases in 2026"
+    assert report_text("2026-05: доход минус расход", "en") == "2026-05: income minus expenses"
+    assert report_text("USD укрепляется на 10% к остальным валютам", "en") == "USD strengthens by 10% against other currencies"
+    assert report_text("Нет курса EUR → RUB на 2026-09-30. Зависимый итог недоступен.", "en") == (
+        "No EUR → RUB rate is available for 2026-09-30. The dependent total is unavailable."
+    )
+    assert report_text("Пища", "en") == "Пища"
+    assert report_text("Доход", "ru") == "Доход"
+    assert report_column_label("В валюте отчета (RUB)", "en") == "In report currency (RUB)"
+
+
+def test_localized_grid_headers_keep_raw_fields_for_callbacks_and_styles():
+    data = pd.DataFrame([{"Показатель": "Капитал", "Цель": "100.00₽"}])
+    dataset = DashboardDataset(id="planning_goals", title="Цели года", dataframe=data, display_dataframe=data)
+
+    columns = _localized_column_defs(dataset, data, "dark", read_only=False, locale="en")
+
+    assert [(column["field"], column["headerName"]) for column in columns] == [
+        ("Показатель", "Metric"),
+        ("Цель", "Goal"),
+    ]
+    assert columns[1]["editable"] is True
+    assert "Capital" in columns[0]["valueFormatter"]["function"]
+
+    localized = localize_report_datasets({"planning_goals": dataset}, "en")["planning_goals"]
+    assert localized.display_dataframe.loc[0, "Показатель"] == "Капитал"
+    assert localized.dataframe.loc[0, "Показатель"] == "Капитал"
+
+
+def test_report_empty_states_switch_language_without_changing_route_values():
+    month_dataset = DashboardDataset(
+        id="month_empty",
+        title="Месяц не сохранён",
+        dataframe=pd.DataFrame([{"Год": "2026", "Месяц": "09", "Валюта": "RUB"}]),
+    )
+    year_dataset = DashboardDataset(
+        id="year_empty",
+        title="Нет данных за выбранный год",
+        dataframe=pd.DataFrame([{"Год": "2026", "Валюта": "RUB"}]),
+    )
+
+    month_layout = _month_report_layout({"month_empty": month_dataset}, "dark", locale="en")
+    year_layout = _year_report_layout({"year_empty": year_dataset}, "dark", locale="en")
+    month_link = _layout_component(month_layout, "month-empty-input-link")
+
+    assert "Month not saved" in str(month_layout)
+    assert "No data for 2026-09" in str(month_layout)
+    assert month_link.href == "?currency=RUB&year=2026&month=09&tab=input"
+    assert "Year with no transactions" in str(year_layout)
+    assert "No data for 2026" in str(year_layout)
+
+
+def test_report_translation_dictionary_has_no_empty_english_labels():
+    assert REPORT_TEXT_EN
+    assert all(source and translation for source, translation in REPORT_TEXT_EN.items())
