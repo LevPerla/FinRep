@@ -13,7 +13,6 @@ jobs:
     timeout-minutes: 15
     env:
       FINREP_DATA_DIR: sample_data
-      FINREP_REPORTS_DIR: ${{ runner.temp }}/finrep-reports
       FINREP_BROWSER_TESTS: "0"
       PYTHONDONTWRITEBYTECODE: "1"
     steps:
@@ -36,3 +35,5 @@ jobs:
 
       - name: Run tests
         run: uv run --frozen python -m pytest -q -ra --tb=short
+        env:
+          FINREP_REPORTS_DIR: ${{ runner.temp }}/finrep-reports
