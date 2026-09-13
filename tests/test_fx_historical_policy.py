@@ -122,6 +122,39 @@ def test_current_transaction_conversion_uses_current_rate(monkeypatch):
     assert converted.loc[0, "Значение"] == 9000.0
 
 
+@pytest.mark.parametrize("target_currency", ["USD", "EUR", "KZT"])
+def test_future_transaction_uses_latest_available_date_without_changing_transaction_date(
+    target_currency,
+    monkeypatch,
+):
+    transactions = pd.DataFrame(
+        [{"Дата": pd.Timestamp("2026-09-20"), "Валюта": "RUB", "Значение": 9000.0}]
+    )
+    requested_ranges = []
+    monkeypatch.setattr(
+        proccess,
+        "get_current_fx_date",
+        lambda: pd.Timestamp("2026-09-13"),
+    )
+
+    def rates(*, tickers, min_date, max_date):
+        requested_ranges.append((tickers, pd.Timestamp(min_date), pd.Timestamp(max_date)))
+        return pd.DataFrame(
+            {f"RUB{target_currency}=X": [1 / 90]},
+            index=pd.DatetimeIndex(["2026-09-13"], name="Дата"),
+        )
+
+    monkeypatch.setattr(proccess, "get_rates", rates)
+
+    converted = proccess.convert_transaction(transactions, target_currency, "Значение")
+
+    assert requested_ranges == [
+        ([f"RUB{target_currency}=X"], pd.Timestamp("2026-09-13"), pd.Timestamp("2026-09-13"))
+    ]
+    assert converted.loc[0, "Дата"] == pd.Timestamp("2026-09-20")
+    assert converted.loc[0, "Значение"] == 100.0
+
+
 @pytest.mark.parametrize("module", [investment_calculations, crypto])
 def test_current_portfolio_does_not_use_stale_fallback(module, monkeypatch):
     monkeypatch.setattr(module, "get_actual_fx_rate", lambda *_: None)
