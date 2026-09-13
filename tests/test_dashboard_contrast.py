@@ -1,3 +1,8 @@
+import os
+
+os.environ.setdefault("FINREP_DASH_PASSWORD", "test-password")
+os.environ.setdefault("FINREP_DASH_SECRET_KEY", "test-session-secret")
+
 from src.dashboard.app import _level_palette
 
 
