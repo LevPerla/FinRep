@@ -48,6 +48,7 @@ from src.data.staging import (
 from src.dashboard.export import ExportBusyError, export_dashboard_page
 from src.dashboard.auth import configure_auth
 from src.dashboard.investment_data import build_investment_dashboard_data
+from src.dashboard.i18n import DEFAULT_LOCALE, normalize_locale, tr
 from src.dashboard.main_data import DashboardDataset, build_main_dashboard_data, clear_main_dashboard_cache
 from src.dashboard.month_data import build_month_dashboard_data, get_day_transaction_details
 from src.dashboard.planning_data import build_planning_dashboard_data, save_goal_targets
@@ -106,6 +107,31 @@ MOBILE_TAB_ICONS = {
     "input": "+",
     "more": "•••",
 }
+
+
+def _i18n_text(key: str, *, initial_key: str | None = None, **kwargs):
+    return html.Span(
+        tr(initial_key or key, DEFAULT_LOCALE),
+        id={"type": "i18n-text", "key": key},
+        **kwargs,
+    )
+
+
+def _localized_text_values(component_ids: list[dict], locale: str | None, theme: str | None) -> list[str]:
+    normalized_theme = theme if theme in {"light", "dark"} else "dark"
+    values = []
+    for component_id in component_ids:
+        key = component_id["key"]
+        if key == "dashboard.theme_toggle":
+            key = "dashboard.theme_light" if normalized_theme == "dark" else "dashboard.theme_dark"
+        values.append(tr(key, locale))
+    return values
+
+
+def _resolve_locale_update(triggered_id, selected_locale: str | None, stored_locale: str | None) -> str:
+    if triggered_id == "dashboard-locale-select" and selected_locale in {"ru", "en"}:
+        return normalize_locale(selected_locale)
+    return normalize_locale(stored_locale)
 
 
 def _app_index_string() -> str:
@@ -177,7 +203,11 @@ def _default_dashboard_period() -> tuple[str, str]:
 def _dashboard_tabs() -> dbc.Tabs:
     return dbc.Tabs(
         [
-            dbc.Tab(label=desktop_label, tab_id=tab_id)
+            dbc.Tab(
+                label=desktop_label,
+                tab_id=tab_id,
+                id={"type": "i18n-tab-label", "key": f"nav.{tab_id}.desktop"},
+            )
             for tab_id, desktop_label, _mobile_label in MAIN_DASHBOARD_TABS
         ],
         id="dashboard-tabs",
@@ -193,7 +223,7 @@ def _mobile_bottom_nav() -> html.Nav:
                 html.Button(
                     [
                         html.Span(MOBILE_TAB_ICONS[tab_id], className="mobile-dashboard-tab-icon", **{"aria-hidden": "true"}),
-                        html.Span(mobile_label, className="mobile-dashboard-tab-label"),
+                        _i18n_text(f"nav.{tab_id}.mobile", className="mobile-dashboard-tab-label"),
                     ],
                     id=f"mobile-tab-{tab_id}",
                     type="button",
@@ -206,7 +236,7 @@ def _mobile_bottom_nav() -> html.Nav:
                 html.Button(
                     [
                         html.Span(MOBILE_TAB_ICONS["more"], className="mobile-dashboard-tab-icon", **{"aria-hidden": "true"}),
-                        html.Span("Ещё", className="mobile-dashboard-tab-label"),
+                        _i18n_text("nav.more.mobile", className="mobile-dashboard-tab-label"),
                     ],
                     id="mobile-tab-more",
                     type="button",
@@ -216,8 +246,9 @@ def _mobile_bottom_nav() -> html.Nav:
             ],
             className="mobile-dashboard-tabs-control",
         ),
+        id="mobile-bottom-nav",
         className="mobile-bottom-tabs",
-        **{"aria-label": "Основные разделы"},
+        **{"aria-label": tr("nav.primary_label")},
     )
 
 
@@ -229,7 +260,7 @@ def _mobile_more_menu(theme: str = "dark") -> dbc.Offcanvas:
                     dbc.Button(
                         [
                             html.Span(MOBILE_TAB_ICONS[tab_id], className="mobile-more-item-icon", **{"aria-hidden": "true"}),
-                            html.Span(mobile_label),
+                            _i18n_text(f"nav.{tab_id}.mobile"),
                         ],
                         id=f"mobile-more-{tab_id}",
                         color="secondary",
@@ -240,10 +271,10 @@ def _mobile_more_menu(theme: str = "dark") -> dbc.Offcanvas:
                 ],
                 className="mobile-more-list",
             ),
-            dbc.Button("Закрыть", id="mobile-more-close", color="secondary", className="mt-3 w-100"),
+            dbc.Button(_i18n_text("action.close.mobile_more"), id="mobile-more-close", color="secondary", className="mt-3 w-100"),
         ],
         id="mobile-more-menu",
-        title="Другие разделы",
+        title=_i18n_text("nav.more_title"),
         placement="bottom",
         is_open=False,
         scrollable=False,
@@ -266,6 +297,7 @@ def create_layout():
         [
             dcc.Location(id="dashboard-location"),
             dcc.Store(id="dashboard-theme", data="dark"),
+            dcc.Store(id="dashboard-locale", data=DEFAULT_LOCALE, storage_type="local"),
             dcc.Store(id="dashboard-refresh-token", data=0),
             dcc.Store(id="transaction-save-result", storage_type="session"),
             dcc.Store(
@@ -293,9 +325,9 @@ def create_layout():
             dbc.Row(
                 [
                     dbc.Col(
-                        html.H1("Finance Dashboard", className="h3 mb-0"),
+                        html.H1(_i18n_text("dashboard.title"), className="h3 mb-0"),
                         xs=12,
-                        md=4,
+                        md=3,
                     ),
                     dbc.Col(
                         html.Div(
@@ -305,7 +337,7 @@ def create_layout():
                                         html.Summary(
                                             [
                                                 html.Span("⚙", className="dashboard-settings-icon", **{"aria-hidden": "true"}),
-                                                html.Span("Параметры"),
+                                                _i18n_text("dashboard.settings"),
                                             ],
                                             className="dashboard-settings-summary",
                                         ),
@@ -335,13 +367,45 @@ def create_layout():
                                                     className="dashboard-filter",
                                                     style={"width": "78px"},
                                                 ),
-                                                dbc.Button("Обновить", id="refresh-reports", color="secondary", outline=True),
-                                                dbc.Button("Обновить курс", id="refresh-fx-rates", color="warning", outline=True, disabled=test_mode),
-                                                dbc.Button("Светлая", id="theme-toggle", color="secondary", outline=True),
+                                                dbc.Button(_i18n_text("dashboard.refresh"), id="refresh-reports", color="secondary", outline=True),
+                                                dbc.Button(_i18n_text("dashboard.refresh_fx"), id="refresh-fx-rates", color="warning", outline=True, disabled=test_mode),
+                                                dbc.Button(
+                                                    _i18n_text("dashboard.theme_toggle", initial_key="dashboard.theme_light"),
+                                                    id="theme-toggle",
+                                                    color="secondary",
+                                                    outline=True,
+                                                ),
                                                 dbc.Button("PNG", id="export-png", color="primary", outline=True, disabled=test_mode),
                                                 dbc.Button("PDF", id="export-pdf", color="primary", outline=True, disabled=test_mode),
+                                                html.Div(
+                                                    [
+                                                        dbc.RadioItems(
+                                                            id="dashboard-locale-select",
+                                                            options=[
+                                                                {"label": "RU", "value": "ru"},
+                                                                {"label": "EN", "value": "en"},
+                                                            ],
+                                                            value=None,
+                                                            inline=True,
+                                                            className="finrep-locale-options",
+                                                            inputClassName="btn-check",
+                                                            labelClassName="finrep-locale-option",
+                                                            labelCheckedClassName="is-active",
+                                                        ),
+                                                    ],
+                                                    id="dashboard-locale-control",
+                                                    role="group",
+                                                    className="finrep-locale-control",
+                                                    **{"aria-label": tr("dashboard.locale_label")},
+                                                ),
                                                 html.Form(
-                                                    dbc.Button("Выйти", type="submit", color="secondary", outline=True),
+                                                    dbc.Button(
+                                                        _i18n_text("dashboard.logout"),
+                                                        id="dashboard-logout-button",
+                                                        type="submit",
+                                                        color="secondary",
+                                                        outline=True,
+                                                    ),
                                                     id="dashboard-logout-form",
                                                     action="/logout",
                                                     method="post",
@@ -356,7 +420,7 @@ def create_layout():
                                     open=True,
                                 ),
                                 dbc.Badge(
-                                    "TEST MODE" if test_mode else "LIVE",
+                                    _i18n_text("dashboard.mode_test" if test_mode else "dashboard.mode_live"),
                                     id="dashboard-mode-badge",
                                     color="warning" if test_mode else "success",
                                     className="px-2 py-2",
@@ -365,7 +429,7 @@ def create_layout():
                             className="dashboard-header-actions",
                         ),
                         xs=12,
-                        md=8,
+                        md=9,
                         className="mt-3 mt-md-0",
                     ),
                 ],
@@ -374,7 +438,7 @@ def create_layout():
             ),
             dbc.Alert(
                 id="page-export-message",
-                children="PNG/PDF доступны только в LIVE." if test_mode else "",
+                children=_i18n_text("dashboard.export_live_only") if test_mode else "",
                 color="warning" if test_mode else "secondary",
                 is_open=test_mode,
                 className="py-2 mb-3",
@@ -388,7 +452,7 @@ def create_layout():
                 [
                     dbc.ModalHeader(dbc.ModalTitle(id="month-transaction-modal-title"), close_button=False),
                     dbc.ModalBody(id="month-transaction-modal-body"),
-                    dbc.ModalFooter(dbc.Button("Закрыть", id="month-transaction-modal-close", color="secondary")),
+                    dbc.ModalFooter(dbc.Button(_i18n_text("action.close.month_modal"), id="month-transaction-modal-close", color="secondary")),
                 ],
                 id="month-transaction-modal",
                 className="finrep-transaction-modal finrep-modal-dark",
@@ -408,6 +472,49 @@ def create_layout():
 
 
 def register_callbacks(app: Dash) -> None:
+    @app.callback(
+        Output("dashboard-locale", "data"),
+        Output("dashboard-locale-select", "value"),
+        Input("dashboard-locale", "modified_timestamp"),
+        Input("dashboard-locale-select", "value"),
+        State("dashboard-locale", "data"),
+    )
+    def sync_dashboard_locale(_modified_timestamp, selected_locale, stored_locale):
+        locale = _resolve_locale_update(ctx.triggered_id, selected_locale, stored_locale)
+        stored_update = no_update if stored_locale == locale else locale
+        return stored_update, locale
+
+    @app.callback(
+        Output({"type": "i18n-text", "key": ALL}, "children"),
+        Output({"type": "i18n-tab-label", "key": ALL}, "label"),
+        Output("mobile-bottom-nav", "aria-label"),
+        Output("dashboard-locale-control", "aria-label"),
+        Input("dashboard-locale", "data"),
+        Input("dashboard-theme", "data"),
+        State({"type": "i18n-text", "key": ALL}, "id"),
+        State({"type": "i18n-tab-label", "key": ALL}, "id"),
+    )
+    def localize_dashboard_chrome(locale, theme, component_ids, tab_ids):
+        return (
+            _localized_text_values(component_ids, locale, theme),
+            _localized_text_values(tab_ids, locale, theme),
+            tr("nav.primary_label", locale),
+            tr("dashboard.locale_label", locale),
+        )
+
+    app.clientside_callback(
+        """
+        function(locale) {
+            const normalized = locale === "en" ? "en" : "ru";
+            document.documentElement.lang = normalized;
+            document.title = normalized === "en" ? "Finance" : "Финансы";
+            return normalized;
+        }
+        """,
+        Output("dashboard-shell", "lang"),
+        Input("dashboard-locale", "data"),
+    )
+
     @app.callback(
         Output("dashboard-refresh-token", "data"),
         Input("refresh-reports", "n_clicks"),
@@ -486,7 +593,6 @@ def register_callbacks(app: Dash) -> None:
         Output("dashboard-theme", "data"),
         Output("dashboard-shell", "className"),
         Output("dashboard-shell", "style"),
-        Output("theme-toggle", "children"),
         Output("month-transaction-modal", "className"),
         Output("mobile-more-menu", "className"),
         Input("theme-toggle", "n_clicks"),
@@ -496,13 +602,11 @@ def register_callbacks(app: Dash) -> None:
         theme = current_theme if current_theme in {"light", "dark"} else "light"
         if n_clicks:
             theme = "dark" if theme == "light" else "light"
-        label = "Светлая" if theme == "dark" else "Темная"
         shell_style = _theme_shell_style(theme)
         return (
             theme,
             f"finrep-shell finrep-theme-{theme}",
             shell_style,
-            label,
             _transaction_modal_class(theme),
             f"finrep-mobile-more finrep-mobile-more-{theme}",
         )

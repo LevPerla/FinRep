@@ -300,6 +300,46 @@ body {
   box-shadow: 0 14px 34px rgba(0, 0, 0, 0.42);
 }
 
+.finrep-locale-control {
+  display: inline-flex;
+  min-height: 38px;
+  align-items: center;
+  padding: 3px;
+  border: 1px solid #646464;
+  border-radius: 6px;
+}
+
+.finrep-locale-options,
+.finrep-locale-options .form-check {
+  display: inline-flex;
+  margin: 0;
+  padding: 0;
+}
+
+.finrep-locale-option {
+  min-width: 38px;
+  margin: 0;
+  padding: 5px 8px;
+  border-radius: 4px;
+  color: inherit;
+  text-align: center;
+  cursor: pointer;
+}
+
+.finrep-locale-option.is-active {
+  background: #0d6efd;
+  color: #ffffff;
+}
+
+.finrep-locale-option:focus-within {
+  outline: 3px solid #2563eb;
+  outline-offset: 1px;
+}
+
+.finrep-theme-dark .finrep-locale-option:focus-within {
+  outline-color: #62a8ff;
+}
+
 @media (min-width: 769px) {
   .dashboard-settings {
     flex: 1 1 auto;
@@ -1239,6 +1279,11 @@ body {
   #export-png,
   #export-pdf {
     grid-column: span 2;
+  }
+
+  .finrep-locale-control {
+    grid-column: span 3;
+    justify-content: center;
   }
 
   #dashboard-logout-form {

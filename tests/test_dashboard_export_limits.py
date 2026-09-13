@@ -25,6 +25,16 @@ def _layout_component(node, component_id: str):
     return None
 
 
+def _component_text(node) -> str:
+    if isinstance(node, str):
+        return node
+    if isinstance(node, dict):
+        return _component_text(node.get("props", {}).get("children"))
+    if isinstance(node, list):
+        return "".join(_component_text(value) for value in node)
+    return ""
+
+
 def _export_callback_request(app, client):
     key = next(key for key in app.callback_map if "page-export-download.data" in key)
     callback = app.callback_map[key]
@@ -71,7 +81,7 @@ def test_test_mode_disables_heavy_export_and_server_rejects_direct_callback(monk
     assert _layout_component(layout, "export-pdf")["props"]["disabled"] is True
     message = _layout_component(layout, "page-export-message")
     assert message["props"]["is_open"] is True
-    assert "только в LIVE" in message["props"]["children"]
+    assert "только в LIVE" in _component_text(message)
 
     render = Mock(side_effect=AssertionError("TEST must not start Chromium export"))
     monkeypatch.setattr(app_module, "export_dashboard_page", render)
