@@ -48,47 +48,61 @@ dagfuncs.finrepCategoryCellClicked = function (params) {
     params.api.__finrepCategoryAnchor = params.rowIndex;
   }
 
+  window.__finrepCategoryClipboardContext = params;
   finrepRefreshCategoryCells(params.api);
 };
 
-dagfuncs.finrepCategoryClipboard = function (params) {
-  if (!params.column || params.column.getColId() !== "category" || !params.event) {
-    return;
-  }
+function finrepActiveCategoryContext() {
+  return window.__finrepCategoryClipboardContext || null;
+}
 
-  var event = params.event;
-  if (!(event.ctrlKey || event.metaKey)) {
+function finrepCopyCategory(event) {
+  var context = finrepActiveCategoryContext();
+  if (!context || !event.clipboardData) {
     return;
   }
+  event.clipboardData.setData(
+    "text/plain",
+    String(context.node?.data?.category || context.value || "")
+  );
+  event.preventDefault();
+}
 
-  var key = String(event.key || "").toLowerCase();
-  if (key === "c") {
-    event.preventDefault();
-    navigator.clipboard.writeText(String(params.value || ""));
+function finrepPasteCategory(event) {
+  var context = finrepActiveCategoryContext();
+  if (!context || !event.clipboardData) {
     return;
   }
-  if (key !== "v") {
+  var category = String(event.clipboardData.getData("text/plain") || "")
+    .split(/[\t\r\n]/, 1)[0]
+    .trim();
+  var editorParams = context.column.getColDef().cellEditorParams || {};
+  var categories = editorParams.values || [];
+  if (!category || !categories.includes(category)) {
     return;
   }
 
   event.preventDefault();
-  navigator.clipboard.readText().then(function (clipboardText) {
-    var category = String(clipboardText || "").split(/[\t\r\n]/, 1)[0].trim();
-    var editorParams = params.column.getColDef().cellEditorParams || {};
-    var categories = editorParams.values || [];
-    if (!category || !categories.includes(category)) {
-      return;
+  var selection = finrepCategorySelection(context.api);
+  if (selection.size === 0 && context.node) {
+    selection.add(context.node.id);
+  }
+  context.api.forEachNode(function (node) {
+    if (selection.has(node.id)) {
+      node.setDataValue("category", category);
     }
-
-    var selection = finrepCategorySelection(params.api);
-    if (selection.size === 0 && params.node) {
-      selection.add(params.node.id);
-    }
-    params.api.forEachNode(function (node) {
-      if (selection.has(node.id)) {
-        node.setDataValue("category", category);
-      }
-    });
-    finrepRefreshCategoryCells(params.api);
   });
-};
+  finrepRefreshCategoryCells(context.api);
+}
+
+if (!window.__finrepCategoryClipboardListenersInstalled) {
+  document.addEventListener("click", function (event) {
+    var grid = document.getElementById("kaspi-import-grid");
+    if (!grid || !event.target || !grid.contains(event.target)) {
+      window.__finrepCategoryClipboardContext = null;
+    }
+  });
+  document.addEventListener("copy", finrepCopyCategory);
+  document.addEventListener("paste", finrepPasteCategory);
+  window.__finrepCategoryClipboardListenersInstalled = true;
+}
