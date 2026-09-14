@@ -2084,7 +2084,6 @@ def _transaction_input_layout(
                             dashGridOptions={"pagination": False, "suppressFieldDotNotation": True, "stopEditingWhenCellsLoseFocus": True},
                             eventListeners={
                                 "cellClicked": ["finrepCategoryCellClicked(params)"],
-                                "cellKeyDown": ["finrepCategoryClipboard(params)"],
                                 "rowDataUpdated": ["finrepCategorySelectionReset(params)"],
                             },
                             className=f"{_ag_grid_class_name(theme)} finrep-import-grid",
