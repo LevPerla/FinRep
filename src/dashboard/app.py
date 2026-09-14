@@ -2721,7 +2721,17 @@ def _kaspi_import_column_defs() -> list[dict]:
     return [
         {"field": "category", "headerName": "Категория", "editable": True, "cellEditor": "agSelectCellEditor", "cellEditorParams": {"values": categories}, "width": 190, "sort": "asc", "cellClassRules": category_class_rules},
         {"field": "date", "headerName": "Дата", "width": 120, "sort": "asc", "sortIndex": 1},
-        {"field": "amount", "headerName": "Сумма", "width": 120},
+        {
+            "field": "amount",
+            "headerName": "Сумма",
+            "width": 120,
+            "valueFormatter": {
+                "function": (
+                    "params.data.direction == 'credit' ? '+ ' + params.value : "
+                    "(params.data.direction == 'debit' ? '− ' + params.value : params.value)"
+                )
+            },
+        },
         {"field": "import_action", "headerName": "Действие", "editable": True, "cellEditor": "agSelectCellEditor", "cellEditorParams": {"values": ["import", "skip"]}, "width": 120, "cellClassRules": {"text-warning": "params.value == 'review'"}},
         {"field": "currency", "headerName": "Валюта", "width": 100},
         {"field": "direction", "headerName": "Направление", "hide": True},
