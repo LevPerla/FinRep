@@ -121,6 +121,17 @@ def test_dashboard_locale_store_is_local_and_selector_stays_inside_settings():
     assert _layout_component(layout, "dashboard-currency")["props"]["value"] == "RUB"
 
 
+def test_saved_month_result_is_not_restored_after_page_reload():
+    app = create_app()
+    client = app.server.test_client()
+    client.post("/login", data={"data_mode": "test"})
+    layout = client.get("/_dash-layout").get_json()
+
+    store = _layout_component(layout, "transaction-save-result")
+
+    assert store["props"]["storage_type"] == "memory"
+
+
 def test_every_login_and_dashboard_chrome_key_exists_in_the_catalog():
     app = create_app()
     client = app.server.test_client()
