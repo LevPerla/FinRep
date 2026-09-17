@@ -131,7 +131,7 @@ def test_export_ignores_toolbar_period_and_localization_keeps_raw_values(source)
     dataset = datasets["expenses_monthly"]
     assert dataset.dataframe["Расход"].sum() == 50
     assert _download_filename(dataset, "RUB", "expenses", "2026", "09").startswith("expenses_expenses_monthly_RUB_")
-    assert "tab=expenses" in build_dashboard_url("RUB", "expenses", "2026", "09")
+    assert "tab=main&section=expenses" in build_dashboard_url("RUB", "expenses", "2026", "09")
     translated = localize_report_datasets(datasets, "en")
     assert translated["expenses_monthly"].title == "Monthly expenses by category"
     pd.testing.assert_frame_equal(translated["expenses_monthly"].dataframe, dataset.dataframe)
@@ -146,7 +146,7 @@ def test_render_callback_returns_localized_fx_error(source, monkeypatch):
     app = create_app()
     client = app.server.test_client()
     client.post("/login", data={"data_mode": "test"})
-    values = ["RUB", "2026", "09", "expenses", "dark", "en", 0, 0, None]
+    values = ["RUB", "2026", "09", "main", "expenses", "dark", "en", 0, 0, None]
     callback = app.callback_map["dashboard-content.children"]
     response = client.post("/_dash-update-component", json={
         "output": "dashboard-content.children",

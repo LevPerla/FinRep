@@ -89,7 +89,6 @@ MAIN_DASHBOARD_TABS: list[DashboardTab] = [
     ("year", "Годовой отчет", "Год"),
     ("month", "Месячный отчет", "Месяц"),
     ("planning", "План и прогноз", "План"),
-    ("expenses", "Расходы", "Расходы"),
     ("input", "Ввод данных", "Ввод"),
     ("debts", "Долги · Beta", "Долги β"),
     ("investments", "Инвестиции · Beta", "Инвест β"),
@@ -102,7 +101,6 @@ MOBILE_PRIMARY_TABS: list[DashboardTab] = [
     ("planning", "План и прогноз", "План"),
 ]
 MOBILE_SECONDARY_TABS: list[DashboardTab] = [
-    ("expenses", "Расходы", "Расходы"),
     ("input", "Ввод данных", "Ввод данных"),
     ("debts", "Долги · Beta", "Долги · Beta"),
     ("investments", "Инвестиции · Beta", "Инвестиции · Beta"),
@@ -110,7 +108,6 @@ MOBILE_SECONDARY_TABS: list[DashboardTab] = [
 MOBILE_PRIMARY_TAB_IDS = {tab_id for tab_id, _desktop_label, _mobile_label in MOBILE_PRIMARY_TABS}
 MOBILE_SECONDARY_TAB_IDS = {tab_id for tab_id, _desktop_label, _mobile_label in MOBILE_SECONDARY_TABS}
 MOBILE_TAB_ICONS = {
-    "expenses": "▥",
     "main": "⌂",
     "year": "Y",
     "month": "M",
@@ -458,6 +455,13 @@ def create_layout():
                 className="py-2 mb-3",
             ),
             _dashboard_tabs(),
+            html.Div(
+                dbc.Tabs([
+                    dbc.Tab(label="Обзор", tab_id="overview", id={"type": "i18n-tab-label", "key": "report.main.overview"}),
+                    dbc.Tab(label="Расходы", tab_id="expenses", id={"type": "i18n-tab-label", "key": "report.main.expenses"}),
+                ], id="main-report-tabs", active_tab="overview"),
+                id="main-report-navigation", className="mt-3",
+            ),
             dcc.Loading(
                 html.Div(id="dashboard-content", className="py-4"),
                 type="circle",
@@ -630,6 +634,7 @@ def register_callbacks(app: Dash) -> None:
         Output("dashboard-year", "value"),
         Output("dashboard-month", "value"),
         Output("dashboard-tabs", "active_tab"),
+        Output("main-report-tabs", "active_tab"),
         Input("dashboard-location", "search"),
     )
     def apply_url_state(search: str):
@@ -639,6 +644,11 @@ def register_callbacks(app: Dash) -> None:
         year = params.get("year", [default_year])[0]
         month = params.get("month", [default_month])[0]
         tab = params.get("tab", ["main"])[0]
+        section = params.get("section", ["overview"])[0]
+        if tab == "expenses":  # Keep links from the first release working.
+            tab, section = "main", "expenses"
+        if section not in {"overview", "expenses"}:
+            section = "overview"
         if currency not in config.UNIQUE_TICKERS:
             currency = DEFAULT_CURRENCY
         available_years = set(utils.get_reports_years())
@@ -648,7 +658,14 @@ def register_callbacks(app: Dash) -> None:
             month = default_month
         if tab not in MAIN_DASHBOARD_TAB_IDS:
             tab = "main"
-        return currency, year, month, tab
+        return currency, year, month, tab, section
+
+    @app.callback(
+        Output("main-report-navigation", "style"),
+        Input("dashboard-tabs", "active_tab"),
+    )
+    def show_main_report_navigation(active_tab: str):
+        return {} if active_tab == "main" else {"display": "none"}
 
     @app.callback(
         Output("dashboard-tabs", "active_tab", allow_duplicate=True),
@@ -658,7 +675,6 @@ def register_callbacks(app: Dash) -> None:
         Input("mobile-tab-month", "n_clicks"),
         Input("mobile-tab-planning", "n_clicks"),
         Input("mobile-tab-more", "n_clicks"),
-        Input("mobile-more-expenses", "n_clicks"),
         Input("mobile-more-input", "n_clicks"),
         Input("mobile-more-debts", "n_clicks"),
         Input("mobile-more-investments", "n_clicks"),
@@ -673,7 +689,6 @@ def register_callbacks(app: Dash) -> None:
         _month_clicks,
         _planning_clicks,
         _more_clicks,
-        _expenses_clicks,
         _input_clicks,
         _debts_clicks,
         _investments_clicks,
@@ -729,6 +744,7 @@ def register_callbacks(app: Dash) -> None:
         Input("dashboard-year", "value"),
         Input("dashboard-month", "value"),
         Input("dashboard-tabs", "active_tab"),
+        Input("main-report-tabs", "active_tab"),
         Input("dashboard-theme", "data"),
         Input("dashboard-locale", "data"),
         Input("dashboard-refresh-token", "data"),
@@ -736,13 +752,13 @@ def register_callbacks(app: Dash) -> None:
         Input("transaction-save-result", "data"),
         State("crypto-refresh-status", "data"),
     )
-    def render_dashboard_content(currency: str, year: str, month: str, active_tab: str, theme: str, locale: str, refresh_token: int, fx_refresh_clicks: int | None, transaction_save_result: dict | None, crypto_status: dict | None):
+    def render_dashboard_content(currency: str, year: str, month: str, active_tab: str, main_section: str, theme: str, locale: str, refresh_token: int, fx_refresh_clicks: int | None, transaction_save_result: dict | None, crypto_status: dict | None):
         fx_network_enabled = ctx.triggered_id == "refresh-fx-rates" and not config.is_test_mode()
         if fx_network_enabled:
             clear_table_cache()
             clear_main_dashboard_cache()
 
-        if active_tab == "expenses":
+        if active_tab == "main" and main_section == "expenses":
             try:
                 datasets = build_expense_dashboard_data(
                     currency, fx_network_enabled=fx_network_enabled,
@@ -879,6 +895,7 @@ def register_callbacks(app: Dash) -> None:
         State("dashboard-year", "value"),
         State("dashboard-month", "value"),
         State("dashboard-tabs", "active_tab"),
+        State("main-report-tabs", "active_tab"),
         State("dashboard-locale", "data"),
         prevent_initial_call=True,
     )
@@ -889,11 +906,14 @@ def register_callbacks(app: Dash) -> None:
         year: str,
         month: str,
         active_tab: str,
+        main_section: str,
         locale: str,
     ):
         if not n_clicks:
             raise PreventUpdate
 
+        if active_tab == "main" and main_section == "expenses":
+            active_tab = "expenses"
         dataset_id = button_id["dataset_id"]
         datasets = _datasets_for_tab(active_tab, currency, year, month)
         if dataset_id not in datasets:
@@ -916,6 +936,7 @@ def register_callbacks(app: Dash) -> None:
         State("dashboard-year", "value"),
         State("dashboard-month", "value"),
         State("dashboard-tabs", "active_tab"),
+        State("main-report-tabs", "active_tab"),
         State("dashboard-locale", "data"),
         prevent_initial_call=True,
     )
@@ -926,6 +947,7 @@ def register_callbacks(app: Dash) -> None:
         year: str,
         month: str,
         active_tab: str,
+        main_section: str,
         locale: str,
     ):
         if not png_clicks and not pdf_clicks:
@@ -934,6 +956,8 @@ def register_callbacks(app: Dash) -> None:
         if config.is_test_mode():
             return no_update, tr("dashboard.export_live_only", locale), "warning", True
 
+        if active_tab == "main" and main_section == "expenses":
+            active_tab = "expenses"
         export_format = "png" if ctx.triggered_id == "export-png" else "pdf"
         try:
             export_path = export_dashboard_page(

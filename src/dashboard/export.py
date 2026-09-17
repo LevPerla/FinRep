@@ -42,7 +42,9 @@ def build_dashboard_url(
     port = int(os.environ.get("PORT") or os.environ.get("FINREP_DASH_PORT", "8050"))
     if not 1 <= port <= 65535:
         raise ValueError("Invalid dashboard server port")
-    params = {"currency": currency, "tab": tab}
+    params = {"currency": currency, "tab": "main" if tab == "expenses" else tab}
+    if tab == "expenses":
+        params["section"] = "expenses"
     if year is not None:
         params["year"] = year
     if month is not None:

@@ -82,7 +82,8 @@ def test_local_dash_request_and_fixed_stylesheet_policy():
     page.fetch.assert_not_called()
 
 
-def test_callback_has_no_client_url_and_ignores_host(monkeypatch, tmp_path):
+@pytest.mark.parametrize('section,expected_tab', [('overview','main'), ('expenses','expenses')])
+def test_callback_has_no_client_url_and_ignores_host(monkeypatch, tmp_path, section, expected_tab):
     from src.dashboard.app import create_app
     import importlib
     monkeypatch.setenv('FINREP_DASH_PASSWORD', 'synthetic-password')
@@ -97,7 +98,7 @@ def test_callback_has_no_client_url_and_ignores_host(monkeypatch, tmp_path):
     callback = app.callback_map[key]
     payload = {'output':key, 'outputs':[{'id':item.component_id,'property':item.component_property} for item in callback['output']],
         'inputs':[{'id':'export-png','property':'n_clicks','value':1},{'id':'export-pdf','property':'n_clicks','value':0}],
-        'state':[{'id':'dashboard-currency','property':'value','value':'RUB'}, {'id':'dashboard-year','property':'value','value':'2026'}, {'id':'dashboard-month','property':'value','value':'05'}, {'id':'dashboard-tabs','property':'active_tab','value':'main'}, {'id':'dashboard-locale','property':'data','value':'ru'}],
+        'state':[{'id':'dashboard-currency','property':'value','value':'RUB'}, {'id':'dashboard-year','property':'value','value':'2026'}, {'id':'dashboard-month','property':'value','value':'05'}, {'id':'dashboard-tabs','property':'active_tab','value':'main'}, {'id':'main-report-tabs','property':'active_tab','value':section}, {'id':'dashboard-locale','property':'data','value':'ru'}],
         'changedPropIds':['export-png.n_clicks']}
     registered = callback['state']
     assert not any(item['id']=='dashboard-location' for item in registered)
@@ -107,7 +108,7 @@ def test_callback_has_no_client_url_and_ignores_host(monkeypatch, tmp_path):
     monkeypatch.setattr(app_module, 'export_dashboard_page', render)
     response = client.post('/_dash-update-component', json=payload, headers={'Host':'evil.test'})
     assert response.status_code == 200
-    assert render.call_args.args == ('RUB','main','png')
+    assert render.call_args.args == ('RUB',expected_tab,'png')
     assert render.call_args.kwargs['locale'] == 'ru'
     assert 'evil.test' not in str(render.call_args)
 
