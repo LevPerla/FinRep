@@ -14,6 +14,13 @@ LOCALE_TIMESTAMP_STORAGE_KEY = "dashboard-locale-timestamp"
 DYNAMIC_TRANSLATION_KEYS = frozenset({"dashboard.theme_toggle"})
 
 REPORT_TEXT_EN = {
+    "Аналитика расходов": "Expense analytics",
+    "Расходы по категориям за месяц": "Monthly expenses by category",
+    "Вся история. Год и месяц в панели не ограничивают этот отчёт.": "Full history. The year and month controls do not limit this report.",
+    "Нет расходных операций": "No expense transactions",
+    "Нет данных за месяцы:": "No data for months:",
+    "Пропуски не считаются нулевыми расходами.": "Missing months are not treated as zero expenses.",
+    "Не удалось загрузить аналитику расходов.": "Unable to load expense analytics.",
     # Dataset and chart titles.
     "Ключевые метрики": "Key metrics",
     "Итоги по годам": "Yearly totals",
@@ -308,6 +315,8 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "dashboard.locale_label": "Язык интерфейса",
         "dashboard.export_live_only": "PNG/PDF доступны только в LIVE.",
         "nav.primary_label": "Основные разделы",
+        "nav.expenses.desktop": "Расходы",
+        "nav.expenses.mobile": "Расходы",
         "nav.main.desktop": "Основной отчет",
         "nav.year.desktop": "Годовой отчет",
         "nav.month.desktop": "Месячный отчет",
@@ -362,6 +371,8 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "dashboard.locale_label": "Interface language",
         "dashboard.export_live_only": "PNG/PDF are available in LIVE only.",
         "nav.primary_label": "Main sections",
+        "nav.expenses.desktop": "Expenses",
+        "nav.expenses.mobile": "Expenses",
         "nav.main.desktop": "Overview",
         "nav.year.desktop": "Year report",
         "nav.month.desktop": "Month report",

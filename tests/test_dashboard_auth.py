@@ -510,6 +510,7 @@ def test_live_mode_still_writes_to_configured_data_root(tmp_path, monkeypatch):
 
 
 def test_sample_dashboard_reads_do_not_modify_files():
+    from src.dashboard.expense_data import build_expense_dashboard_data
     from src.dashboard.investment_data import build_investment_dashboard_data
     from src.dashboard.main_data import build_main_dashboard_data
     from src.dashboard.month_data import build_month_dashboard_data
@@ -527,6 +528,7 @@ def test_sample_dashboard_reads_do_not_modify_files():
         session["authenticated"] = True
         session["data_mode"] = "test"
         build_main_dashboard_data("RUB", fx_network_enabled=False, year="2026", month="05")
+        build_expense_dashboard_data("RUB", fx_network_enabled=False)
         build_year_dashboard_data("2026", "RUB", fx_network_enabled=False)
         build_month_dashboard_data("2026", "05", "RUB", fx_network_enabled=False)
         build_planning_dashboard_data("2026", "RUB", fx_network_enabled=False)

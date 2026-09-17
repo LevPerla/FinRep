@@ -46,6 +46,7 @@ from src.data.staging import (
     read_monthly_transaction_csv,
     read_transaction_drafts,
 )
+from src.dashboard.expense_data import build_expense_dashboard_data
 from src.dashboard.export import ExportBusyError, export_dashboard_page
 from src.dashboard.auth import configure_auth
 from src.dashboard.investment_data import build_investment_dashboard_data
@@ -88,6 +89,7 @@ MAIN_DASHBOARD_TABS: list[DashboardTab] = [
     ("year", "Годовой отчет", "Год"),
     ("month", "Месячный отчет", "Месяц"),
     ("planning", "План и прогноз", "План"),
+    ("expenses", "Расходы", "Расходы"),
     ("input", "Ввод данных", "Ввод"),
     ("debts", "Долги · Beta", "Долги β"),
     ("investments", "Инвестиции · Beta", "Инвест β"),
@@ -100,6 +102,7 @@ MOBILE_PRIMARY_TABS: list[DashboardTab] = [
     ("planning", "План и прогноз", "План"),
 ]
 MOBILE_SECONDARY_TABS: list[DashboardTab] = [
+    ("expenses", "Расходы", "Расходы"),
     ("input", "Ввод данных", "Ввод данных"),
     ("debts", "Долги · Beta", "Долги · Beta"),
     ("investments", "Инвестиции · Beta", "Инвестиции · Beta"),
@@ -107,6 +110,7 @@ MOBILE_SECONDARY_TABS: list[DashboardTab] = [
 MOBILE_PRIMARY_TAB_IDS = {tab_id for tab_id, _desktop_label, _mobile_label in MOBILE_PRIMARY_TABS}
 MOBILE_SECONDARY_TAB_IDS = {tab_id for tab_id, _desktop_label, _mobile_label in MOBILE_SECONDARY_TABS}
 MOBILE_TAB_ICONS = {
+    "expenses": "▥",
     "main": "⌂",
     "year": "Y",
     "month": "M",
@@ -654,6 +658,7 @@ def register_callbacks(app: Dash) -> None:
         Input("mobile-tab-month", "n_clicks"),
         Input("mobile-tab-planning", "n_clicks"),
         Input("mobile-tab-more", "n_clicks"),
+        Input("mobile-more-expenses", "n_clicks"),
         Input("mobile-more-input", "n_clicks"),
         Input("mobile-more-debts", "n_clicks"),
         Input("mobile-more-investments", "n_clicks"),
@@ -668,6 +673,7 @@ def register_callbacks(app: Dash) -> None:
         _month_clicks,
         _planning_clicks,
         _more_clicks,
+        _expenses_clicks,
         _input_clicks,
         _debts_clicks,
         _investments_clicks,
@@ -735,6 +741,18 @@ def register_callbacks(app: Dash) -> None:
         if fx_network_enabled:
             clear_table_cache()
             clear_main_dashboard_cache()
+
+        if active_tab == "expenses":
+            try:
+                datasets = build_expense_dashboard_data(
+                    currency, fx_network_enabled=fx_network_enabled,
+                )
+            except Exception as exc:
+                return _error_state(str(report_text("Не удалось загрузить аналитику расходов.", locale)), exc, locale=locale)
+
+            datasets = localize_report_datasets(datasets, locale)
+            _apply_theme_to_datasets(datasets, theme)
+            return _expense_report_layout(datasets, theme, locale=locale)
 
         if active_tab == "year":
             try:
@@ -2751,6 +2769,40 @@ def _kaspi_import_column_defs() -> list[dict]:
     ]
 
 
+def _expense_report_layout(datasets: dict[str, DashboardDataset], theme: str, locale: str = DEFAULT_LOCALE):
+    children = [
+        html.H2(report_text("Аналитика расходов", locale), className="h4"),
+        html.P(
+            report_text("Вся история. Год и месяц в панели не ограничивают этот отчёт.", locale),
+            className="small", style={"color": "var(--finrep-muted)"},
+        ),
+    ]
+    if "expenses_empty" in datasets:
+        children.append(html.Div(
+            report_text("Нет расходных операций", locale), id="expenses-empty-state",
+            className="finrep-first-run",
+        ))
+    else:
+        if "expenses_missing_months" in datasets:
+            missing = datasets["expenses_missing_months"]
+            children.append(dbc.Alert(
+                [missing.title + " " + ", ".join(missing.dataframe["Дата"].dt.strftime("%Y-%m")),
+                 html.Div(report_text("Пропуски не считаются нулевыми расходами.", locale))],
+                color="warning", id="expenses-missing-months",
+            ))
+        monthly = datasets["expenses_monthly"]
+        chart = _graph_section(monthly, theme=theme, locale=locale)
+        chart.children.append(html.Ul(
+            [html.Li([
+                html.Span(className="finrep-expense-swatch", style={"backgroundColor": trace.marker.color}),
+                html.Span(trace.name),
+            ]) for trace in monthly.figure.data],
+            className="finrep-expense-legend",
+        ))
+        children.append(chart)
+    return html.Div(children, className="d-grid gap-3")
+
+
 def _error_state(message: str, exc: Exception, locale: str = DEFAULT_LOCALE):
     return dbc.Alert(
         [
@@ -3056,6 +3108,8 @@ def _datasets_for_tab(
     year: str,
     month: str,
 ) -> dict[str, DashboardDataset]:
+    if active_tab == "expenses":
+        return build_expense_dashboard_data(currency, fx_network_enabled=DEFAULT_FX_NETWORK_ENABLED)
     if active_tab == "year":
         return build_year_dashboard_data(
             year,
@@ -3096,6 +3150,8 @@ def _download_filename(
     month: str,
 ) -> str:
     timestamp = datetime.now().strftime("%Y%m%d")
+    if active_tab == "expenses":
+        return f"expenses_{dataset.id}_{currency}_{timestamp}.xlsx"
     if active_tab == "year":
         return f"year_report_{year}_{dataset.id}_{currency}_{timestamp}.xlsx"
     if active_tab == "month":

@@ -16,7 +16,7 @@ from src.dashboard.i18n import DEFAULT_LOCALE, normalize_locale
 EXPORT_VIEWPORT = {"width": 1440, "height": 1200}
 EXPORT_READY_TIMEOUT_MS = 90_000
 EXPORT_SETTLE_MS = 1_000
-EXPORT_TABS = {"main", "year", "month", "planning", "input", "debts", "investments"}
+EXPORT_TABS = {"expenses", "main", "year", "month", "planning", "input", "debts", "investments"}
 _EXPORT_LOCK = Lock()
 
 

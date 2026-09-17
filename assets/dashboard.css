@@ -1220,6 +1220,32 @@ body {
   overflow-x: hidden;
 }
 
+.finrep-expense-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 20px;
+  margin: 0;
+  padding: 0 12px 16px;
+  list-style: none;
+  font-size: 12px;
+  color: var(--finrep-text);
+}
+
+.finrep-expense-legend li {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.finrep-expense-swatch {
+  width: 10px;
+  height: 10px;
+  flex: 0 0 10px;
+  border-radius: 2px;
+}
+
 .finrep-table-scroll {
   overflow-x: auto;
 }
