@@ -310,6 +310,7 @@ def create_layout():
             dcc.Store(id="dashboard-locale", data=DEFAULT_LOCALE, storage_type="local"),
             dcc.Store(id="dashboard-document-locale", data=DEFAULT_LOCALE),
             dcc.Store(id="dashboard-refresh-token", data=0),
+            dcc.Store(id="fx-refresh-result"),
             dcc.Store(id="transaction-save-result", storage_type="session"),
             dcc.Store(
                 id="transaction-add-request-id",
@@ -454,6 +455,7 @@ def create_layout():
                 is_open=test_mode,
                 className="py-2 mb-3",
             ),
+            html.Div(id="fx-refresh-status", role="status", **{"aria-live": "polite"}),
             _dashboard_tabs(),
             html.Div(
                 dbc.Tabs([
@@ -490,6 +492,47 @@ def create_layout():
 
 
 def register_callbacks(app: Dash) -> None:
+    app.clientside_callback(
+        """function(clicks, locale) {
+            const unchanged = window.dash_clientside.no_update;
+            if (!clicks) return [unchanged, unchanged, unchanged];
+            const en = locale === "en";
+            return [en ? "Checking exchange rates…" : "Обновляем курсы…",
+                    "finrep-fx-status is-loading", true];
+        }""",
+        Output("fx-refresh-status", "children"),
+        Output("fx-refresh-status", "className"),
+        Output("refresh-fx-rates", "disabled"),
+        Input("refresh-fx-rates", "n_clicks"),
+        State("dashboard-locale", "data"),
+        prevent_initial_call=True,
+    )
+
+    app.clientside_callback(
+        """function(result, locale) {
+            if (!result) return [window.dash_clientside.no_update,
+                                 window.dash_clientside.no_update,
+                                 window.dash_clientside.no_update];
+            const en = locale === "en";
+            const messages = en ? {
+                done: "Exchange-rate check completed.",
+                error: "Could not refresh exchange rates. See the report error.",
+                unavailable: "No exchange rates are loaded in this section."
+            } : {
+                done: "Проверка курсов завершена.",
+                error: "Не удалось обновить курсы. Подробнее — в сообщении отчёта.",
+                unavailable: "В этом разделе курсы не загружаются."
+            };
+            return [messages[result.status], "finrep-fx-status is-" + result.status, false];
+        }""",
+        Output("fx-refresh-status", "children", allow_duplicate=True),
+        Output("fx-refresh-status", "className", allow_duplicate=True),
+        Output("refresh-fx-rates", "disabled", allow_duplicate=True),
+        Input("fx-refresh-result", "data"),
+        State("dashboard-locale", "data"),
+        prevent_initial_call=True,
+    )
+
     app.clientside_callback(
         """function(click) {
             const point = click?.points?.[0];
@@ -749,6 +792,7 @@ def register_callbacks(app: Dash) -> None:
 
     @app.callback(
         Output("dashboard-content", "children"),
+        Output("fx-refresh-result", "data"),
         Input("dashboard-currency", "value"),
         Input("dashboard-year", "value"),
         Input("dashboard-month", "value"),
@@ -763,6 +807,16 @@ def register_callbacks(app: Dash) -> None:
     )
     def render_dashboard_content(currency: str, year: str, month: str, active_tab: str, main_section: str, theme: str, locale: str, refresh_token: int, fx_refresh_clicks: int | None, transaction_save_result: dict | None, crypto_status: dict | None):
         fx_network_enabled = ctx.triggered_id == "refresh-fx-rates" and not config.is_test_mode()
+
+        def finish(content):
+            if not fx_network_enabled:
+                return content, no_update
+            if active_tab in {"input", "debts"}:
+                status = "unavailable"
+            else:
+                status = "error" if isinstance(content, dbc.Alert) and content.color == "danger" else "done"
+            return content, {"request": fx_refresh_clicks, "status": status}
+
         if fx_network_enabled:
             clear_table_cache()
             clear_main_dashboard_cache()
@@ -773,11 +827,11 @@ def register_callbacks(app: Dash) -> None:
                     currency, fx_network_enabled=fx_network_enabled,
                 )
             except Exception as exc:
-                return _error_state(str(report_text("Не удалось загрузить аналитику расходов.", locale)), exc, locale=locale)
+                return finish(_error_state(str(report_text("Не удалось загрузить аналитику расходов.", locale)), exc, locale=locale))
 
             datasets = localize_report_datasets(datasets, locale)
             _apply_theme_to_datasets(datasets, theme)
-            return _expense_report_layout(datasets, theme, locale=locale)
+            return finish(_expense_report_layout(datasets, theme, locale=locale))
 
         if active_tab == "year":
             try:
@@ -787,11 +841,11 @@ def register_callbacks(app: Dash) -> None:
                     fx_network_enabled=fx_network_enabled,
                 )
             except Exception as exc:
-                return _error_state(str(report_text("Не удалось загрузить данные годового отчета.", locale)), exc, locale=locale)
+                return finish(_error_state(str(report_text("Не удалось загрузить данные годового отчета.", locale)), exc, locale=locale))
 
             datasets = localize_report_datasets(datasets, locale)
             _apply_theme_to_datasets(datasets, theme)
-            return _year_report_layout(datasets, theme, locale=locale)
+            return finish(_year_report_layout(datasets, theme, locale=locale))
 
         if active_tab == "planning":
             try:
@@ -801,11 +855,11 @@ def register_callbacks(app: Dash) -> None:
                     fx_network_enabled=fx_network_enabled,
                 )
             except Exception as exc:
-                return _error_state(str(report_text("Не удалось загрузить данные плана и прогноза.", locale)), exc, locale=locale)
+                return finish(_error_state(str(report_text("Не удалось загрузить данные плана и прогноза.", locale)), exc, locale=locale))
 
             datasets = localize_report_datasets(datasets, locale)
             _apply_theme_to_datasets(datasets, theme)
-            return _planning_report_layout(datasets, theme, read_only=config.is_test_mode(), locale=locale)
+            return finish(_planning_report_layout(datasets, theme, read_only=config.is_test_mode(), locale=locale))
 
         if active_tab == "month":
             try:
@@ -816,11 +870,11 @@ def register_callbacks(app: Dash) -> None:
                     fx_network_enabled=fx_network_enabled,
                 )
             except Exception as exc:
-                return _error_state(str(report_text("Не удалось загрузить данные месячного отчета.", locale)), exc, locale=locale)
+                return finish(_error_state(str(report_text("Не удалось загрузить данные месячного отчета.", locale)), exc, locale=locale))
 
             datasets = localize_report_datasets(datasets, locale)
             _apply_theme_to_datasets(datasets, theme)
-            return _month_report_layout(datasets, theme, locale=locale)
+            return finish(_month_report_layout(datasets, theme, locale=locale))
 
         if active_tab == "investments":
             try:
@@ -829,16 +883,16 @@ def register_callbacks(app: Dash) -> None:
                     fx_network_enabled=fx_network_enabled,
                 )
             except Exception as exc:
-                return _error_state("Не удалось загрузить инвестиционный отчет.", exc)
+                return finish(_error_state("Не удалось загрузить инвестиционный отчет.", exc))
 
             _apply_theme_to_datasets(datasets, theme)
-            return _investment_report_layout(datasets, theme, crypto_status, read_only=config.is_test_mode())
+            return finish(_investment_report_layout(datasets, theme, crypto_status, read_only=config.is_test_mode()))
 
         if active_tab == "debts":
-            return _debt_report_layout(currency, theme, read_only=config.is_test_mode())
+            return finish(_debt_report_layout(currency, theme, read_only=config.is_test_mode()))
 
         if active_tab == "input":
-            return _input_report_layout(
+            return finish(_input_report_layout(
                 currency,
                 year,
                 month,
@@ -846,7 +900,7 @@ def register_callbacks(app: Dash) -> None:
                 read_only=config.is_test_mode(),
                 transaction_save_result=transaction_save_result,
                 locale=locale,
-            )
+            ))
 
         try:
             datasets = build_main_dashboard_data(
@@ -856,18 +910,18 @@ def register_callbacks(app: Dash) -> None:
                 month=month,
             )
         except Exception as exc:
-            return _error_state(str(report_text("Не удалось загрузить данные основного отчета.", locale)), exc, locale=locale)
+            return finish(_error_state(str(report_text("Не удалось загрузить данные основного отчета.", locale)), exc, locale=locale))
 
         datasets = localize_report_datasets(datasets, locale)
         _apply_theme_to_datasets(datasets, theme)
-        return _main_report_layout(
+        return finish(_main_report_layout(
             datasets,
             theme=theme,
             currency=currency,
             year=year,
             month=month,
             locale=locale,
-        )
+        ))
 
     @app.callback(
         Output("month-transaction-modal", "is_open"),
