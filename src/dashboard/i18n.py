@@ -23,8 +23,6 @@ REPORT_TEXT_EN = {
     "Отрицательные доли отражают корректировки расходов.": "Negative shares reflect expense adjustments.",
     "Доля, %": "Share, %",
     "Месяцев с данными": "Months with data",
-    "Все категории": "All categories",
-    "Выбор категории относится только к этому графику.": "Category selection applies only to this chart.",
     "Аналитика расходов": "Expense analytics",
     "Расходы по категориям за месяц": "Monthly expenses by category",
     "Вся история. Год и месяц в панели не ограничивают этот отчёт.": "Full history. The year and month controls do not limit this report.",

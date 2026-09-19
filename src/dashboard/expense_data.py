@@ -72,7 +72,7 @@ def build_expense_dashboard_data(
     _apply_dashboard_chart_layout(figure, "", range_slider=True)
     figure.update_layout(
         barmode="relative",
-        showlegend=False,
+        showlegend=True,
         bargap=0.15,
         margin=dict(t=24),
         yaxis=dict(title=currency, separatethousands=True),
@@ -156,7 +156,7 @@ def _annual_expense_datasets(monthly, known_months, currency):
         )
     _apply_dashboard_chart_layout(figure, "", range_slider=True)
     figure.update_layout(
-        barmode="relative", showlegend=False, margin=dict(t=24),
+        barmode="relative", showlegend=True, margin=dict(t=24),
         yaxis=dict(ticksuffix="%", range=None if shares.lt(0).any().any() else [0, 100]),
         xaxis=dict(type="date", tickformat="%Y", dtick="M12"),
     )

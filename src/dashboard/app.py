@@ -499,20 +499,6 @@ def register_callbacks(app: Dash) -> None:
         Input("expenses_total-graph", "clickData", allow_optional=True),
     )
 
-    app.clientside_callback(
-        """function(category, figure) {
-            if (!figure) return window.dash_clientside.no_update;
-            return {...figure,
-                data: figure.data.map(trace => ({...trace,
-                    visible: category == null || trace.name === category})),
-                layout: {...figure.layout, yaxis: {...figure.layout.yaxis, autorange: true}}
-            };
-        }""",
-        Output("expenses_monthly-graph", "figure"),
-        Input("expenses-category", "value", allow_optional=True),
-        State("expenses_monthly-graph", "figure", allow_optional=True),
-    )
-
     @app.callback(
         Output("dashboard-locale", "data"),
         Output("dashboard-locale-select", "value"),
@@ -2838,19 +2824,6 @@ def _expense_report_layout(datasets: dict[str, DashboardDataset], theme: str, lo
             ))
         monthly = datasets["expenses_monthly"]
         chart = _graph_section(monthly, theme=theme, locale=locale)
-        chart.children.insert(1, html.Div([
-            html.Label(report_text("Категория", locale), htmlFor="expenses-category", className="small mb-2"),
-            dcc.Dropdown(
-                id="expenses-category",
-                options=[{"label": trace.name, "value": trace.name} for trace in monthly.figure.data],
-                value=None, clearable=True,
-                placeholder=report_text("Все категории", locale),
-                className="dashboard-filter",
-            ),
-            html.P(report_text("Выбор категории относится только к этому графику.", locale),
-                     className="small mt-2", style={"color": "var(--finrep-muted)"}),
-        ], style={"maxWidth": "420px"}))
-        chart.children.append(_expense_legend(monthly.figure))
         children.append(chart)
         allocation = datasets["expenses_allocation"]
         annual_chart = _graph_section(allocation, theme=theme, locale=locale)
@@ -2869,7 +2842,6 @@ def _expense_report_layout(datasets: dict[str, DashboardDataset], theme: str, lo
             notes.append(html.Div(report_text("Отрицательные доли отражают корректировки расходов.", locale)))
         annual_chart.children.insert(1, html.Div(notes, id="expenses-allocation-notes",
                                                 className="small", style={"color": "var(--finrep-muted)"}))
-        annual_chart.children.append(_expense_legend(allocation.figure))
         children.append(annual_chart)
         total_chart = _graph_section(datasets["expenses_total"], theme=theme, locale=locale)
         total_chart.children.insert(1, html.P(
@@ -2880,15 +2852,6 @@ def _expense_report_layout(datasets: dict[str, DashboardDataset], theme: str, lo
                                              style={"whiteSpace": "pre-wrap", "overflowWrap": "anywhere"}))
         children.extend([total_chart, _grid_section(datasets["top_purchases"], height="680px", theme=theme, locale=locale)])
     return html.Div(children, className="d-grid gap-3")
-
-
-def _expense_legend(figure):
-    return html.Ul([
-        html.Li([
-            html.Span(className="finrep-expense-swatch", style={"backgroundColor": trace.marker.color}),
-            html.Span(trace.name),
-        ]) for trace in figure.data
-    ], className="finrep-expense-legend")
 
 
 def _error_state(message: str, exc: Exception, locale: str = DEFAULT_LOCALE):
