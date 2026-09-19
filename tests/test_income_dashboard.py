@@ -50,6 +50,49 @@ def test_sources_and_savings_reconcile_without_changing_history(source):
     pd.testing.assert_frame_equal(original, before)
 
 
+def test_monthly_allocation_includes_income_sources_and_savings(source):
+    source([
+        ("2025-01-03", "Доход", "RUB", 100, "Зарплата"),
+        ("2025-01-04", "Доход", "RUB", 50, "Проценты"),
+        ("2025-01-05", "Доход", "RUB", 25, "подарок"),
+        ("2025-01-06", "Сбережения", "RUB", 25, ""),
+    ])
+    datasets = income_data.build_income_dashboard_data("RUB")
+    allocation = datasets["income_allocation"]
+    shares = allocation.dataframe.set_index("Источник")["Доля, %"].to_dict()
+    assert shares == {
+        "Зарплата": 50, "Проценты по депозиту": 25,
+        "Источник не определён": 12.5, "Сбережения": 12.5,
+    }
+    assert allocation.dataframe["Сумма"].sum() == 200
+    assert sum(shares.values()) == 100
+    assert allocation.figure.layout.xaxis.rangeslider.visible is True
+    assert {trace.name: trace.marker.color for trace in allocation.figure.data} == {
+        trace.name: trace.marker.color for trace in datasets["income_sources_monthly"].figure.data
+    } | {"Сбережения": income_data.INCOME_SOURCE_COLORS["savings"]}
+
+
+def test_allocation_distinguishes_zero_missing_and_negative_corrections(source):
+    source([
+        ("2025-01-03", "Доход", "RUB", 100, "Зарплата"),
+        ("2025-01-04", "Доход", "RUB", -20, "Проценты"),
+        ("2025-02-01", "Еда", "RUB", 1, ""),
+        ("2025-04-01", "Сбережения", "RUB", 50, ""),
+    ])
+    datasets = income_data.build_income_dashboard_data("RUB")
+    allocation = datasets["income_allocation"].dataframe
+    shares = allocation.pivot(index="Дата", columns="Источник", values="Доля, %")
+    assert shares.loc["2025-01-01", "Зарплата"] == 125
+    assert shares.loc["2025-01-01", "Проценты по депозиту"] == -25
+    assert shares.loc["2025-02-01"].isna().all()
+    assert shares.loc["2025-03-01"].isna().all()
+    assert shares.loc["2025-04-01", "Сбережения"] == 100
+    assert datasets["income_allocation"].dataframe.query("Дата == '2025-02-01'")["Сумма"].eq(0).all()
+    assert datasets["income_allocation"].dataframe.query("Дата == '2025-03-01'")["Сумма"].isna().all()
+    layout = _income_report_layout(datasets, "dark")
+    assert layout.children[5].children[1].id == "income-allocation-notes"
+
+
 def test_missing_month_is_null_but_observed_month_without_receipts_is_zero(source):
     source([
         ("2014-01-01", "Доход", "RUB", 100, "Зарплата"),
@@ -119,6 +162,9 @@ def test_full_history_and_all_report_currencies(source, currency):
     assert dataset.dataframe["Доход"].sum() == 10440
     assert dataset.figure.layout.xaxis.rangeslider.visible is True
     assert dataset.figure.layout.yaxis.title.text == currency
+    allocation = income_data.build_income_dashboard_data(currency)["income_allocation"]
+    assert len(allocation.dataframe) == 144 * 4
+    assert allocation.figure.layout.xaxis.rangeslider.visible is True
 
 
 def test_income_export_and_localization_preserve_values(source):
@@ -135,3 +181,11 @@ def test_income_export_and_localization_preserve_values(source):
     exported = localize_export_dataframe(datasets["income_sources_monthly"].dataframe, "en")
     assert exported.loc[0, "Source"] == "Salary"
     assert exported.loc[0, "Income"] == 100
+    allocation = localized["income_allocation"]
+    assert allocation.title == "Monthly income and savings allocation"
+    assert [trace.name for trace in allocation.figure.data] == [
+        "Salary", "Deposit interest", "Unknown source", "Savings",
+    ]
+    export_allocation = localize_export_dataframe(datasets["income_allocation"].dataframe, "en")
+    assert export_allocation.loc[0, "Source"] == "Salary"
+    assert export_allocation.loc[0, "Share, %"] == 100

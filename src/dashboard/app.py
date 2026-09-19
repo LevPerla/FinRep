@@ -2942,6 +2942,18 @@ def _income_report_layout(datasets: dict[str, DashboardDataset], theme: str, loc
             className="small", style={"color": "var(--finrep-muted)"},
         ))
         children.append(_graph_section(datasets["income_sources_monthly"], theme=theme, locale=locale))
+        allocation = datasets["income_allocation"]
+        allocation_chart = _graph_section(allocation, theme=theme, locale=locale)
+        notes = [html.P(report_text("Доли рассчитаны из всех поступлений внутри каждого месяца.", locale))]
+        undefined = allocation.dataframe.loc[allocation.dataframe["Доля, %"].isna(), "Дата"].drop_duplicates()
+        if not undefined.empty:
+            notes.append(html.Div(str(report_text("Доли не определены: итог месяца отсутствует или не положителен.", locale))
+                                  + " " + ", ".join(undefined.dt.strftime("%Y-%m"))))
+        if allocation.dataframe["Доля, %"].lt(0).any():
+            notes.append(html.Div(report_text("Отрицательные доли отражают корректировки поступлений.", locale)))
+        allocation_chart.children.insert(1, html.Div(notes, id="income-allocation-notes",
+                                                    className="small", style={"color": "var(--finrep-muted)"}))
+        children.append(allocation_chart)
         children.append(_graph_section(datasets["income_receipts_monthly"], theme=theme, locale=locale))
     return html.Div(children, className="d-grid gap-3")
 

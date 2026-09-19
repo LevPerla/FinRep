@@ -75,6 +75,7 @@ def build_income_dashboard_data(currency: str, fx_network_enabled: bool = False)
             dataframe=totals, figure=_receipts_figure(totals, currency),
         ),
     }
+    datasets["income_allocation"] = _allocation_dataset(monthly, currency)
     missing = months.difference(known_months)
     if not missing.empty:
         datasets["income_missing_months"] = DashboardDataset(
@@ -124,3 +125,31 @@ def _receipts_figure(totals: pd.DataFrame, currency: str) -> go.Figure:
         xaxis=dict(type="date", tickformat="%Y-%m"),
     )
     return figure
+
+
+def _allocation_dataset(monthly: pd.DataFrame, currency: str) -> DashboardDataset:
+    totals = monthly.sum(axis=1, min_count=1)
+    shares = monthly.div(totals.where(totals.gt(0)), axis=0).mul(100)
+    data = monthly.stack(dropna=False).rename("Сумма").to_frame()
+    data["Доля, %"] = shares.stack(dropna=False)
+    data = data.reset_index().rename(columns={"income_source": "Источник"})
+    data["Источник"] = data["Источник"].replace(SOURCE_LABELS)
+    figure = go.Figure()
+    for source in SOURCE_LABELS:
+        figure.add_bar(
+            name=SOURCE_LABELS[source], x=monthly.index, y=shares[source],
+            marker_color=INCOME_SOURCE_COLORS[source],
+            customdata=monthly[[source]].values,
+            hovertemplate=("%{x|%Y-%m}<br>%{y:,.2f}%<br>%{customdata[0]:,.2f} "
+                           + config.UNIQUE_TICKERS[currency] + "<extra>%{fullData.name}</extra>"),
+        )
+    _apply_dashboard_chart_layout(figure, "", range_slider=True)
+    figure.update_layout(
+        barmode="relative", showlegend=True, margin=dict(t=24),
+        yaxis=dict(ticksuffix="%", range=None if shares.lt(0).any().any() else [0, 100]),
+        xaxis=dict(type="date", tickformat="%Y-%m"),
+    )
+    return DashboardDataset(
+        id="income_allocation", title="Аллокация доходов и сбережений по месяцам",
+        dataframe=data, figure=figure,
+    )
