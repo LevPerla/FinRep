@@ -46,6 +46,7 @@ from src.data.staging import (
     read_monthly_transaction_csv,
     read_transaction_drafts,
 )
+from src.dashboard.expense_data import build_expense_dashboard_data
 from src.dashboard.export import ExportBusyError, export_dashboard_page
 from src.dashboard.auth import configure_auth
 from src.dashboard.investment_data import build_investment_dashboard_data
@@ -454,6 +455,13 @@ def create_layout():
                 className="py-2 mb-3",
             ),
             _dashboard_tabs(),
+            html.Div(
+                dbc.Tabs([
+                    dbc.Tab(label="Обзор", tab_id="overview", id={"type": "i18n-tab-label", "key": "report.main.overview"}),
+                    dbc.Tab(label="Расходы", tab_id="expenses", id={"type": "i18n-tab-label", "key": "report.main.expenses"}),
+                ], id="main-report-tabs", active_tab="overview"),
+                id="main-report-navigation", className="mt-3",
+            ),
             dcc.Loading(
                 html.Div(id="dashboard-content", className="py-4"),
                 type="circle",
@@ -482,6 +490,15 @@ def create_layout():
 
 
 def register_callbacks(app: Dash) -> None:
+    app.clientside_callback(
+        """function(click) {
+            const point = click?.points?.[0];
+            return point?.customdata || "";
+        }""",
+        Output("expenses-top-comment", "children"),
+        Input("expenses_total-graph", "clickData", allow_optional=True),
+    )
+
     @app.callback(
         Output("dashboard-locale", "data"),
         Output("dashboard-locale-select", "value"),
@@ -626,6 +643,7 @@ def register_callbacks(app: Dash) -> None:
         Output("dashboard-year", "value"),
         Output("dashboard-month", "value"),
         Output("dashboard-tabs", "active_tab"),
+        Output("main-report-tabs", "active_tab"),
         Input("dashboard-location", "search"),
     )
     def apply_url_state(search: str):
@@ -635,6 +653,11 @@ def register_callbacks(app: Dash) -> None:
         year = params.get("year", [default_year])[0]
         month = params.get("month", [default_month])[0]
         tab = params.get("tab", ["main"])[0]
+        section = params.get("section", ["overview"])[0]
+        if tab == "expenses":  # Keep links from the first release working.
+            tab, section = "main", "expenses"
+        if section not in {"overview", "expenses"}:
+            section = "overview"
         if currency not in config.UNIQUE_TICKERS:
             currency = DEFAULT_CURRENCY
         available_years = set(utils.get_reports_years())
@@ -644,7 +667,14 @@ def register_callbacks(app: Dash) -> None:
             month = default_month
         if tab not in MAIN_DASHBOARD_TAB_IDS:
             tab = "main"
-        return currency, year, month, tab
+        return currency, year, month, tab, section
+
+    @app.callback(
+        Output("main-report-navigation", "style"),
+        Input("dashboard-tabs", "active_tab"),
+    )
+    def show_main_report_navigation(active_tab: str):
+        return {} if active_tab == "main" else {"display": "none"}
 
     @app.callback(
         Output("dashboard-tabs", "active_tab", allow_duplicate=True),
@@ -723,6 +753,7 @@ def register_callbacks(app: Dash) -> None:
         Input("dashboard-year", "value"),
         Input("dashboard-month", "value"),
         Input("dashboard-tabs", "active_tab"),
+        Input("main-report-tabs", "active_tab"),
         Input("dashboard-theme", "data"),
         Input("dashboard-locale", "data"),
         Input("dashboard-refresh-token", "data"),
@@ -730,11 +761,23 @@ def register_callbacks(app: Dash) -> None:
         Input("transaction-save-result", "data"),
         State("crypto-refresh-status", "data"),
     )
-    def render_dashboard_content(currency: str, year: str, month: str, active_tab: str, theme: str, locale: str, refresh_token: int, fx_refresh_clicks: int | None, transaction_save_result: dict | None, crypto_status: dict | None):
+    def render_dashboard_content(currency: str, year: str, month: str, active_tab: str, main_section: str, theme: str, locale: str, refresh_token: int, fx_refresh_clicks: int | None, transaction_save_result: dict | None, crypto_status: dict | None):
         fx_network_enabled = ctx.triggered_id == "refresh-fx-rates" and not config.is_test_mode()
         if fx_network_enabled:
             clear_table_cache()
             clear_main_dashboard_cache()
+
+        if active_tab == "main" and main_section == "expenses":
+            try:
+                datasets = build_expense_dashboard_data(
+                    currency, fx_network_enabled=fx_network_enabled,
+                )
+            except Exception as exc:
+                return _error_state(str(report_text("Не удалось загрузить аналитику расходов.", locale)), exc, locale=locale)
+
+            datasets = localize_report_datasets(datasets, locale)
+            _apply_theme_to_datasets(datasets, theme)
+            return _expense_report_layout(datasets, theme, locale=locale)
 
         if active_tab == "year":
             try:
@@ -861,6 +904,7 @@ def register_callbacks(app: Dash) -> None:
         State("dashboard-year", "value"),
         State("dashboard-month", "value"),
         State("dashboard-tabs", "active_tab"),
+        State("main-report-tabs", "active_tab"),
         State("dashboard-locale", "data"),
         prevent_initial_call=True,
     )
@@ -871,11 +915,14 @@ def register_callbacks(app: Dash) -> None:
         year: str,
         month: str,
         active_tab: str,
+        main_section: str,
         locale: str,
     ):
         if not n_clicks:
             raise PreventUpdate
 
+        if active_tab == "main" and main_section == "expenses":
+            active_tab = "expenses"
         dataset_id = button_id["dataset_id"]
         datasets = _datasets_for_tab(active_tab, currency, year, month)
         if dataset_id not in datasets:
@@ -898,6 +945,7 @@ def register_callbacks(app: Dash) -> None:
         State("dashboard-year", "value"),
         State("dashboard-month", "value"),
         State("dashboard-tabs", "active_tab"),
+        State("main-report-tabs", "active_tab"),
         State("dashboard-locale", "data"),
         prevent_initial_call=True,
     )
@@ -908,6 +956,7 @@ def register_callbacks(app: Dash) -> None:
         year: str,
         month: str,
         active_tab: str,
+        main_section: str,
         locale: str,
     ):
         if not png_clicks and not pdf_clicks:
@@ -916,6 +965,8 @@ def register_callbacks(app: Dash) -> None:
         if config.is_test_mode():
             return no_update, tr("dashboard.export_live_only", locale), "warning", True
 
+        if active_tab == "main" and main_section == "expenses":
+            active_tab = "expenses"
         export_format = "png" if ctx.triggered_id == "export-png" else "pdf"
         try:
             export_path = export_dashboard_page(
@@ -1431,7 +1482,6 @@ def _main_report_layout(
         _graph_section(datasets["fx_revaluation"], height="420px", theme=theme, locale=locale),
         _graph_section(datasets["asset_currency_allocation"], height="520px", theme=theme, locale=locale),
         _graph_section(datasets["fx_changes"], theme=theme, locale=locale),
-        _grid_section(datasets["top_purchases"], height="680px", theme=theme, locale=locale),
     ]
     metrics = datasets["cockpit_metrics"].dataframe
     if metrics.attrs.get("selected_period_available") is False:
@@ -2751,6 +2801,53 @@ def _kaspi_import_column_defs() -> list[dict]:
     ]
 
 
+def _expense_report_layout(datasets: dict[str, DashboardDataset], theme: str, locale: str = DEFAULT_LOCALE):
+    children = [
+        html.H2(report_text("Аналитика расходов", locale), className="h4"),
+        html.P(
+            report_text("Вся история. Год и месяц в панели не ограничивают этот отчёт.", locale),
+            className="small", style={"color": "var(--finrep-muted)"},
+        ),
+    ]
+    if "expenses_empty" in datasets:
+        children.append(html.Div(
+            report_text("Нет расходных операций", locale), id="expenses-empty-state",
+            className="finrep-first-run",
+        ))
+    else:
+        if "expenses_missing_months" in datasets:
+            missing = datasets["expenses_missing_months"]
+            children.append(dbc.Alert(
+                [missing.title + " " + ", ".join(missing.dataframe["Дата"].dt.strftime("%Y-%m")),
+                 html.Div(report_text("Пропуски не считаются нулевыми расходами.", locale))],
+                color="warning", id="expenses-missing-months",
+            ))
+        monthly = datasets["expenses_monthly"]
+        chart = _graph_section(monthly, theme=theme, locale=locale)
+        children.append(chart)
+        allocation = datasets["expenses_allocation"]
+        allocation_chart = _graph_section(allocation, theme=theme, locale=locale)
+        notes = [html.P(report_text("Доли рассчитаны из сумм расходов внутри каждого месяца.", locale))]
+        undefined = allocation.dataframe.loc[allocation.dataframe["Доля, %"].isna(), "Дата"].drop_duplicates()
+        if not undefined.empty:
+            notes.append(html.Div(str(report_text("Доли не определены: итог месяца отсутствует или не положителен.", locale))
+                                  + " " + ", ".join(undefined.dt.strftime("%Y-%m"))))
+        if allocation.dataframe["Доля, %"].lt(0).any():
+            notes.append(html.Div(report_text("Отрицательные доли отражают корректировки расходов.", locale)))
+        allocation_chart.children.insert(1, html.Div(notes, id="expenses-allocation-notes",
+                                                    className="small", style={"color": "var(--finrep-muted)"}))
+        children.append(allocation_chart)
+        total_chart = _graph_section(datasets["expenses_total"], theme=theme, locale=locale)
+        total_chart.children.insert(1, html.P(
+            report_text("Пунктирные линии — топ-15 покупок за всю историю. Наведите курсор или коснитесь линии, чтобы прочитать комментарий.", locale),
+            className="small", style={"color": "var(--finrep-muted)"},
+        ))
+        total_chart.children.append(html.Div(id="expenses-top-comment", role="status",
+                                             style={"whiteSpace": "pre-wrap", "overflowWrap": "anywhere"}))
+        children.extend([total_chart, _grid_section(datasets["top_purchases"], height="680px", theme=theme, locale=locale)])
+    return html.Div(children, className="d-grid gap-3")
+
+
 def _error_state(message: str, exc: Exception, locale: str = DEFAULT_LOCALE):
     return dbc.Alert(
         [
@@ -3056,6 +3153,8 @@ def _datasets_for_tab(
     year: str,
     month: str,
 ) -> dict[str, DashboardDataset]:
+    if active_tab == "expenses":
+        return build_expense_dashboard_data(currency, fx_network_enabled=DEFAULT_FX_NETWORK_ENABLED)
     if active_tab == "year":
         return build_year_dashboard_data(
             year,
@@ -3096,6 +3195,8 @@ def _download_filename(
     month: str,
 ) -> str:
     timestamp = datetime.now().strftime("%Y%m%d")
+    if active_tab == "expenses":
+        return f"expenses_{dataset.id}_{currency}_{timestamp}.xlsx"
     if active_tab == "year":
         return f"year_report_{year}_{dataset.id}_{currency}_{timestamp}.xlsx"
     if active_tab == "month":

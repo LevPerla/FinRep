@@ -77,7 +77,6 @@ def _build_main_dashboard_data(
 
     cockpit_metrics = _cockpit_metrics(balance, currency, year, month)
     yearly_stats = _create_yearly_stats(balance)
-    top_purchases = _top_purchases_data(currency)
     income_expense = balance[["Доход", "Расход"]].reset_index()
     delta = balance[["Дельта"]].reset_index()
     savings_rate = _savings_rate_data(balance)
@@ -108,12 +107,6 @@ def _build_main_dashboard_data(
                 currency,
                 not_money_cols=["Год", "Процент дохода"],
             ),
-        ),
-        "top_purchases": DashboardDataset(
-            id="top_purchases",
-            title="Топ-15 самых больших покупок за всю историю",
-            dataframe=top_purchases,
-            display_dataframe=_format_top_purchases(top_purchases, currency),
         ),
         "fx_rates": DashboardDataset(
             id="fx_rates",
@@ -423,9 +416,15 @@ def _top_purchases_data(currency: str, year: str | None = None, limit: int = 15)
     if not config.DEBUG:
         purchases = convert_transaction(purchases, to_curr=currency, target_col="Значение")
 
+    return _rank_top_purchases(purchases, limit)
+
+
+def _rank_top_purchases(purchases: pd.DataFrame, limit: int = 15) -> pd.DataFrame:
+    """Rank already converted expense operations, retaining their actual dates."""
+    purchases = purchases.copy(deep=True)
     purchases["Значение"] = pd.to_numeric(purchases["Значение"], errors="coerce")
     purchases = purchases[purchases["Значение"].gt(0)]
-    purchases = purchases.sort_values(["Значение", "Дата"], ascending=[False, False]).head(limit).reset_index(drop=True)
+    purchases = purchases.sort_values(["Значение", "Дата"], ascending=[False, False], kind="stable").head(limit).reset_index(drop=True)
     purchases.insert(0, "№", purchases.index + 1)
     return purchases[["№", "Дата", "Категория", "Значение", "Комментарий"]].rename(
         columns={"Значение": "Сумма"}

@@ -61,6 +61,7 @@ def _export_callback_request(app, client, locale="ru"):
             {"id": "dashboard-year", "property": "value", "value": "2026"},
             {"id": "dashboard-month", "property": "value", "value": "05"},
             {"id": "dashboard-tabs", "property": "active_tab", "value": "main"},
+            {"id": "main-report-tabs", "property": "active_tab", "value": "overview"},
             {"id": "dashboard-locale", "property": "data", "value": locale},
         ],
         "changedPropIds": ["export-png.n_clicks"],

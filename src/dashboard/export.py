@@ -16,7 +16,7 @@ from src.dashboard.i18n import DEFAULT_LOCALE, normalize_locale
 EXPORT_VIEWPORT = {"width": 1440, "height": 1200}
 EXPORT_READY_TIMEOUT_MS = 90_000
 EXPORT_SETTLE_MS = 1_000
-EXPORT_TABS = {"main", "year", "month", "planning", "input", "debts", "investments"}
+EXPORT_TABS = {"expenses", "main", "year", "month", "planning", "input", "debts", "investments"}
 _EXPORT_LOCK = Lock()
 
 
@@ -42,7 +42,9 @@ def build_dashboard_url(
     port = int(os.environ.get("PORT") or os.environ.get("FINREP_DASH_PORT", "8050"))
     if not 1 <= port <= 65535:
         raise ValueError("Invalid dashboard server port")
-    params = {"currency": currency, "tab": tab}
+    params = {"currency": currency, "tab": "main" if tab == "expenses" else tab}
+    if tab == "expenses":
+        params["section"] = "expenses"
     if year is not None:
         params["year"] = year
     if month is not None:

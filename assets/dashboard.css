@@ -1220,6 +1220,20 @@ body {
   overflow-x: hidden;
 }
 
+/* Keep space for the native category legend and plot on narrow screens. */
+@media (max-width: 768px) {
+  .finrep-chart-scroll #expenses_monthly-graph,
+  .finrep-chart-scroll #expenses_allocation-graph {
+    height: 640px !important;
+  }
+}
+
+/* Allow annotation hover/tap; the plot itself does not drag, so touch can scroll. */
+#expenses_total-graph .draglayer,
+#expenses_total-graph .nsewdrag {
+  pointer-events: all !important;
+}
+
 .finrep-table-scroll {
   overflow-x: auto;
 }

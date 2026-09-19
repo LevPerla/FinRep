@@ -1,0 +1,269 @@
+import os
+
+import pandas as pd
+import pytest
+
+os.environ.setdefault("FINREP_DASH_PASSWORD", "test-password")
+os.environ.setdefault("FINREP_DASH_SECRET_KEY", "test-session-secret")
+
+from src import config
+from src.dashboard import expense_data
+from src.dashboard.app import _datasets_for_tab, _download_filename, _expense_report_layout, create_app
+from src.dashboard.export import build_dashboard_url
+from src.dashboard.i18n import localize_report_datasets
+from src.data import get_finance, proccess
+from src.model import create_tables
+
+
+def _transactions(rows):
+    return pd.DataFrame(
+        rows, columns=["Дата", "Категория", "Валюта", "Значение"],
+    ).assign(Дата=lambda data: pd.to_datetime(data["Дата"]), Комментарий="")
+
+
+@pytest.fixture
+def source(monkeypatch):
+    monkeypatch.setattr(config, "DEBUG", False)
+
+    def install(rows):
+        data = _transactions(rows)
+        monkeypatch.setattr(expense_data, "get_transactions", lambda: data)
+        return data
+
+    return install
+
+
+def test_monthly_totals_match_main_report_and_preserve_corrections(source, monkeypatch):
+    rows = [("2025-01-01", category, "RUB", 1000) for category in config.NOT_COST_COLS]
+    rows += [
+        ("2025-01-02", "Еда", "RUB", 100.25),
+        ("2025-01-03", "Еда", "RUB", -20.10),
+        ("2025-01-03", "Расход", "RUB", 50),
+        ("2025-02-01", "Доход", "RUB", 1000),
+        ("2025-02-03", "Еда", "RUB", -5),
+    ]
+    original = source(rows)
+    before = original.copy(deep=True)
+    monkeypatch.setattr(create_tables, "get_transactions", lambda: original.copy())
+    monkeypatch.setattr(create_tables, "_get_asset_capital_by_month_cached", lambda *_: pd.DataFrame())
+    main = create_tables._get_balance_by_month_cached.__wrapped__("synthetic", "RUB")
+    dataset = expense_data.build_expense_dashboard_data("rub")["expenses_monthly"]
+    totals = dataset.dataframe.groupby("Дата")["Расход"].sum()
+
+    assert totals.tolist() == pytest.approx([130.15, -5])
+    assert totals.tolist() == pytest.approx(main["Расход"].tolist())
+    assert set(dataset.dataframe["Категория"]) == {"Еда", "Расход"}
+    assert dataset.figure.layout.barmode == "relative"
+    pd.testing.assert_frame_equal(original, before)
+
+
+def test_absent_month_is_not_zero_but_observed_month_without_expenses_is(source):
+    source([
+        ("2014-01-08", "Еда", "RUB", 12),
+        ("2014-02-08", "Доход", "RUB", 100),
+        ("2014-04-08", "Транспорт", "RUB", 5),
+    ])
+    datasets = expense_data.build_expense_dashboard_data("RUB")
+    data = datasets["expenses_monthly"].dataframe.pivot(index="Дата", columns="Категория", values="Расход")
+
+    assert data.loc["2014-02-01"].tolist() == [0, 0]
+    assert data.loc["2014-03-01"].isna().all()
+    assert data.loc["2014-04-01", "Еда"] == 0
+    assert datasets["expenses_missing_months"].dataframe["Дата"].tolist() == [pd.Timestamp("2014-03-01")]
+
+
+@pytest.mark.parametrize("rows", [[], [("2025-01-01", "Доход", "RUB", 500)], [("2025-01-01", "Еда", "RUB", 0)]])
+def test_no_expense_operations_has_explicit_empty_state(source, rows):
+    source(rows)
+    datasets = expense_data.build_expense_dashboard_data("RUB")
+    assert set(datasets) == {"expenses_empty"}
+    layout = _expense_report_layout(datasets, "dark")
+    assert layout.children[-1].id == "expenses-empty-state"
+
+
+@pytest.mark.parametrize("network_enabled", [False, True])
+def test_uses_each_historical_rate_rounds_per_operation_and_scopes_network(source, monkeypatch, network_enabled):
+    source([
+        ("2025-01-01", "Доход", "EUR", 1000),
+        ("2025-01-02", "Еда", "USD", 1.0000625),
+        ("2025-01-02", "Еда", "USD", 1.0000625),
+        ("2025-01-03", "Еда", "USD", 2),
+    ])
+    calls = []
+
+    def rates(**kwargs):
+        calls.append(kwargs)
+        assert get_finance._FX_NETWORK_ENABLED.get() is network_enabled
+        return pd.DataFrame({"USDRUB=X": [80, 90]}, index=pd.DatetimeIndex(["2025-01-02", "2025-01-03"], name="Дата"))
+
+    monkeypatch.setattr(proccess, "get_rates", rates)
+    monkeypatch.setattr(proccess, "get_actual_fx_rate", lambda *_: pytest.fail("Current FX must not be used"))
+    previous_mode = get_finance._FX_NETWORK_ENABLED.get()
+    data = expense_data.build_expense_dashboard_data("RUB", network_enabled)["expenses_monthly"].dataframe
+    assert data["Расход"].tolist() == pytest.approx([340.02])
+    assert len(calls) == 1
+    assert calls[0]["tickers"] == ["USDRUB=X"]
+    assert get_finance._FX_NETWORK_ENABLED.get() is previous_mode
+
+
+def test_missing_fx_does_not_return_partial_or_zero_result(source, monkeypatch):
+    source([("2025-01-02", "Еда", "USD", 1), ("2025-01-02", "Еда", "RUB", 100)])
+    monkeypatch.setattr(proccess, "get_rates", lambda **_: pd.DataFrame())
+    with pytest.raises(ValueError, match="Нет курса USD → RUB"):
+        expense_data.build_expense_dashboard_data("RUB")
+
+
+@pytest.mark.parametrize("currency", list(config.UNIQUE_TICKERS))
+def test_all_supported_currencies_and_twelve_year_history(source, currency):
+    dates = pd.date_range("2014-01-01", periods=144, freq="MS")
+    source([(date, "Еда", currency, index + 1) for index, date in enumerate(dates)])
+    dataset = expense_data.build_expense_dashboard_data(currency)["expenses_monthly"]
+    assert len(dataset.dataframe) == 144
+    assert dataset.dataframe["Расход"].sum() == 10440
+    assert dataset.figure.layout.xaxis.rangeslider.visible is True
+    assert dataset.figure.layout.xaxis.range is None
+    assert dataset.figure.layout.yaxis.title.text == currency
+
+
+def test_export_ignores_toolbar_period_and_localization_keeps_raw_values(source):
+    source([("2014-01-01", "Еда", "RUB", 20), ("2025-01-01", "Еда", "RUB", 30)])
+    datasets = _datasets_for_tab("expenses", "RUB", "2026", "09")
+    dataset = datasets["expenses_monthly"]
+    assert dataset.dataframe["Расход"].sum() == 50
+    assert _download_filename(dataset, "RUB", "expenses", "2026", "09").startswith("expenses_expenses_monthly_RUB_")
+    assert "tab=main&section=expenses" in build_dashboard_url("RUB", "expenses", "2026", "09")
+    translated = localize_report_datasets(datasets, "en")
+    assert translated["expenses_monthly"].title == "Monthly expenses by category"
+    pd.testing.assert_frame_equal(translated["expenses_monthly"].dataframe, dataset.dataframe)
+    layout = _expense_report_layout(translated, "light", locale="en")
+    assert layout.children[0].children == "Expense analytics"
+    assert layout.children[2].children[0].startswith("No data for months:")
+
+
+def test_render_callback_returns_localized_fx_error(source, monkeypatch):
+    source([("2025-01-02", "Еда", "USD", 1)])
+    monkeypatch.setattr(proccess, "get_rates", lambda **_: pd.DataFrame())
+    app = create_app()
+    client = app.server.test_client()
+    client.post("/login", data={"data_mode": "test"})
+    values = ["RUB", "2026", "09", "main", "expenses", "dark", "en", 0, 0, None]
+    callback = app.callback_map["dashboard-content.children"]
+    response = client.post("/_dash-update-component", json={
+        "output": "dashboard-content.children",
+        "outputs": {"id": "dashboard-content", "property": "children"},
+        "inputs": [dict(item, value=value) for item, value in zip(callback["inputs"], values)],
+        "state": [dict(callback["state"][0], value=None)],
+        "changedPropIds": ["dashboard-tabs.active_tab"],
+    })
+    assert response.status_code == 200
+    rendered = response.get_json()["response"]["dashboard-content"]["children"]
+    assert rendered["props"]["color"] == "danger"
+    assert rendered["props"]["children"][0]["props"]["children"] == "Unable to load expense analytics."
+
+
+def test_allocation_uses_each_months_amounts(source):
+    source([
+        ('2024-01-01', 'Еда', 'RUB', 90), ('2024-01-01', 'Жильё', 'RUB', 10),
+        ('2024-02-01', 'Еда', 'RUB', 10), ('2024-02-01', 'Жильё', 'RUB', 890),
+        ('2024-03-01', 'Еда', 'RUB', 200),
+    ])
+    datasets = expense_data.build_expense_dashboard_data('RUB')
+    dataset = datasets['expenses_allocation']
+    allocation = dataset.dataframe.set_index(['Дата', 'Категория'])
+    assert allocation.loc[('2024-01-01', 'Еда'), 'Доля, %'] == 90
+    assert allocation.loc[('2024-02-01', 'Еда'), 'Доля, %'] == pytest.approx(100 / 90)
+    assert allocation.loc[('2024-02-01', 'Жильё'), 'Доля, %'] == pytest.approx(890 / 9)
+    assert allocation.loc[('2024-03-01', 'Еда'), 'Доля, %'] == 100
+    assert allocation.groupby(level=0)['Доля, %'].sum().tolist() == pytest.approx([100, 100, 100])
+    assert allocation.groupby(level=0)['Расход'].sum().tolist() == [100, 900, 200]
+    assert list(dataset.figure.data[0].x) == list(pd.date_range('2024-01-01', periods=3, freq='MS'))
+    translated = localize_report_datasets(datasets, 'en')['expenses_allocation']
+    assert translated.title == 'Monthly expense allocation'
+    pd.testing.assert_frame_equal(translated.dataframe, dataset.dataframe)
+
+
+def test_monthly_allocation_distinguishes_zero_missing_and_negative_totals(source):
+    source([
+        ('2024-01-01', 'Еда', 'RUB', 100), ('2024-01-01', 'Возвраты расходов', 'RUB', -20),
+        ('2024-02-01', 'Доход', 'RUB', 500),
+        ('2024-04-01', 'Еда', 'RUB', -10),
+    ])
+    datasets = expense_data.build_expense_dashboard_data('RUB')
+    allocation = datasets['expenses_allocation'].dataframe.set_index(['Дата', 'Категория'])
+    assert allocation.loc[('2024-01-01', 'Еда'), 'Доля, %'] == 125
+    assert allocation.loc[('2024-01-01', 'Возвраты расходов'), 'Доля, %'] == -25
+    assert allocation.loc[pd.date_range('2024-02-01', periods=3, freq='MS'), 'Доля, %'].isna().all()
+    totals = allocation.groupby(level=0)['Расход'].sum(min_count=1)
+    assert totals.loc['2024-02-01'] == 0
+    assert pd.isna(totals.loc['2024-03-01'])
+    assert totals.loc['2024-04-01'] == -10
+    assert datasets['expenses_allocation'].figure.layout.yaxis.range is None
+
+
+def test_top_purchases_and_annotations_keep_actual_dates_and_global_ranking(source):
+    data = source([
+        (f'2024-02-{day:02d}', 'Еда', 'RUB', day) for day in range(1, 21)
+    ] + [('2024-02-21', 'Еда', 'RUB', -4), ('2024-02-22', 'Доход', 'RUB', 10000)])
+    data['Комментарий'] = [f'Purchase {i}' for i in range(len(data))]
+    datasets = expense_data.build_expense_dashboard_data('RUB')
+    top = datasets['top_purchases'].dataframe
+    assert top['Сумма'].tolist() == list(range(20, 5, -1))
+    assert top['Дата'].dt.day.tolist() == list(range(20, 5, -1))
+    total = datasets['expenses_total']
+    assert total.dataframe['Расход'].tolist() == [206]
+    assert total.dataframe['Дата'].tolist() == [pd.Timestamp('2024-02-29')]
+    assert len(total.figure.data) == 16
+    assert {trace.x[0] for trace in total.figure.data[1:]} == set(top['Дата'])
+    for trace in total.figure.data[1:]:
+        assert trace.hovertemplate == '%{text}<extra></extra>'
+        assert trace.yaxis == 'y2'
+        assert trace.line.dash == 'dot'
+        assert min(trace.y) == 0 and max(trace.y) == 1
+
+
+def test_same_date_annotations_keep_all_comments_and_escape_markup(source):
+    data = source([
+        ('2024-02-12', 'Еда', 'RUB', 30),
+        ('2024-02-12', 'Еда', 'RUB', 20),
+        ('2024-02-12', 'Еда', 'RUB', 10),
+        ('2024-02-12', 'Еда', 'RUB', -5),
+    ])
+    data['Комментарий'] = ['<b>Purchase</b>', 'Second purchase', '', 'refund']
+    datasets = expense_data.build_expense_dashboard_data('RUB')
+    assert len(datasets['top_purchases'].dataframe) == 3
+    figure = datasets['expenses_total'].figure
+    assert len(figure.data) == 2
+    assert figure.data[1].text[0] == '&lt;b&gt;Purchase&lt;/b&gt;<br>Second purchase<br>—'
+    assert figure.data[1].customdata[0] == '<b>Purchase</b>\nSecond purchase\n—'
+
+
+def test_total_expenses_preserve_missing_and_zero_months(source):
+    source([('2024-01-12', 'Еда', 'RUB', 30),
+            ('2024-02-12', 'Доход', 'RUB', 100),
+            ('2024-04-12', 'Еда', 'RUB', -10)])
+    data = expense_data.build_expense_dashboard_data('RUB')['expenses_total']
+    assert data.dataframe['Расход'].iloc[:2].tolist() == [30, 0]
+    assert pd.isna(data.dataframe['Расход'].iloc[2])
+    assert data.dataframe['Расход'].iloc[3] == -10
+    assert data.figure.data[0].connectgaps is False
+
+
+def test_top_ranking_uses_the_same_historical_fx_as_monthly_totals(source, monkeypatch):
+    source([('2024-01-12', 'Еда', 'USD', 2), ('2024-02-12', 'Еда', 'USD', 2),
+            ('2024-03-12', 'Еда', 'RUB', 150)])
+    monkeypatch.setattr(proccess, 'get_rates', lambda **_: pd.DataFrame(
+        {'USDRUB=X': [60, 90]}, index=pd.DatetimeIndex(['2024-01-12', '2024-02-12'], name='Дата')))
+    datasets = expense_data.build_expense_dashboard_data('RUB')
+    assert datasets['top_purchases'].dataframe['Сумма'].tolist() == [180, 150, 120]
+    assert datasets['top_purchases'].dataframe['Дата'].dt.month.tolist() == [2, 3, 1]
+    assert datasets['expenses_total'].dataframe['Расход'].sum() == 450
+    assert datasets['expenses_monthly'].dataframe['Расход'].sum() == 450
+
+
+def test_annotation_comment_is_not_translated_as_interface_text(source):
+    data = source([('2024-01-12', 'Еда', 'RUB', 10)])
+    data['Комментарий'] = 'Доход'
+    datasets = localize_report_datasets(expense_data.build_expense_dashboard_data('RUB'), 'en')
+    annotation = datasets['expenses_total'].figure.data[1]
+    assert annotation.text[0] == 'Доход'
+    assert annotation.customdata[0] == 'Доход'

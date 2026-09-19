@@ -14,6 +14,20 @@ LOCALE_TIMESTAMP_STORAGE_KEY = "dashboard-locale-timestamp"
 DYNAMIC_TRANSLATION_KEYS = frozenset({"dashboard.theme_toggle"})
 
 REPORT_TEXT_EN = {
+    "Суммарные расходы и крупнейшие покупки": "Total expenses and largest purchases",
+    "Пунктирные линии — топ-15 покупок за всю историю. Наведите курсор или коснитесь линии, чтобы прочитать комментарий.": "Dotted lines mark the top 15 purchases over the full history. Hover over or tap a line to read the comment.",
+    "Аллокация расходов по месяцам": "Monthly expense allocation",
+    "Доли рассчитаны из сумм расходов внутри каждого месяца.": "Shares are calculated from expense totals within each month.",
+    "Доли не определены: итог месяца отсутствует или не положителен.": "Shares are undefined: the monthly total is missing or not positive.",
+    "Отрицательные доли отражают корректировки расходов.": "Negative shares reflect expense adjustments.",
+    "Доля, %": "Share, %",
+    "Аналитика расходов": "Expense analytics",
+    "Расходы по категориям за месяц": "Monthly expenses by category",
+    "Вся история. Год и месяц в панели не ограничивают этот отчёт.": "Full history. The year and month controls do not limit this report.",
+    "Нет расходных операций": "No expense transactions",
+    "Нет данных за месяцы:": "No data for months:",
+    "Пропуски не считаются нулевыми расходами.": "Missing months are not treated as zero expenses.",
+    "Не удалось загрузить аналитику расходов.": "Unable to load expense analytics.",
     # Dataset and chart titles.
     "Ключевые метрики": "Key metrics",
     "Итоги по годам": "Yearly totals",
@@ -308,6 +322,8 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "dashboard.locale_label": "Язык интерфейса",
         "dashboard.export_live_only": "PNG/PDF доступны только в LIVE.",
         "nav.primary_label": "Основные разделы",
+        "report.main.overview": "Обзор",
+        "report.main.expenses": "Расходы",
         "nav.main.desktop": "Основной отчет",
         "nav.year.desktop": "Годовой отчет",
         "nav.month.desktop": "Месячный отчет",
@@ -362,6 +378,8 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "dashboard.locale_label": "Interface language",
         "dashboard.export_live_only": "PNG/PDF are available in LIVE only.",
         "nav.primary_label": "Main sections",
+        "report.main.overview": "Overview",
+        "report.main.expenses": "Expenses",
         "nav.main.desktop": "Overview",
         "nav.year.desktop": "Year report",
         "nav.month.desktop": "Month report",
@@ -521,7 +539,9 @@ def localize_figure(figure, locale: str | None):
         if getattr(trace, "hovertemplate", None):
             trace.hovertemplate = report_text(trace.hovertemplate, "en")
         customdata = getattr(trace, "customdata", None)
-        if customdata is not None:
+        meta = getattr(trace, "meta", None)
+        user_comments = isinstance(meta, dict) and meta.get("user_comments")
+        if customdata is not None and not user_comments:
             trace.customdata = _translate_nested_values(customdata)
         header = getattr(trace, "header", None)
         if header is not None and getattr(header, "values", None) is not None:
