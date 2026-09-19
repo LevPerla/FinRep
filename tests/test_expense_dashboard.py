@@ -18,7 +18,7 @@ from src.model import create_tables
 def _transactions(rows):
     return pd.DataFrame(
         rows, columns=["Дата", "Категория", "Валюта", "Значение"],
-    ).assign(Дата=lambda data: pd.to_datetime(data["Дата"]))
+    ).assign(Дата=lambda data: pd.to_datetime(data["Дата"]), Комментарий="")
 
 
 @pytest.fixture
@@ -194,3 +194,72 @@ def test_annual_allocation_distinguishes_zero_missing_and_negative_totals(source
     assert pd.isna(coverage.loc[2023, 'Расход'])
     assert coverage.loc[2024, 'Расход'] == -10
     assert datasets['expenses_allocation'].figure.layout.yaxis.range is None
+
+
+def test_top_purchases_and_annotations_keep_actual_dates_and_global_ranking(source):
+    data = source([
+        (f'2024-02-{day:02d}', 'Еда', 'RUB', day) for day in range(1, 21)
+    ] + [('2024-02-21', 'Еда', 'RUB', -4), ('2024-02-22', 'Доход', 'RUB', 10000)])
+    data['Комментарий'] = [f'Purchase {i}' for i in range(len(data))]
+    datasets = expense_data.build_expense_dashboard_data('RUB')
+    top = datasets['top_purchases'].dataframe
+    assert top['Сумма'].tolist() == list(range(20, 5, -1))
+    assert top['Дата'].dt.day.tolist() == list(range(20, 5, -1))
+    total = datasets['expenses_total']
+    assert total.dataframe['Расход'].tolist() == [206]
+    assert total.dataframe['Дата'].tolist() == [pd.Timestamp('2024-02-29')]
+    assert len(total.figure.data) == 16
+    assert {trace.x[0] for trace in total.figure.data[1:]} == set(top['Дата'])
+    for trace in total.figure.data[1:]:
+        assert trace.hovertemplate == '%{text}<extra></extra>'
+        assert trace.yaxis == 'y2'
+        assert trace.line.dash == 'dot'
+        assert min(trace.y) == 0 and max(trace.y) == 1
+
+
+def test_same_date_annotations_keep_all_comments_and_escape_markup(source):
+    data = source([
+        ('2024-02-12', 'Еда', 'RUB', 30),
+        ('2024-02-12', 'Еда', 'RUB', 20),
+        ('2024-02-12', 'Еда', 'RUB', 10),
+        ('2024-02-12', 'Еда', 'RUB', -5),
+    ])
+    data['Комментарий'] = ['<b>Purchase</b>', 'Second purchase', '', 'refund']
+    datasets = expense_data.build_expense_dashboard_data('RUB')
+    assert len(datasets['top_purchases'].dataframe) == 3
+    figure = datasets['expenses_total'].figure
+    assert len(figure.data) == 2
+    assert figure.data[1].text[0] == '&lt;b&gt;Purchase&lt;/b&gt;<br>Second purchase<br>—'
+    assert figure.data[1].customdata[0] == '<b>Purchase</b>\nSecond purchase\n—'
+
+
+def test_total_expenses_preserve_missing_and_zero_months(source):
+    source([('2024-01-12', 'Еда', 'RUB', 30),
+            ('2024-02-12', 'Доход', 'RUB', 100),
+            ('2024-04-12', 'Еда', 'RUB', -10)])
+    data = expense_data.build_expense_dashboard_data('RUB')['expenses_total']
+    assert data.dataframe['Расход'].iloc[:2].tolist() == [30, 0]
+    assert pd.isna(data.dataframe['Расход'].iloc[2])
+    assert data.dataframe['Расход'].iloc[3] == -10
+    assert data.figure.data[0].connectgaps is False
+
+
+def test_top_ranking_uses_the_same_historical_fx_as_monthly_totals(source, monkeypatch):
+    source([('2024-01-12', 'Еда', 'USD', 2), ('2024-02-12', 'Еда', 'USD', 2),
+            ('2024-03-12', 'Еда', 'RUB', 150)])
+    monkeypatch.setattr(proccess, 'get_rates', lambda **_: pd.DataFrame(
+        {'USDRUB=X': [60, 90]}, index=pd.DatetimeIndex(['2024-01-12', '2024-02-12'], name='Дата')))
+    datasets = expense_data.build_expense_dashboard_data('RUB')
+    assert datasets['top_purchases'].dataframe['Сумма'].tolist() == [180, 150, 120]
+    assert datasets['top_purchases'].dataframe['Дата'].dt.month.tolist() == [2, 3, 1]
+    assert datasets['expenses_total'].dataframe['Расход'].sum() == 450
+    assert datasets['expenses_monthly'].dataframe['Расход'].sum() == 450
+
+
+def test_annotation_comment_is_not_translated_as_interface_text(source):
+    data = source([('2024-01-12', 'Еда', 'RUB', 10)])
+    data['Комментарий'] = 'Доход'
+    datasets = localize_report_datasets(expense_data.build_expense_dashboard_data('RUB'), 'en')
+    annotation = datasets['expenses_total'].figure.data[1]
+    assert annotation.text[0] == 'Доход'
+    assert annotation.customdata[0] == 'Доход'

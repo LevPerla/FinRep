@@ -491,6 +491,15 @@ def create_layout():
 
 def register_callbacks(app: Dash) -> None:
     app.clientside_callback(
+        """function(click) {
+            const point = click?.points?.[0];
+            return point?.customdata || "";
+        }""",
+        Output("expenses-top-comment", "children"),
+        Input("expenses_total-graph", "clickData", allow_optional=True),
+    )
+
+    app.clientside_callback(
         """function(category, figure) {
             if (!figure) return window.dash_clientside.no_update;
             return {...figure,
@@ -1487,7 +1496,6 @@ def _main_report_layout(
         _graph_section(datasets["fx_revaluation"], height="420px", theme=theme, locale=locale),
         _graph_section(datasets["asset_currency_allocation"], height="520px", theme=theme, locale=locale),
         _graph_section(datasets["fx_changes"], theme=theme, locale=locale),
-        _grid_section(datasets["top_purchases"], height="680px", theme=theme, locale=locale),
     ]
     metrics = datasets["cockpit_metrics"].dataframe
     if metrics.attrs.get("selected_period_available") is False:
@@ -2863,6 +2871,14 @@ def _expense_report_layout(datasets: dict[str, DashboardDataset], theme: str, lo
                                                 className="small", style={"color": "var(--finrep-muted)"}))
         annual_chart.children.append(_expense_legend(allocation.figure))
         children.append(annual_chart)
+        total_chart = _graph_section(datasets["expenses_total"], theme=theme, locale=locale)
+        total_chart.children.insert(1, html.P(
+            report_text("Пунктирные линии — топ-15 покупок за всю историю. Наведите курсор или коснитесь линии, чтобы прочитать комментарий.", locale),
+            className="small", style={"color": "var(--finrep-muted)"},
+        ))
+        total_chart.children.append(html.Div(id="expenses-top-comment", role="status",
+                                             style={"whiteSpace": "pre-wrap", "overflowWrap": "anywhere"}))
+        children.extend([total_chart, _grid_section(datasets["top_purchases"], height="680px", theme=theme, locale=locale)])
     return html.Div(children, className="d-grid gap-3")
 
 

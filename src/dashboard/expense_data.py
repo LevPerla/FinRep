@@ -1,9 +1,13 @@
+from html import escape
+
 import pandas as pd
 import plotly.graph_objects as go
 from plotly.colors import qualitative
 
 from src import config
-from src.dashboard.main_data import DashboardDataset, _apply_dashboard_chart_layout
+from src.dashboard.main_data import (
+    DashboardDataset, _apply_dashboard_chart_layout, _format_top_purchases, _rank_top_purchases,
+)
 from src.data.get import get_transactions
 from src.data.get_finance import fx_network_mode
 from src.data.proccess import convert_transaction
@@ -42,9 +46,9 @@ def build_expense_dashboard_data(
         transactions["Дата"].dt.to_period("M").dt.to_timestamp().unique()
     ).sort_values()
     months = pd.date_range(known_months.min(), known_months.max(), freq="MS", name="Дата")
-    expenses["Дата"] = expenses["Дата"].dt.to_period("M").dt.to_timestamp()
     monthly = (
-        expenses.groupby(["Дата", "Категория"])["Значение"]
+        expenses.assign(Дата=expenses["Дата"].dt.to_period("M").dt.to_timestamp())
+        .groupby(["Дата", "Категория"])["Значение"]
         .sum()
         .unstack(fill_value=0)
         .reindex(known_months, fill_value=0)
@@ -80,6 +84,17 @@ def build_expense_dashboard_data(
         ),
     }
     datasets.update(_annual_expense_datasets(monthly, known_months, currency))
+    top_purchases = _rank_top_purchases(expenses)
+    total = pd.DataFrame({"Дата": months + pd.offsets.MonthEnd(0),
+                          "Расход": monthly.sum(axis=1, min_count=1).values})
+    datasets["expenses_total"] = DashboardDataset(
+        id="expenses_total", title="Суммарные расходы и крупнейшие покупки",
+        dataframe=total, figure=_total_expense_figure(total, top_purchases, currency),
+    )
+    datasets["top_purchases"] = DashboardDataset(
+        id="top_purchases", title="Топ-15 самых больших покупок за всю историю",
+        dataframe=top_purchases, display_dataframe=_format_top_purchases(top_purchases, currency),
+    )
     missing_months = months.difference(known_months)
     if not missing_months.empty:
         datasets["expenses_missing_months"] = DashboardDataset(
@@ -88,6 +103,35 @@ def build_expense_dashboard_data(
             dataframe=pd.DataFrame({"Дата": missing_months}),
         )
     return datasets
+
+
+def _total_expense_figure(total, top_purchases, currency):
+    figure = go.Figure(go.Scatter(
+        x=total["Дата"].to_numpy(), y=total["Расход"], mode="lines+markers", name="Расход",
+        connectgaps=False, line=dict(color="#23b8d1", width=2),
+        hovertemplate="%{x|%Y-%m}<br>%{y:,.2f} " + config.UNIQUE_TICKERS[currency] + "<extra></extra>",
+    ))
+    for date, purchases in top_purchases.groupby("Дата", sort=True):
+        comments = [str(value).strip() if pd.notna(value) and str(value).strip() else "—"
+                    for value in purchases["Комментарий"]]
+        # Dense points make the entire vertical line reachable by hover/touch.
+        figure.add_scatter(
+            x=[date] * 41, y=[index / 40 for index in range(41)], yaxis="y2",
+            mode="lines", line=dict(dash="dot", width=2, color="#8b91c7"),
+            text=["<br>".join(escape(comment) for comment in comments)] * 41,
+            customdata=["\n".join(comments)] * 41,
+            meta={"user_comments": True},
+            hovertemplate="%{text}<extra></extra>", showlegend=False,
+        )
+    _apply_dashboard_chart_layout(figure, "", range_slider=True)
+    figure.update_layout(
+        showlegend=False, margin=dict(t=24), hovermode="closest", hoverdistance=16,
+        dragmode=False,
+        yaxis=dict(title=currency),
+        yaxis2=dict(overlaying="y", range=[0, 1], fixedrange=True, visible=False),
+        xaxis=dict(type="date", tickformat="%Y-%m"),
+    )
+    return figure
 
 
 def _annual_expense_datasets(monthly, known_months, currency):

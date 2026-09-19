@@ -14,6 +14,8 @@ LOCALE_TIMESTAMP_STORAGE_KEY = "dashboard-locale-timestamp"
 DYNAMIC_TRANSLATION_KEYS = frozenset({"dashboard.theme_toggle"})
 
 REPORT_TEXT_EN = {
+    "Суммарные расходы и крупнейшие покупки": "Total expenses and largest purchases",
+    "Пунктирные линии — топ-15 покупок за всю историю. Наведите курсор или коснитесь линии, чтобы прочитать комментарий.": "Dotted lines mark the top 15 purchases over the full history. Hover over or tap a line to read the comment.",
     "Аллокация расходов по годам": "Yearly expense allocation",
     "Доли рассчитаны из сумм расходов внутри каждого года.": "Shares are calculated from expense totals within each year.",
     "Неполные годы (месяцев с данными):": "Incomplete years (months with data):",
@@ -541,7 +543,9 @@ def localize_figure(figure, locale: str | None):
         if getattr(trace, "hovertemplate", None):
             trace.hovertemplate = report_text(trace.hovertemplate, "en")
         customdata = getattr(trace, "customdata", None)
-        if customdata is not None:
+        meta = getattr(trace, "meta", None)
+        user_comments = isinstance(meta, dict) and meta.get("user_comments")
+        if customdata is not None and not user_comments:
             trace.customdata = _translate_nested_values(customdata)
         header = getattr(trace, "header", None)
         if header is not None and getattr(header, "values", None) is not None:

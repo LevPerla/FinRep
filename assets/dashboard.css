@@ -1246,6 +1246,12 @@ body {
   border-radius: 2px;
 }
 
+/* Allow annotation hover/tap; the plot itself does not drag, so touch can scroll. */
+#expenses_total-graph .draglayer,
+#expenses_total-graph .nsewdrag {
+  pointer-events: all !important;
+}
+
 .finrep-table-scroll {
   overflow-x: auto;
 }
