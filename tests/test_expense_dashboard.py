@@ -159,3 +159,38 @@ def test_render_callback_returns_localized_fx_error(source, monkeypatch):
     rendered = response.get_json()["response"]["dashboard-content"]["children"]
     assert rendered["props"]["color"] == "danger"
     assert rendered["props"]["children"][0]["props"]["children"] == "Unable to load expense analytics."
+
+
+def test_annual_allocation_uses_annual_amounts_not_mean_monthly_shares(source):
+    source([
+        ('2024-01-01', 'Еда', 'RUB', 90), ('2024-01-01', 'Жильё', 'RUB', 10),
+        ('2024-02-01', 'Еда', 'RUB', 10), ('2024-02-01', 'Жильё', 'RUB', 890),
+        ('2025-01-01', 'Еда', 'RUB', 200),
+    ])
+    datasets = expense_data.build_expense_dashboard_data('RUB')
+    allocation = datasets['expenses_allocation'].dataframe.set_index(['Год', 'Категория'])
+    assert allocation.loc[(2024, 'Еда'), 'Доля, %'] == 10
+    assert allocation.loc[(2024, 'Жильё'), 'Доля, %'] == 90
+    assert allocation.loc[(2025, 'Еда'), 'Доля, %'] == 100
+    assert allocation.groupby(level=0)['Доля, %'].sum().tolist() == [100, 100]
+    coverage = datasets['expenses_year_coverage'].dataframe.set_index('Год')
+    assert coverage['Месяцев с данными'].tolist() == [2, 1]
+    assert coverage['Расход'].tolist() == [1000, 200]
+
+
+def test_annual_allocation_distinguishes_zero_missing_and_negative_totals(source):
+    source([
+        ('2021-01-01', 'Еда', 'RUB', 100), ('2021-01-01', 'Возвраты расходов', 'RUB', -20),
+        ('2022-01-01', 'Доход', 'RUB', 500),
+        ('2024-01-01', 'Еда', 'RUB', -10),
+    ])
+    datasets = expense_data.build_expense_dashboard_data('RUB')
+    annual = datasets['expenses_allocation'].dataframe.set_index(['Год', 'Категория'])
+    assert annual.loc[(2021, 'Еда'), 'Доля, %'] == 125
+    assert annual.loc[(2021, 'Возвраты расходов'), 'Доля, %'] == -25
+    assert annual.loc[[2022, 2023, 2024], 'Доля, %'].isna().all()
+    coverage = datasets['expenses_year_coverage'].dataframe.set_index('Год')
+    assert coverage.loc[2022, 'Расход'] == 0
+    assert pd.isna(coverage.loc[2023, 'Расход'])
+    assert coverage.loc[2024, 'Расход'] == -10
+    assert datasets['expenses_allocation'].figure.layout.yaxis.range is None

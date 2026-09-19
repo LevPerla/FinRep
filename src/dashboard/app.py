@@ -2842,15 +2842,37 @@ def _expense_report_layout(datasets: dict[str, DashboardDataset], theme: str, lo
             html.P(report_text("Выбор категории относится только к этому графику.", locale),
                      className="small mt-2", style={"color": "var(--finrep-muted)"}),
         ], style={"maxWidth": "420px"}))
-        chart.children.append(html.Ul(
-            [html.Li([
-                html.Span(className="finrep-expense-swatch", style={"backgroundColor": trace.marker.color}),
-                html.Span(trace.name),
-            ]) for trace in monthly.figure.data],
-            className="finrep-expense-legend",
-        ))
+        chart.children.append(_expense_legend(monthly.figure))
         children.append(chart)
+        allocation = datasets["expenses_allocation"]
+        annual_chart = _graph_section(allocation, theme=theme, locale=locale)
+        coverage = datasets["expenses_year_coverage"].dataframe
+        notes = [html.P(report_text("Доли рассчитаны из сумм расходов внутри каждого года.", locale))]
+        partial = coverage[coverage["Месяцев с данными"].lt(12)]
+        if not partial.empty:
+            notes.append(html.Div(str(report_text("Неполные годы (месяцев с данными):", locale)) + " " + ", ".join(
+                f"{int(row['Год'])} ({int(row['Месяцев с данными'])}/12)" for _, row in partial.iterrows()
+            )))
+        undefined = coverage.loc[~coverage["Расход"].gt(0), "Год"]
+        if not undefined.empty:
+            notes.append(html.Div(str(report_text("Доли не определены: итог года отсутствует или не положителен.", locale))
+                                  + " " + ", ".join(undefined.astype(str))))
+        if allocation.dataframe["Доля, %"].lt(0).any():
+            notes.append(html.Div(report_text("Отрицательные доли отражают корректировки расходов.", locale)))
+        annual_chart.children.insert(1, html.Div(notes, id="expenses-allocation-notes",
+                                                className="small", style={"color": "var(--finrep-muted)"}))
+        annual_chart.children.append(_expense_legend(allocation.figure))
+        children.append(annual_chart)
     return html.Div(children, className="d-grid gap-3")
+
+
+def _expense_legend(figure):
+    return html.Ul([
+        html.Li([
+            html.Span(className="finrep-expense-swatch", style={"backgroundColor": trace.marker.color}),
+            html.Span(trace.name),
+        ]) for trace in figure.data
+    ], className="finrep-expense-legend")
 
 
 def _error_state(message: str, exc: Exception, locale: str = DEFAULT_LOCALE):

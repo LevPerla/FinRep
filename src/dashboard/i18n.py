@@ -14,6 +14,13 @@ LOCALE_TIMESTAMP_STORAGE_KEY = "dashboard-locale-timestamp"
 DYNAMIC_TRANSLATION_KEYS = frozenset({"dashboard.theme_toggle"})
 
 REPORT_TEXT_EN = {
+    "Аллокация расходов по годам": "Yearly expense allocation",
+    "Доли рассчитаны из сумм расходов внутри каждого года.": "Shares are calculated from expense totals within each year.",
+    "Неполные годы (месяцев с данными):": "Incomplete years (months with data):",
+    "Доли не определены: итог года отсутствует или не положителен.": "Shares are undefined: the annual total is missing or not positive.",
+    "Отрицательные доли отражают корректировки расходов.": "Negative shares reflect expense adjustments.",
+    "Доля, %": "Share, %",
+    "Месяцев с данными": "Months with data",
     "Все категории": "All categories",
     "Выбор категории относится только к этому графику.": "Category selection applies only to this chart.",
     "Аналитика расходов": "Expense analytics",
