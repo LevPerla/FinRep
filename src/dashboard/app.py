@@ -2826,23 +2826,17 @@ def _expense_report_layout(datasets: dict[str, DashboardDataset], theme: str, lo
         chart = _graph_section(monthly, theme=theme, locale=locale)
         children.append(chart)
         allocation = datasets["expenses_allocation"]
-        annual_chart = _graph_section(allocation, theme=theme, locale=locale)
-        coverage = datasets["expenses_year_coverage"].dataframe
-        notes = [html.P(report_text("Доли рассчитаны из сумм расходов внутри каждого года.", locale))]
-        partial = coverage[coverage["Месяцев с данными"].lt(12)]
-        if not partial.empty:
-            notes.append(html.Div(str(report_text("Неполные годы (месяцев с данными):", locale)) + " " + ", ".join(
-                f"{int(row['Год'])} ({int(row['Месяцев с данными'])}/12)" for _, row in partial.iterrows()
-            )))
-        undefined = coverage.loc[~coverage["Расход"].gt(0), "Год"]
+        allocation_chart = _graph_section(allocation, theme=theme, locale=locale)
+        notes = [html.P(report_text("Доли рассчитаны из сумм расходов внутри каждого месяца.", locale))]
+        undefined = allocation.dataframe.loc[allocation.dataframe["Доля, %"].isna(), "Дата"].drop_duplicates()
         if not undefined.empty:
-            notes.append(html.Div(str(report_text("Доли не определены: итог года отсутствует или не положителен.", locale))
-                                  + " " + ", ".join(undefined.astype(str))))
+            notes.append(html.Div(str(report_text("Доли не определены: итог месяца отсутствует или не положителен.", locale))
+                                  + " " + ", ".join(undefined.dt.strftime("%Y-%m"))))
         if allocation.dataframe["Доля, %"].lt(0).any():
             notes.append(html.Div(report_text("Отрицательные доли отражают корректировки расходов.", locale)))
-        annual_chart.children.insert(1, html.Div(notes, id="expenses-allocation-notes",
-                                                className="small", style={"color": "var(--finrep-muted)"}))
-        children.append(annual_chart)
+        allocation_chart.children.insert(1, html.Div(notes, id="expenses-allocation-notes",
+                                                    className="small", style={"color": "var(--finrep-muted)"}))
+        children.append(allocation_chart)
         total_chart = _graph_section(datasets["expenses_total"], theme=theme, locale=locale)
         total_chart.children.insert(1, html.P(
             report_text("Пунктирные линии — топ-15 покупок за всю историю. Наведите курсор или коснитесь линии, чтобы прочитать комментарий.", locale),

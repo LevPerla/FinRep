@@ -83,7 +83,7 @@ def build_expense_dashboard_data(
             id="expenses_monthly", title=title, dataframe=data, figure=figure,
         ),
     }
-    datasets.update(_annual_expense_datasets(monthly, known_months, currency))
+    datasets["expenses_allocation"] = _expense_allocation_dataset(monthly, currency)
     top_purchases = _rank_top_purchases(expenses)
     total = pd.DataFrame({"Дата": months + pd.offsets.MonthEnd(0),
                           "Расход": monthly.sum(axis=1, min_count=1).values})
@@ -134,40 +134,28 @@ def _total_expense_figure(total, top_purchases, currency):
     return figure
 
 
-def _annual_expense_datasets(monthly, known_months, currency):
-    annual = monthly.groupby(monthly.index.year).sum(min_count=1)
-    annual.index.name = "Год"
-    totals = annual.sum(axis=1, min_count=1)
-    shares = annual.div(totals.where(totals.gt(0)), axis=0).mul(100)
-    coverage = pd.Series(known_months.year).value_counts().reindex(annual.index, fill_value=0)
-    data = annual.stack(dropna=False).rename("Расход").to_frame()
+def _expense_allocation_dataset(monthly, currency):
+    totals = monthly.sum(axis=1, min_count=1)
+    shares = monthly.div(totals.where(totals.gt(0)), axis=0).mul(100)
+    data = monthly.stack(dropna=False).rename("Расход").to_frame()
     data["Доля, %"] = shares.stack(dropna=False)
     data = data.reset_index()
-    data["Месяцев с данными"] = data["Год"].map(coverage)
-    dates = pd.to_datetime(annual.index.astype(str) + "-01-01")
     figure = go.Figure()
-    for index, category in enumerate(annual.columns):
+    for index, category in enumerate(monthly.columns):
         figure.add_bar(
-            name=category, x=dates, y=shares[category],
+            name=category, x=monthly.index, y=shares[category],
             marker_color=qualitative.Dark24[index % len(qualitative.Dark24)],
-            customdata=annual[[category]].values,
-            hovertemplate=("%{x|%Y}<br>%{y:,.2f}%<br>%{customdata[0]:,.2f} "
+            customdata=monthly[[category]].values,
+            hovertemplate=("%{x|%Y-%m}<br>%{y:,.2f}%<br>%{customdata[0]:,.2f} "
                            + config.UNIQUE_TICKERS[currency] + "<extra>%{fullData.name}</extra>"),
         )
     _apply_dashboard_chart_layout(figure, "", range_slider=True)
     figure.update_layout(
         barmode="relative", showlegend=True, margin=dict(t=24),
         yaxis=dict(ticksuffix="%", range=None if shares.lt(0).any().any() else [0, 100]),
-        xaxis=dict(type="date", tickformat="%Y", dtick="M12"),
+        xaxis=dict(type="date", tickformat="%Y-%m"),
     )
-    return {
-        "expenses_allocation": DashboardDataset(
-            id="expenses_allocation", title="Аллокация расходов по годам",
-            dataframe=data, figure=figure,
-        ),
-        "expenses_year_coverage": DashboardDataset(
-            id="expenses_year_coverage", title="Полнота годовых данных",
-            dataframe=pd.DataFrame({"Год": annual.index, "Месяцев с данными": coverage.values,
-                                    "Расход": totals.values}),
-        ),
-    }
+    return DashboardDataset(
+        id="expenses_allocation", title="Аллокация расходов по месяцам",
+        dataframe=data, figure=figure,
+    )
