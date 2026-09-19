@@ -12,6 +12,12 @@ EXPENSE_CATEGORY_COLORS = dict(zip((
     "Быт и товары для дома", "Жилье", "На себя", "Одежда", "Пища",
     "Поездки", "Прочее", "Связь", "Соц.жизнь", "Транспорт",
 ), CATEGORY_PALETTE))
+INCOME_SOURCE_COLORS = {
+    "salary": "#7899BC",
+    "deposit_interest": "#83AD91",
+    "unknown": "#8794A5",
+    "savings": "#B7AD75",
+}
 
 
 def expense_category_color(category: str) -> str:

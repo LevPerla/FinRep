@@ -82,7 +82,7 @@ def test_local_dash_request_and_fixed_stylesheet_policy():
     page.fetch.assert_not_called()
 
 
-@pytest.mark.parametrize('section,expected_tab', [('overview','main'), ('expenses','expenses')])
+@pytest.mark.parametrize('section,expected_tab', [('overview','main'), ('expenses','expenses'), ('income','income')])
 def test_callback_has_no_client_url_and_ignores_host(monkeypatch, tmp_path, section, expected_tab):
     from src.dashboard.app import create_app
     import importlib

@@ -47,6 +47,7 @@ from src.data.staging import (
     read_transaction_drafts,
 )
 from src.dashboard.expense_data import build_expense_dashboard_data
+from src.dashboard.income_data import build_income_dashboard_data
 from src.dashboard.export import ExportBusyError, export_dashboard_page
 from src.dashboard.auth import configure_auth
 from src.dashboard.investment_data import build_investment_dashboard_data
@@ -461,6 +462,7 @@ def create_layout():
                 dbc.Tabs([
                     dbc.Tab(label="Обзор", tab_id="overview", id={"type": "i18n-tab-label", "key": "report.main.overview"}),
                     dbc.Tab(label="Расходы", tab_id="expenses", id={"type": "i18n-tab-label", "key": "report.main.expenses"}),
+                    dbc.Tab(label="Доходы", tab_id="income", id={"type": "i18n-tab-label", "key": "report.main.income"}),
                 ], id="main-report-tabs", active_tab="overview"),
                 id="main-report-navigation", className="mt-3",
             ),
@@ -699,7 +701,7 @@ def register_callbacks(app: Dash) -> None:
         section = params.get("section", ["overview"])[0]
         if tab == "expenses":  # Keep links from the first release working.
             tab, section = "main", "expenses"
-        if section not in {"overview", "expenses"}:
+        if section not in {"overview", "expenses", "income"}:
             section = "overview"
         if currency not in config.UNIQUE_TICKERS:
             currency = DEFAULT_CURRENCY
@@ -832,6 +834,18 @@ def register_callbacks(app: Dash) -> None:
             datasets = localize_report_datasets(datasets, locale)
             _apply_theme_to_datasets(datasets, theme)
             return finish(_expense_report_layout(datasets, theme, locale=locale))
+
+        if active_tab == "main" and main_section == "income":
+            try:
+                datasets = build_income_dashboard_data(
+                    currency, fx_network_enabled=fx_network_enabled,
+                )
+            except Exception as exc:
+                return finish(_error_state(str(report_text("Не удалось загрузить аналитику доходов.", locale)), exc, locale=locale))
+
+            datasets = localize_report_datasets(datasets, locale)
+            _apply_theme_to_datasets(datasets, theme)
+            return finish(_income_report_layout(datasets, theme, locale=locale))
 
         if active_tab == "year":
             try:
@@ -975,8 +989,8 @@ def register_callbacks(app: Dash) -> None:
         if not n_clicks:
             raise PreventUpdate
 
-        if active_tab == "main" and main_section == "expenses":
-            active_tab = "expenses"
+        if active_tab == "main" and main_section in {"expenses", "income"}:
+            active_tab = main_section
         dataset_id = button_id["dataset_id"]
         datasets = _datasets_for_tab(active_tab, currency, year, month)
         if dataset_id not in datasets:
@@ -1019,8 +1033,8 @@ def register_callbacks(app: Dash) -> None:
         if config.is_test_mode():
             return no_update, tr("dashboard.export_live_only", locale), "warning", True
 
-        if active_tab == "main" and main_section == "expenses":
-            active_tab = "expenses"
+        if active_tab == "main" and main_section in {"expenses", "income"}:
+            active_tab = main_section
         export_format = "png" if ctx.triggered_id == "export-png" else "pdf"
         try:
             export_path = export_dashboard_page(
@@ -2902,6 +2916,36 @@ def _expense_report_layout(datasets: dict[str, DashboardDataset], theme: str, lo
     return html.Div(children, className="d-grid gap-3")
 
 
+def _income_report_layout(datasets: dict[str, DashboardDataset], theme: str, locale: str = DEFAULT_LOCALE):
+    children = [
+        html.H2(report_text("Аналитика доходов", locale), className="h4"),
+        html.P(
+            report_text("Вся история. Год и месяц в панели не ограничивают этот отчёт.", locale),
+            className="small", style={"color": "var(--finrep-muted)"},
+        ),
+    ]
+    if "income_empty" in datasets:
+        children.append(html.Div(
+            report_text("Нет поступлений", locale), id="income-empty-state",
+            className="finrep-first-run",
+        ))
+    else:
+        if "income_missing_months" in datasets:
+            missing = datasets["income_missing_months"]
+            children.append(dbc.Alert(
+                [missing.title + " " + ", ".join(missing.dataframe["Дата"].dt.strftime("%Y-%m")),
+                 html.Div(report_text("Пропуски не считаются нулевыми поступлениями.", locale))],
+                color="warning", id="income-missing-months",
+            ))
+        children.append(html.P(
+            report_text("Источник определяется по комментарию; нераспознанный доход остаётся в отдельной группе.", locale),
+            className="small", style={"color": "var(--finrep-muted)"},
+        ))
+        children.append(_graph_section(datasets["income_sources_monthly"], theme=theme, locale=locale))
+        children.append(_graph_section(datasets["income_receipts_monthly"], theme=theme, locale=locale))
+    return html.Div(children, className="d-grid gap-3")
+
+
 def _error_state(message: str, exc: Exception, locale: str = DEFAULT_LOCALE):
     return dbc.Alert(
         [
@@ -3209,6 +3253,8 @@ def _datasets_for_tab(
 ) -> dict[str, DashboardDataset]:
     if active_tab == "expenses":
         return build_expense_dashboard_data(currency, fx_network_enabled=DEFAULT_FX_NETWORK_ENABLED)
+    if active_tab == "income":
+        return build_income_dashboard_data(currency, fx_network_enabled=DEFAULT_FX_NETWORK_ENABLED)
     if active_tab == "year":
         return build_year_dashboard_data(
             year,
@@ -3251,6 +3297,8 @@ def _download_filename(
     timestamp = datetime.now().strftime("%Y%m%d")
     if active_tab == "expenses":
         return f"expenses_{dataset.id}_{currency}_{timestamp}.xlsx"
+    if active_tab == "income":
+        return f"income_{dataset.id}_{currency}_{timestamp}.xlsx"
     if active_tab == "year":
         return f"year_report_{year}_{dataset.id}_{currency}_{timestamp}.xlsx"
     if active_tab == "month":
