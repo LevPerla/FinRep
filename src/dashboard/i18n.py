@@ -14,6 +14,8 @@ LOCALE_TIMESTAMP_STORAGE_KEY = "dashboard-locale-timestamp"
 DYNAMIC_TRANSLATION_KEYS = frozenset({"dashboard.theme_toggle"})
 
 REPORT_TEXT_EN = {
+    "Все категории": "All categories",
+    "Выбор категории относится только к этому графику.": "Category selection applies only to this chart.",
     "Аналитика расходов": "Expense analytics",
     "Расходы по категориям за месяц": "Monthly expenses by category",
     "Вся история. Год и месяц в панели не ограничивают этот отчёт.": "Full history. The year and month controls do not limit this report.",

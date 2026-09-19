@@ -490,6 +490,20 @@ def create_layout():
 
 
 def register_callbacks(app: Dash) -> None:
+    app.clientside_callback(
+        """function(category, figure) {
+            if (!figure) return window.dash_clientside.no_update;
+            return {...figure,
+                data: figure.data.map(trace => ({...trace,
+                    visible: category == null || trace.name === category})),
+                layout: {...figure.layout, yaxis: {...figure.layout.yaxis, autorange: true}}
+            };
+        }""",
+        Output("expenses_monthly-graph", "figure"),
+        Input("expenses-category", "value", allow_optional=True),
+        State("expenses_monthly-graph", "figure", allow_optional=True),
+    )
+
     @app.callback(
         Output("dashboard-locale", "data"),
         Output("dashboard-locale-select", "value"),
@@ -2816,6 +2830,18 @@ def _expense_report_layout(datasets: dict[str, DashboardDataset], theme: str, lo
             ))
         monthly = datasets["expenses_monthly"]
         chart = _graph_section(monthly, theme=theme, locale=locale)
+        chart.children.insert(1, html.Div([
+            html.Label(report_text("Категория", locale), htmlFor="expenses-category", className="small mb-2"),
+            dcc.Dropdown(
+                id="expenses-category",
+                options=[{"label": trace.name, "value": trace.name} for trace in monthly.figure.data],
+                value=None, clearable=True,
+                placeholder=report_text("Все категории", locale),
+                className="dashboard-filter",
+            ),
+            html.P(report_text("Выбор категории относится только к этому графику.", locale),
+                     className="small mt-2", style={"color": "var(--finrep-muted)"}),
+        ], style={"maxWidth": "420px"}))
         chart.children.append(html.Ul(
             [html.Li([
                 html.Span(className="finrep-expense-swatch", style={"backgroundColor": trace.marker.color}),
