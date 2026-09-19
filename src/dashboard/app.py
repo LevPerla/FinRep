@@ -309,7 +309,7 @@ def create_layout():
             dcc.Store(id="dashboard-locale", data=DEFAULT_LOCALE, storage_type="local"),
             dcc.Store(id="dashboard-document-locale", data=DEFAULT_LOCALE),
             dcc.Store(id="dashboard-refresh-token", data=0),
-            dcc.Store(id="transaction-save-result", storage_type="session"),
+            dcc.Store(id="transaction-save-result", storage_type="memory"),
             dcc.Store(
                 id="transaction-add-request-id",
                 data=uuid4().hex,
