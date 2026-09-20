@@ -12,7 +12,6 @@ from src.data.sqlite_store import (
     add_asset_snapshot,
     add_cash_transaction,
     add_category,
-    add_income_type,
     asset_snapshots,
     cash_transactions,
     connect_database,
@@ -22,6 +21,24 @@ from src.data.sqlite_store import (
     saved_asset_months,
     saved_months,
 )
+
+
+def test_initial_categories_match_the_agreed_income_and_expense_lists(tmp_path):
+    database = tmp_path / "synthetic.sqlite3"
+    initialize_database(database)
+    with connect_database(database) as connection:
+        rows = connection.execute(
+            "SELECT direction, name_ru FROM categories WHERE active = 1 ORDER BY name_ru"
+        ).fetchall()
+    names = {
+        direction: {row["name_ru"] for row in rows if row["direction"] == direction}
+        for direction in ("income", "expense")
+    }
+    assert names["income"] == {"Зарплата", "Проценты", "Инвест доход", "Прочие доходы"}
+    assert names["expense"] == {
+        "Быт и товары для дома", "На себя", "Одежда", "Пища", "Поездки",
+        "Прочее", "Связь", "Развлечения", "Соц жизнь", "Транспорт",
+    }
 
 
 def test_sample_values_round_trip_without_touching_csv(tmp_path):
@@ -40,13 +57,13 @@ def test_sample_values_round_trip_without_touching_csv(tmp_path):
     save_month(database, "2025-02")  # A saved month may have no nonzero operation.
     add_cash_transaction(
         database, transaction_id="one", period="2025-01", occurred_on="2025-01-03",
-        category_id="flow.income", amount=amount, currency=currency,
-        comment=comment, income_type_id="salary",
+        category_id="income.salary", amount=amount, currency=currency,
+        comment=comment,
     )
     add_cash_transaction(
         database, transaction_id="two", period="2025-01", occurred_on="2025-01-03",
-        category_id="flow.income", amount=amount, currency=currency,
-        comment=comment, income_type_id="salary",
+        category_id="income.salary", amount=amount, currency=currency,
+        comment=comment,
     )
     add_asset_account(database, "account-1", account_row["Счет"], asset_currency)
     save_asset_month(database, "2025-01")
@@ -63,30 +80,37 @@ def test_sample_values_round_trip_without_touching_csv(tmp_path):
     ]
     assert asset_snapshots(database)[0]["amount"] == Decimal(asset_amount)
     with connect_database(database) as connection:
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 1
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 2
         assert connection.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
         assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
 
 
-def test_new_income_requires_selectable_type_and_expenses_have_none(tmp_path):
+def test_transaction_sign_determines_income_or_expense_category(tmp_path):
     database = tmp_path / "synthetic.sqlite3"
     initialize_database(database)
-    add_category(database, "expense.demo", "Демо расход")
-    add_income_type(database, "custom", "Новый тип", "passive")
+    add_category(database, "income.custom", "Новый доход", direction="income", activity_class="passive")
     common = dict(
         path=database, transaction_id="tx", period="2026-01",
-        occurred_on="2026-01-01", amount="-0.001", currency="RUB",
+        occurred_on="2026-01-01", currency="RUB",
     )
 
-    with pytest.raises(ValueError, match="active income type"):
-        add_cash_transaction(**common, category_id="flow.income", income_type_id="unknown")
-    with pytest.raises(ValueError, match="only valid for income"):
-        add_cash_transaction(**common, category_id="expense.demo", income_type_id="custom")
-    add_cash_transaction(**common, category_id="flow.income", income_type_id="custom")
-    assert cash_transactions(database)[0]["amount"] == Decimal("-0.001")
+    with pytest.raises(ValueError, match="active category"):
+        add_cash_transaction(**common, category_id="income.unknown", amount="0.001")
+    with pytest.raises(ValueError, match="sign must match"):
+        add_cash_transaction(**common, category_id="expense.food", amount="0.001")
+    with pytest.raises(ValueError, match="sign must match"):
+        add_cash_transaction(**common, category_id="income.investment", amount="-0.001")
+    add_cash_transaction(**common, category_id="income.custom", amount="0.001")
+    add_cash_transaction(**{**common, "transaction_id": "loss"},
+                         category_id="expense.other", amount="-0.001")
+    rows = {row["id"]: row for row in cash_transactions(database)}
+    assert rows["tx"]["amount"] == Decimal("0.001")
+    assert rows["tx"]["activity_class"] == "passive"
+    assert rows["loss"]["amount"] == Decimal("-0.001")
+    assert rows["loss"]["direction"] == "expense"
     assert saved_months(database) == ["2026-01"]
     with pytest.raises(sqlite3.IntegrityError):
-        add_cash_transaction(**common, category_id="flow.income", income_type_id="custom")
+        add_cash_transaction(**common, category_id="income.custom", amount="0.001")
 
 
 def test_foreign_keys_are_enforced_on_every_connection(tmp_path):

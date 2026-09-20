@@ -16,7 +16,7 @@ from src import config
 from src.data.money import parse_money_amount
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 _SCHEMA = (
     """CREATE TABLE schema_meta (
@@ -26,26 +26,17 @@ _SCHEMA = (
     )""",
     """CREATE TABLE categories (
         id TEXT PRIMARY KEY,
-        financial_kind TEXT NOT NULL CHECK (financial_kind IN (
-            'income', 'other_inflow', 'expense', 'receivable_open', 'receivable_repay',
-            'liability_open', 'liability_repay', 'investment_legacy'
-        )),
+        direction TEXT NOT NULL CHECK (direction IN ('income', 'expense')),
         name_ru TEXT NOT NULL CHECK (name_ru <> ''),
         name_en TEXT,
-        active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0, 1))
+        active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0, 1)),
+        activity_class TEXT CHECK (activity_class IN ('active', 'passive', 'unclassified')),
+        CHECK ((direction = 'income' AND activity_class IS NOT NULL)
+            OR (direction = 'expense' AND activity_class IS NULL))
     )""",
     """CREATE TABLE category_aliases (
         legacy_name TEXT PRIMARY KEY,
         category_id TEXT NOT NULL REFERENCES categories(id)
-    )""",
-    """CREATE TABLE income_types (
-        id TEXT PRIMARY KEY,
-        name_ru TEXT NOT NULL CHECK (name_ru <> ''),
-        name_en TEXT,
-        activity_class TEXT NOT NULL CHECK (activity_class IN ('active', 'passive', 'unclassified')),
-        archived INTEGER NOT NULL DEFAULT 0 CHECK (archived IN (0, 1)),
-        CHECK ((id = 'unknown' AND activity_class = 'unclassified' AND archived = 1)
-            OR (id <> 'unknown' AND activity_class IN ('active', 'passive')))
     )""",
     """CREATE TABLE months (
         period TEXT PRIMARY KEY,
@@ -60,7 +51,6 @@ _SCHEMA = (
         amount_text TEXT NOT NULL CHECK (amount_text <> ''),
         currency TEXT NOT NULL CHECK (currency <> ''),
         comment TEXT NOT NULL DEFAULT '',
-        income_type_id TEXT REFERENCES income_types(id),
         classification_method TEXT,
         source TEXT,
         source_id TEXT,
@@ -83,20 +73,21 @@ _SCHEMA = (
 )
 
 _SYSTEM_CATEGORIES = (
-    ("flow.income", "income", "Доход"),
-    ("flow.other_inflow", "other_inflow", "Сбережения"),
-    ("flow.receivable_open", "receivable_open", "Дебиторская задолженность"),
-    ("flow.receivable_repay", "receivable_repay", "Погашение деб. зад."),
-    ("flow.liability_open", "liability_open", "Кредиторская задолженность"),
-    ("flow.liability_repay", "liability_repay", "Погашение кред. зад."),
-    ("flow.investment_legacy", "investment_legacy", "Инвестиции"),
-)
-
-_INITIAL_INCOME_TYPES = (
-    ("salary", "Зарплата", "active", 0),
-    ("deposit_interest", "Проценты по депозиту", "passive", 0),
-    ("other_income", "Прочий доход", "active", 0),
-    ("unknown", "Не определено", "unclassified", 1),
+    ("income.salary", "income", "Зарплата", 1, "active"),
+    ("income.interest", "income", "Проценты", 1, "passive"),
+    ("income.investment", "income", "Инвест доход", 1, "passive"),
+    ("income.other", "income", "Прочие доходы", 1, "active"),
+    ("income.unknown", "income", "Доход без категории", 0, "unclassified"),
+    ("expense.home_goods", "expense", "Быт и товары для дома", 1, None),
+    ("expense.personal", "expense", "На себя", 1, None),
+    ("expense.clothing", "expense", "Одежда", 1, None),
+    ("expense.food", "expense", "Пища", 1, None),
+    ("expense.travel", "expense", "Поездки", 1, None),
+    ("expense.other", "expense", "Прочее", 1, None),
+    ("expense.communication", "expense", "Связь", 1, None),
+    ("expense.entertainment_legacy", "expense", "Развлечения", 1, None),
+    ("expense.social", "expense", "Соц жизнь", 1, None),
+    ("expense.transport", "expense", "Транспорт", 1, None),
 )
 
 
@@ -146,12 +137,9 @@ def initialize_database(path: str | Path) -> None:
             "INSERT INTO schema_meta VALUES (1, ?, ?)", (SCHEMA_VERSION, uuid4().hex)
         )
         connection.executemany(
-            "INSERT INTO categories (id, financial_kind, name_ru) VALUES (?, ?, ?)",
+            "INSERT INTO categories (id, direction, name_ru, active, activity_class) "
+            "VALUES (?, ?, ?, ?, ?)",
             _SYSTEM_CATEGORIES,
-        )
-        connection.executemany(
-            "INSERT INTO income_types (id, name_ru, activity_class, archived) VALUES (?, ?, ?, ?)",
-            _INITIAL_INCOME_TYPES,
         )
         connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
 
@@ -188,35 +176,29 @@ def saved_months(path: str | Path) -> list[str]:
         )]
 
 
-def add_category(path: str | Path, category_id: str, name_ru: str) -> None:
-    """Add a user expense category without deriving its ID from its label."""
+def add_category(
+    path: str | Path, category_id: str, name_ru: str, *,
+    direction: str = "expense", activity_class: str | None = None,
+) -> None:
+    """Add a user category without deriving its ID from its label."""
     if not category_id or not name_ru.strip():
         raise ValueError("category ID and name are required")
+    if direction not in {"income", "expense"}:
+        raise ValueError("category direction must be income or expense")
+    if (direction == "income" and activity_class not in {"active", "passive"}) or (
+        direction == "expense" and activity_class is not None
+    ):
+        raise ValueError("activity class belongs only to income categories")
     with connect_database(path, writable=True) as connection:
         connection.execute(
-            "INSERT INTO categories (id, financial_kind, name_ru) VALUES (?, 'expense', ?)",
-            (category_id, name_ru.strip()),
-        )
-
-
-def add_income_type(
-    path: str | Path, income_type_id: str, name_ru: str, activity_class: str,
-) -> None:
-    if not income_type_id or income_type_id == "unknown" or not name_ru.strip():
-        raise ValueError("selectable income type needs an ID and name")
-    if activity_class not in {"active", "passive"}:
-        raise ValueError("selectable income type must be active or passive")
-    with connect_database(path, writable=True) as connection:
-        connection.execute(
-            "INSERT INTO income_types (id, name_ru, activity_class) VALUES (?, ?, ?)",
-            (income_type_id, name_ru.strip(), activity_class),
+            "INSERT INTO categories (id, direction, name_ru, activity_class) VALUES (?, ?, ?, ?)",
+            (category_id, direction, name_ru.strip(), activity_class),
         )
 
 
 def add_cash_transaction(
     path: str | Path, *, transaction_id: str, period: str, occurred_on: str,
     category_id: str, amount, currency: str, comment: str = "",
-    income_type_id: str | None = None,
 ) -> None:
     if not transaction_id:
         raise ValueError("transaction ID is required")
@@ -231,22 +213,19 @@ def add_cash_transaction(
     if currency not in config.UNIQUE_TICKERS:
         raise ValueError("unsupported currency")
     amount_text = _amount_text(amount)
-    if Decimal(amount_text) == 0:
+    signed_amount = Decimal(amount_text)
+    if signed_amount == 0:
         raise ValueError("zero cells are represented by the saved month, not transactions")
     with connect_database(path, writable=True) as connection:
         category = connection.execute(
-            "SELECT financial_kind FROM categories WHERE id = ?", (category_id,)
+            "SELECT direction, active FROM categories WHERE id = ?", (category_id,)
         ).fetchone()
-        if category is None:
-            raise ValueError("unknown category")
-        if category[0] == "income":
-            income_type = connection.execute(
-                "SELECT archived FROM income_types WHERE id = ?", (income_type_id,)
-            ).fetchone()
-            if income_type is None or income_type[0]:
-                raise ValueError("new income needs an active income type")
-        elif income_type_id is not None:
-            raise ValueError("income type is only valid for income")
+        if category is None or not category[1]:
+            raise ValueError("new transaction needs an active category")
+        if (signed_amount > 0 and category[0] != "income") or (
+            signed_amount < 0 and category[0] != "expense"
+        ):
+            raise ValueError("transaction sign must match category direction")
         connection.execute(
             "INSERT INTO months (period, transactions_saved) VALUES (?, 1) "
             "ON CONFLICT(period) DO UPDATE SET transactions_saved = 1",
@@ -254,17 +233,19 @@ def add_cash_transaction(
         )
         connection.execute(
             """INSERT INTO cash_transactions
-               (id, period, occurred_on, category_id, amount_text, currency, comment, income_type_id)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-            (transaction_id, period, occurred_on, category_id, amount_text, currency, comment, income_type_id),
+               (id, period, occurred_on, category_id, amount_text, currency, comment)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (transaction_id, period, occurred_on, category_id, amount_text, currency, comment),
         )
 
 
 def cash_transactions(path: str | Path) -> list[dict]:
     with connect_database(path) as connection:
         rows = connection.execute(
-            "SELECT id, period, occurred_on, category_id, amount_text, currency, comment, income_type_id "
-            "FROM cash_transactions ORDER BY occurred_on, id"
+            "SELECT t.id, t.period, t.occurred_on, t.category_id, c.direction, "
+            "c.activity_class, t.amount_text, t.currency, t.comment "
+            "FROM cash_transactions AS t JOIN categories AS c ON c.id = t.category_id "
+            "ORDER BY t.occurred_on, t.id"
         ).fetchall()
     return [{**dict(row), "amount": Decimal(row["amount_text"])} for row in rows]
 
