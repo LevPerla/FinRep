@@ -15,11 +15,13 @@ from src.data.sqlite_store import (
     asset_snapshots,
     cash_transactions,
     connect_database,
+    fx_rates,
     initialize_database,
     save_asset_month,
     save_month,
     saved_asset_months,
     saved_months,
+    save_fx_rate,
 )
 
 
@@ -80,12 +82,12 @@ def test_sample_values_round_trip_without_touching_csv(tmp_path):
     ]
     assert asset_snapshots(database)[0]["amount"] == Decimal(asset_amount)
     with connect_database(database) as connection:
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 2
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 3
         assert connection.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
         assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
 
 
-def test_transaction_sign_determines_income_or_expense_category(tmp_path):
+def test_transaction_direction_comes_from_category_and_amount_is_positive(tmp_path):
     database = tmp_path / "synthetic.sqlite3"
     initialize_database(database)
     add_category(database, "income.custom", "Новый доход", direction="income", activity_class="passive")
@@ -96,21 +98,46 @@ def test_transaction_sign_determines_income_or_expense_category(tmp_path):
 
     with pytest.raises(ValueError, match="active category"):
         add_cash_transaction(**common, category_id="income.unknown", amount="0.001")
-    with pytest.raises(ValueError, match="sign must match"):
-        add_cash_transaction(**common, category_id="expense.food", amount="0.001")
-    with pytest.raises(ValueError, match="sign must match"):
+    with pytest.raises(ValueError, match="amount must be positive"):
         add_cash_transaction(**common, category_id="income.investment", amount="-0.001")
+    with pytest.raises(ValueError, match="amount must be positive"):
+        add_cash_transaction(**common, category_id="expense.other", amount="0")
     add_cash_transaction(**common, category_id="income.custom", amount="0.001")
     add_cash_transaction(**{**common, "transaction_id": "loss"},
-                         category_id="expense.other", amount="-0.001")
+                         category_id="expense.other", amount="0.001")
     rows = {row["id"]: row for row in cash_transactions(database)}
     assert rows["tx"]["amount"] == Decimal("0.001")
     assert rows["tx"]["activity_class"] == "passive"
-    assert rows["loss"]["amount"] == Decimal("-0.001")
+    assert rows["loss"]["amount"] == Decimal("0.001")
     assert rows["loss"]["direction"] == "expense"
     assert saved_months(database) == ["2026-01"]
+    with connect_database(database) as connection:
+        columns = {row["name"] for row in connection.execute("PRAGMA table_info(cash_transactions)")}
+    assert "legacy_category" not in columns
+    assert "legacy_coordinate" in columns
     with pytest.raises(sqlite3.IntegrityError):
         add_cash_transaction(**common, category_id="income.custom", amount="0.001")
+
+
+def test_fx_rates_preserve_precision_and_source(tmp_path):
+    database = tmp_path / "synthetic.sqlite3"
+    initialize_database(database)
+    save_fx_rate(
+        database, rate_date="2026-01-31", currency="RUB", usd_rate="0.012345678901",
+        source="official", fetched_at="2026-02-01T12:00:00",
+    )
+    assert fx_rates(database) == [{
+        "date": "2026-01-31", "currency": "RUB",
+        "usd_rate_text": "0.012345678901", "usd_rate": Decimal("0.012345678901"),
+        "source": "official", "fetched_at": "2026-02-01T12:00:00",
+    }]
+    save_fx_rate(database, rate_date="2026-01-31", currency="RUB", usd_rate="0.0124")
+    assert len(fx_rates(database)) == 1
+    assert fx_rates(database)[0]["usd_rate"] == Decimal("0.0124")
+    with pytest.raises(ValueError, match="usd_rate must be positive"):
+        save_fx_rate(database, rate_date="2026-02-01", currency="RUB", usd_rate="0")
+    with pytest.raises(ValueError, match="ISO date"):
+        save_fx_rate(database, rate_date="20260201", currency="RUB", usd_rate="0.01")
 
 
 def test_foreign_keys_are_enforced_on_every_connection(tmp_path):

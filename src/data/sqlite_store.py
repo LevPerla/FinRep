@@ -16,7 +16,7 @@ from src import config
 from src.data.money import parse_money_amount
 
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 _SCHEMA = (
     """CREATE TABLE schema_meta (
@@ -48,14 +48,25 @@ _SCHEMA = (
         period TEXT NOT NULL REFERENCES months(period),
         occurred_on TEXT NOT NULL,
         category_id TEXT NOT NULL REFERENCES categories(id),
-        amount_text TEXT NOT NULL CHECK (amount_text <> ''),
+        amount_text TEXT NOT NULL CHECK (
+            amount_text <> '' AND substr(amount_text, 1, 1) NOT IN ('-', '+')
+        ),
         currency TEXT NOT NULL CHECK (currency <> ''),
         comment TEXT NOT NULL DEFAULT '',
         classification_method TEXT,
         source TEXT,
         source_id TEXT,
-        legacy_category TEXT,
         legacy_coordinate TEXT
+    )""",
+    """CREATE TABLE fx_rates (
+        date TEXT NOT NULL,
+        currency TEXT NOT NULL,
+        usd_rate_text TEXT NOT NULL CHECK (
+            usd_rate_text <> '' AND substr(usd_rate_text, 1, 1) NOT IN ('-', '+')
+        ),
+        source TEXT NOT NULL DEFAULT '',
+        fetched_at TEXT NOT NULL DEFAULT '',
+        PRIMARY KEY (date, currency)
     )""",
     """CREATE TABLE asset_accounts (
         id TEXT PRIMARY KEY,
@@ -213,19 +224,14 @@ def add_cash_transaction(
     if currency not in config.UNIQUE_TICKERS:
         raise ValueError("unsupported currency")
     amount_text = _amount_text(amount)
-    signed_amount = Decimal(amount_text)
-    if signed_amount == 0:
-        raise ValueError("zero cells are represented by the saved month, not transactions")
+    if Decimal(amount_text) <= 0:
+        raise ValueError("transaction amount must be positive")
     with connect_database(path, writable=True) as connection:
         category = connection.execute(
-            "SELECT direction, active FROM categories WHERE id = ?", (category_id,)
+            "SELECT active FROM categories WHERE id = ?", (category_id,)
         ).fetchone()
-        if category is None or not category[1]:
+        if category is None or not category[0]:
             raise ValueError("new transaction needs an active category")
-        if (signed_amount > 0 and category[0] != "income") or (
-            signed_amount < 0 and category[0] != "expense"
-        ):
-            raise ValueError("transaction sign must match category direction")
         connection.execute(
             "INSERT INTO months (period, transactions_saved) VALUES (?, 1) "
             "ON CONFLICT(period) DO UPDATE SET transactions_saved = 1",
@@ -248,6 +254,43 @@ def cash_transactions(path: str | Path) -> list[dict]:
             "ORDER BY t.occurred_on, t.id"
         ).fetchall()
     return [{**dict(row), "amount": Decimal(row["amount_text"])} for row in rows]
+
+
+def save_fx_rate(
+    path: str | Path, *, rate_date: str, currency: str, usd_rate,
+    source: str = "", fetched_at: str = "",
+) -> None:
+    try:
+        parsed_date = date.fromisoformat(rate_date)
+    except ValueError as exc:
+        raise ValueError("rate_date must be an ISO date") from exc
+    if parsed_date.isoformat() != rate_date:
+        raise ValueError("rate_date must be an ISO date")
+    currency = currency.upper()
+    if currency not in config.UNIQUE_TICKERS:
+        raise ValueError("unsupported currency")
+    rate_text = _amount_text(usd_rate)
+    if Decimal(rate_text) <= 0:
+        raise ValueError("usd_rate must be positive")
+    with connect_database(path, writable=True) as connection:
+        connection.execute(
+            """INSERT INTO fx_rates (date, currency, usd_rate_text, source, fetched_at)
+               VALUES (?, ?, ?, ?, ?)
+               ON CONFLICT(date, currency) DO UPDATE SET
+                   usd_rate_text = excluded.usd_rate_text,
+                   source = excluded.source,
+                   fetched_at = excluded.fetched_at""",
+            (rate_date, currency, rate_text, source, fetched_at),
+        )
+
+
+def fx_rates(path: str | Path) -> list[dict]:
+    with connect_database(path) as connection:
+        rows = connection.execute(
+            "SELECT date, currency, usd_rate_text, source, fetched_at "
+            "FROM fx_rates ORDER BY date, currency"
+        ).fetchall()
+    return [{**dict(row), "usd_rate": Decimal(row["usd_rate_text"])} for row in rows]
 
 
 def save_asset_month(path: str | Path, period: str) -> None:
