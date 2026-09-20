@@ -2,9 +2,9 @@ from html import escape
 
 import pandas as pd
 import plotly.graph_objects as go
-from plotly.colors import qualitative
 
 from src import config
+from src.dashboard.chart_style import expense_category_color
 from src.dashboard.main_data import (
     DashboardDataset, _apply_dashboard_chart_layout, _format_top_purchases, _rank_top_purchases,
 )
@@ -56,12 +56,12 @@ def build_expense_dashboard_data(
     )
     data = monthly.stack(dropna=False).rename("Расход").reset_index()
     figure = go.Figure()
-    for index, category in enumerate(monthly.columns):
+    for category in monthly.columns:
         figure.add_bar(
             name=category,
             x=monthly.index,
             y=monthly[category],
-            marker_color=qualitative.Dark24[index % len(qualitative.Dark24)],
+            marker_color=expense_category_color(category),
             hovertemplate=(
                 "%{x|%Y-%m}<br>%{y:,.2f} "
                 + config.UNIQUE_TICKERS[currency]
@@ -141,10 +141,10 @@ def _expense_allocation_dataset(monthly, currency):
     data["Доля, %"] = shares.stack(dropna=False)
     data = data.reset_index()
     figure = go.Figure()
-    for index, category in enumerate(monthly.columns):
+    for category in monthly.columns:
         figure.add_bar(
             name=category, x=monthly.index, y=shares[category],
-            marker_color=qualitative.Dark24[index % len(qualitative.Dark24)],
+            marker_color=expense_category_color(category),
             customdata=monthly[[category]].values,
             hovertemplate=("%{x|%Y-%m}<br>%{y:,.2f}%<br>%{customdata[0]:,.2f} "
                            + config.UNIQUE_TICKERS[currency] + "<extra>%{fullData.name}</extra>"),

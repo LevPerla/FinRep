@@ -47,6 +47,7 @@ from src.data.staging import (
     read_transaction_drafts,
 )
 from src.dashboard.expense_data import build_expense_dashboard_data
+from src.dashboard.income_data import build_income_dashboard_data
 from src.dashboard.export import ExportBusyError, export_dashboard_page
 from src.dashboard.auth import configure_auth
 from src.dashboard.investment_data import build_investment_dashboard_data
@@ -310,6 +311,7 @@ def create_layout():
             dcc.Store(id="dashboard-locale", data=DEFAULT_LOCALE, storage_type="local"),
             dcc.Store(id="dashboard-document-locale", data=DEFAULT_LOCALE),
             dcc.Store(id="dashboard-refresh-token", data=0),
+            dcc.Store(id="fx-refresh-result"),
             dcc.Store(id="transaction-save-result", storage_type="memory"),
             dcc.Store(
                 id="transaction-add-request-id",
@@ -454,11 +456,13 @@ def create_layout():
                 is_open=test_mode,
                 className="py-2 mb-3",
             ),
+            html.Div(id="fx-refresh-status", role="status", **{"aria-live": "polite"}),
             _dashboard_tabs(),
             html.Div(
                 dbc.Tabs([
                     dbc.Tab(label="Обзор", tab_id="overview", id={"type": "i18n-tab-label", "key": "report.main.overview"}),
                     dbc.Tab(label="Расходы", tab_id="expenses", id={"type": "i18n-tab-label", "key": "report.main.expenses"}),
+                    dbc.Tab(label="Доходы", tab_id="income", id={"type": "i18n-tab-label", "key": "report.main.income"}),
                 ], id="main-report-tabs", active_tab="overview"),
                 id="main-report-navigation", className="mt-3",
             ),
@@ -490,6 +494,47 @@ def create_layout():
 
 
 def register_callbacks(app: Dash) -> None:
+    app.clientside_callback(
+        """function(clicks, locale) {
+            const unchanged = window.dash_clientside.no_update;
+            if (!clicks) return [unchanged, unchanged, unchanged];
+            const en = locale === "en";
+            return [en ? "Checking exchange rates…" : "Обновляем курсы…",
+                    "finrep-fx-status is-loading", true];
+        }""",
+        Output("fx-refresh-status", "children"),
+        Output("fx-refresh-status", "className"),
+        Output("refresh-fx-rates", "disabled"),
+        Input("refresh-fx-rates", "n_clicks"),
+        State("dashboard-locale", "data"),
+        prevent_initial_call=True,
+    )
+
+    app.clientside_callback(
+        """function(result, locale) {
+            if (!result) return [window.dash_clientside.no_update,
+                                 window.dash_clientside.no_update,
+                                 window.dash_clientside.no_update];
+            const en = locale === "en";
+            const messages = en ? {
+                done: "Exchange-rate check completed.",
+                error: "Could not refresh exchange rates. See the report error.",
+                unavailable: "No exchange rates are loaded in this section."
+            } : {
+                done: "Проверка курсов завершена.",
+                error: "Не удалось обновить курсы. Подробнее — в сообщении отчёта.",
+                unavailable: "В этом разделе курсы не загружаются."
+            };
+            return [messages[result.status], "finrep-fx-status is-" + result.status, false];
+        }""",
+        Output("fx-refresh-status", "children", allow_duplicate=True),
+        Output("fx-refresh-status", "className", allow_duplicate=True),
+        Output("refresh-fx-rates", "disabled", allow_duplicate=True),
+        Input("fx-refresh-result", "data"),
+        State("dashboard-locale", "data"),
+        prevent_initial_call=True,
+    )
+
     app.clientside_callback(
         """function(click) {
             const point = click?.points?.[0];
@@ -656,7 +701,7 @@ def register_callbacks(app: Dash) -> None:
         section = params.get("section", ["overview"])[0]
         if tab == "expenses":  # Keep links from the first release working.
             tab, section = "main", "expenses"
-        if section not in {"overview", "expenses"}:
+        if section not in {"overview", "expenses", "income"}:
             section = "overview"
         if currency not in config.UNIQUE_TICKERS:
             currency = DEFAULT_CURRENCY
@@ -749,6 +794,7 @@ def register_callbacks(app: Dash) -> None:
 
     @app.callback(
         Output("dashboard-content", "children"),
+        Output("fx-refresh-result", "data"),
         Input("dashboard-currency", "value"),
         Input("dashboard-year", "value"),
         Input("dashboard-month", "value"),
@@ -763,6 +809,16 @@ def register_callbacks(app: Dash) -> None:
     )
     def render_dashboard_content(currency: str, year: str, month: str, active_tab: str, main_section: str, theme: str, locale: str, refresh_token: int, fx_refresh_clicks: int | None, transaction_save_result: dict | None, crypto_status: dict | None):
         fx_network_enabled = ctx.triggered_id == "refresh-fx-rates" and not config.is_test_mode()
+
+        def finish(content):
+            if not fx_network_enabled:
+                return content, no_update
+            if active_tab in {"input", "debts"}:
+                status = "unavailable"
+            else:
+                status = "error" if isinstance(content, dbc.Alert) and content.color == "danger" else "done"
+            return content, {"request": fx_refresh_clicks, "status": status}
+
         if fx_network_enabled:
             clear_table_cache()
             clear_main_dashboard_cache()
@@ -773,11 +829,23 @@ def register_callbacks(app: Dash) -> None:
                     currency, fx_network_enabled=fx_network_enabled,
                 )
             except Exception as exc:
-                return _error_state(str(report_text("Не удалось загрузить аналитику расходов.", locale)), exc, locale=locale)
+                return finish(_error_state(str(report_text("Не удалось загрузить аналитику расходов.", locale)), exc, locale=locale))
 
             datasets = localize_report_datasets(datasets, locale)
             _apply_theme_to_datasets(datasets, theme)
-            return _expense_report_layout(datasets, theme, locale=locale)
+            return finish(_expense_report_layout(datasets, theme, locale=locale))
+
+        if active_tab == "main" and main_section == "income":
+            try:
+                datasets = build_income_dashboard_data(
+                    currency, fx_network_enabled=fx_network_enabled,
+                )
+            except Exception as exc:
+                return finish(_error_state(str(report_text("Не удалось загрузить аналитику доходов.", locale)), exc, locale=locale))
+
+            datasets = localize_report_datasets(datasets, locale)
+            _apply_theme_to_datasets(datasets, theme)
+            return finish(_income_report_layout(datasets, theme, locale=locale))
 
         if active_tab == "year":
             try:
@@ -787,11 +855,11 @@ def register_callbacks(app: Dash) -> None:
                     fx_network_enabled=fx_network_enabled,
                 )
             except Exception as exc:
-                return _error_state(str(report_text("Не удалось загрузить данные годового отчета.", locale)), exc, locale=locale)
+                return finish(_error_state(str(report_text("Не удалось загрузить данные годового отчета.", locale)), exc, locale=locale))
 
             datasets = localize_report_datasets(datasets, locale)
             _apply_theme_to_datasets(datasets, theme)
-            return _year_report_layout(datasets, theme, locale=locale)
+            return finish(_year_report_layout(datasets, theme, locale=locale))
 
         if active_tab == "planning":
             try:
@@ -801,11 +869,11 @@ def register_callbacks(app: Dash) -> None:
                     fx_network_enabled=fx_network_enabled,
                 )
             except Exception as exc:
-                return _error_state(str(report_text("Не удалось загрузить данные плана и прогноза.", locale)), exc, locale=locale)
+                return finish(_error_state(str(report_text("Не удалось загрузить данные плана и прогноза.", locale)), exc, locale=locale))
 
             datasets = localize_report_datasets(datasets, locale)
             _apply_theme_to_datasets(datasets, theme)
-            return _planning_report_layout(datasets, theme, read_only=config.is_test_mode(), locale=locale)
+            return finish(_planning_report_layout(datasets, theme, read_only=config.is_test_mode(), locale=locale))
 
         if active_tab == "month":
             try:
@@ -816,11 +884,11 @@ def register_callbacks(app: Dash) -> None:
                     fx_network_enabled=fx_network_enabled,
                 )
             except Exception as exc:
-                return _error_state(str(report_text("Не удалось загрузить данные месячного отчета.", locale)), exc, locale=locale)
+                return finish(_error_state(str(report_text("Не удалось загрузить данные месячного отчета.", locale)), exc, locale=locale))
 
             datasets = localize_report_datasets(datasets, locale)
             _apply_theme_to_datasets(datasets, theme)
-            return _month_report_layout(datasets, theme, locale=locale)
+            return finish(_month_report_layout(datasets, theme, locale=locale))
 
         if active_tab == "investments":
             try:
@@ -829,16 +897,16 @@ def register_callbacks(app: Dash) -> None:
                     fx_network_enabled=fx_network_enabled,
                 )
             except Exception as exc:
-                return _error_state("Не удалось загрузить инвестиционный отчет.", exc)
+                return finish(_error_state("Не удалось загрузить инвестиционный отчет.", exc))
 
             _apply_theme_to_datasets(datasets, theme)
-            return _investment_report_layout(datasets, theme, crypto_status, read_only=config.is_test_mode())
+            return finish(_investment_report_layout(datasets, theme, crypto_status, read_only=config.is_test_mode()))
 
         if active_tab == "debts":
-            return _debt_report_layout(currency, theme, read_only=config.is_test_mode())
+            return finish(_debt_report_layout(currency, theme, read_only=config.is_test_mode()))
 
         if active_tab == "input":
-            return _input_report_layout(
+            return finish(_input_report_layout(
                 currency,
                 year,
                 month,
@@ -846,7 +914,7 @@ def register_callbacks(app: Dash) -> None:
                 read_only=config.is_test_mode(),
                 transaction_save_result=transaction_save_result,
                 locale=locale,
-            )
+            ))
 
         try:
             datasets = build_main_dashboard_data(
@@ -856,18 +924,18 @@ def register_callbacks(app: Dash) -> None:
                 month=month,
             )
         except Exception as exc:
-            return _error_state(str(report_text("Не удалось загрузить данные основного отчета.", locale)), exc, locale=locale)
+            return finish(_error_state(str(report_text("Не удалось загрузить данные основного отчета.", locale)), exc, locale=locale))
 
         datasets = localize_report_datasets(datasets, locale)
         _apply_theme_to_datasets(datasets, theme)
-        return _main_report_layout(
+        return finish(_main_report_layout(
             datasets,
             theme=theme,
             currency=currency,
             year=year,
             month=month,
             locale=locale,
-        )
+        ))
 
     @app.callback(
         Output("month-transaction-modal", "is_open"),
@@ -921,8 +989,8 @@ def register_callbacks(app: Dash) -> None:
         if not n_clicks:
             raise PreventUpdate
 
-        if active_tab == "main" and main_section == "expenses":
-            active_tab = "expenses"
+        if active_tab == "main" and main_section in {"expenses", "income"}:
+            active_tab = main_section
         dataset_id = button_id["dataset_id"]
         datasets = _datasets_for_tab(active_tab, currency, year, month)
         if dataset_id not in datasets:
@@ -965,8 +1033,8 @@ def register_callbacks(app: Dash) -> None:
         if config.is_test_mode():
             return no_update, tr("dashboard.export_live_only", locale), "warning", True
 
-        if active_tab == "main" and main_section == "expenses":
-            active_tab = "expenses"
+        if active_tab == "main" and main_section in {"expenses", "income"}:
+            active_tab = main_section
         export_format = "png" if ctx.triggered_id == "export-png" else "pdf"
         try:
             export_path = export_dashboard_page(
@@ -2848,6 +2916,48 @@ def _expense_report_layout(datasets: dict[str, DashboardDataset], theme: str, lo
     return html.Div(children, className="d-grid gap-3")
 
 
+def _income_report_layout(datasets: dict[str, DashboardDataset], theme: str, locale: str = DEFAULT_LOCALE):
+    children = [
+        html.H2(report_text("Аналитика доходов", locale), className="h4"),
+        html.P(
+            report_text("Вся история. Год и месяц в панели не ограничивают этот отчёт.", locale),
+            className="small", style={"color": "var(--finrep-muted)"},
+        ),
+    ]
+    if "income_empty" in datasets:
+        children.append(html.Div(
+            report_text("Нет поступлений", locale), id="income-empty-state",
+            className="finrep-first-run",
+        ))
+    else:
+        if "income_missing_months" in datasets:
+            missing = datasets["income_missing_months"]
+            children.append(dbc.Alert(
+                [missing.title + " " + ", ".join(missing.dataframe["Дата"].dt.strftime("%Y-%m")),
+                 html.Div(report_text("Пропуски не считаются нулевыми поступлениями.", locale))],
+                color="warning", id="income-missing-months",
+            ))
+        children.append(html.P(
+            report_text("Источник определяется по комментарию; нераспознанный доход остаётся в отдельной группе.", locale),
+            className="small", style={"color": "var(--finrep-muted)"},
+        ))
+        children.append(_graph_section(datasets["income_sources_monthly"], theme=theme, locale=locale))
+        allocation = datasets["income_allocation"]
+        allocation_chart = _graph_section(allocation, theme=theme, locale=locale)
+        notes = [html.P(report_text("Доли рассчитаны из всех поступлений внутри каждого месяца.", locale))]
+        undefined = allocation.dataframe.loc[allocation.dataframe["Доля, %"].isna(), "Дата"].drop_duplicates()
+        if not undefined.empty:
+            notes.append(html.Div(str(report_text("Доли не определены: итог месяца отсутствует или не положителен.", locale))
+                                  + " " + ", ".join(undefined.dt.strftime("%Y-%m"))))
+        if allocation.dataframe["Доля, %"].lt(0).any():
+            notes.append(html.Div(report_text("Отрицательные доли отражают корректировки поступлений.", locale)))
+        allocation_chart.children.insert(1, html.Div(notes, id="income-allocation-notes",
+                                                    className="small", style={"color": "var(--finrep-muted)"}))
+        children.append(allocation_chart)
+        children.append(_graph_section(datasets["income_receipts_monthly"], theme=theme, locale=locale))
+    return html.Div(children, className="d-grid gap-3")
+
+
 def _error_state(message: str, exc: Exception, locale: str = DEFAULT_LOCALE):
     return dbc.Alert(
         [
@@ -3155,6 +3265,8 @@ def _datasets_for_tab(
 ) -> dict[str, DashboardDataset]:
     if active_tab == "expenses":
         return build_expense_dashboard_data(currency, fx_network_enabled=DEFAULT_FX_NETWORK_ENABLED)
+    if active_tab == "income":
+        return build_income_dashboard_data(currency, fx_network_enabled=DEFAULT_FX_NETWORK_ENABLED)
     if active_tab == "year":
         return build_year_dashboard_data(
             year,
@@ -3197,6 +3309,8 @@ def _download_filename(
     timestamp = datetime.now().strftime("%Y%m%d")
     if active_tab == "expenses":
         return f"expenses_{dataset.id}_{currency}_{timestamp}.xlsx"
+    if active_tab == "income":
+        return f"income_{dataset.id}_{currency}_{timestamp}.xlsx"
     if active_tab == "year":
         return f"year_report_{year}_{dataset.id}_{currency}_{timestamp}.xlsx"
     if active_tab == "month":

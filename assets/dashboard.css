@@ -40,6 +40,23 @@ body {
   color: #a9b7c6;
 }
 
+.finrep-fx-status:not(:empty) {
+  margin-bottom: 12px;
+  padding: 8px 12px;
+  border: 1px solid var(--finrep-border);
+  border-radius: 8px;
+  color: var(--finrep-text);
+  background: var(--finrep-surface-subtle);
+}
+
+.finrep-fx-status.is-loading {
+  border-color: #a48b5b;
+}
+
+.finrep-fx-status.is-error {
+  border-color: #bd7979;
+}
+
 .finrep-theme-dark h1,
 .finrep-theme-dark h2,
 .finrep-theme-dark h3,
