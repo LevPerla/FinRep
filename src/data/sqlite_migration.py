@@ -88,6 +88,7 @@ _ADAPTED_FAMILIES = {
     "cash_transactions", "asset_snapshots", "category_rules", "fx_rates", "annual_goals",
     "transaction_drafts", "debts", "debt_payments", "investment_instruments",
     "investment_transactions", "market_prices",
+    "crypto_wallets", "crypto_balances", "crypto_transactions", "crypto_refresh_status",
 }
 _FAMILY_ORDER = {
     "cash_transactions": 10, "asset_snapshots": 20, "category_rules": 30,
@@ -136,6 +137,11 @@ class MigrationSummary:
     trades_imported: int
     market_prices_imported: int
     investment_issues: int
+    crypto_wallets_imported: int
+    crypto_balances_imported: int
+    crypto_transactions_imported: int
+    crypto_refresh_results_imported: int
+    crypto_issues: int
 
 
 def build_manifest(source_root: str | Path) -> tuple[list[ManifestEntry], str]:
@@ -256,6 +262,7 @@ def migrate_core_csv(source_root: str | Path, target_db: str | Path,
     try:
         cash_imported = snapshots_imported = auxiliary = drafts = unresolved = source_cash = source_snapshots = 0
         debts = debt_payments = instruments = trades = market_prices = 0
+        crypto_wallets = crypto_balances = crypto_transactions = crypto_refresh = crypto_issues = 0
         for item in sorted(entries, key=lambda entry: (_FAMILY_ORDER.get(entry.family, 999), entry.relative_path)):
             if item.status != "included":
                 continue
@@ -288,6 +295,22 @@ def migrate_core_csv(source_root: str | Path, target_db: str | Path,
                 trades += _migrate_investment_trades(path, item, target_db, audit)
             elif item.family == "market_prices":
                 market_prices += _migrate_market_prices(path, item, target_db, audit)
+            elif item.family == "crypto_wallets":
+                imported, issues = _migrate_crypto_wallets(path, item, target_db, audit)
+                crypto_wallets += imported
+                crypto_issues += issues
+            elif item.family == "crypto_balances":
+                imported, issues = _migrate_crypto_balances(path, item, target_db, audit)
+                crypto_balances += imported
+                crypto_issues += issues
+            elif item.family == "crypto_transactions":
+                imported, issues = _migrate_crypto_transactions(path, item, target_db, audit)
+                crypto_transactions += imported
+                crypto_issues += issues
+            elif item.family == "crypto_refresh_status":
+                imported, issues = _migrate_crypto_refresh_results(path, item, target_db, audit)
+                crypto_refresh += imported
+                crypto_issues += issues
         debt_issues = _reconcile_debts(target_db, audit)
         investment_issues = _reconcile_investments(target_db, audit)
         metrics = {
@@ -311,6 +334,11 @@ def migrate_core_csv(source_root: str | Path, target_db: str | Path,
             "trades_imported": trades,
             "market_prices_imported": market_prices,
             "investment_issues": investment_issues,
+            "crypto_wallets_imported": crypto_wallets,
+            "crypto_balances_imported": crypto_balances,
+            "crypto_transactions_imported": crypto_transactions,
+            "crypto_refresh_results_imported": crypto_refresh,
+            "crypto_issues": crypto_issues,
         }
         audit.executemany("INSERT INTO reconciliation VALUES (?, ?)", metrics.items())
         audit.commit()
@@ -322,6 +350,7 @@ def migrate_core_csv(source_root: str | Path, target_db: str | Path,
         sum(item.status == "included" and item.family not in _ADAPTED_FAMILIES for item in entries),
         auxiliary, drafts, debts, debt_payments, debt_issues,
         instruments, trades, market_prices, investment_issues,
+        crypto_wallets, crypto_balances, crypto_transactions, crypto_refresh, crypto_issues,
     )
 
 
@@ -767,6 +796,144 @@ def _reconcile_investments(target_db: Path, audit: sqlite3.Connection) -> int:
     return issues
 
 
+def _migrate_crypto_wallets(path: Path, item: ManifestEntry, target_db: Path,
+                            audit: sqlite3.Connection) -> tuple[int, int]:
+    imported = issues = 0
+    with path.open("r", encoding="utf-8-sig", newline="") as stream:
+        for row_number, row in enumerate(csv.DictReader(stream, delimiter=";"), start=2):
+            source_record_id = _source_row(item, row_number, row, target_db, audit)
+            try:
+                account = (row.get("account") or "").strip()
+                chain = (row.get("chain") or "").strip().lower()
+                asset = (row.get("asset") or "").strip().upper()
+                address = (row.get("address") or "").strip()
+                token = (row.get("token_contract") or "").strip().lower()
+                if not account or not chain or not asset or not address:
+                    raise ValueError("wallet needs account, chain, asset and public address")
+                enabled_text = (row.get("enabled") or "1").strip().lower()
+                if enabled_text not in {"1", "true", "yes", "on", "0", "false", "no", "off"}:
+                    raise ValueError("unsupported wallet enabled value")
+                enabled = int(enabled_text not in {"0", "false", "no", "off"})
+                wallet_id = _stable_id("crypto-wallet", f"{chain}\0{asset}\0{address}\0{token}")
+                with connect_database(target_db, writable=True) as target:
+                    target.execute("""INSERT INTO crypto_wallets
+                        (id, account_label, chain, asset_code, address, token_contract,
+                         label, enabled, created_at, updated_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))""",
+                        (wallet_id, account, chain, asset, address, token,
+                         row.get("label") or "", enabled))
+            except (ValueError, sqlite3.IntegrityError) as exc:
+                issues += 1
+                _issue(audit, item.relative_path, str(row_number), "invalid_crypto_wallet", str(exc), True)
+                continue
+            link_entity_source(target_db, "crypto_wallet", wallet_id, source_record_id)
+            imported += 1
+    return imported, issues
+
+
+def _migrate_crypto_balances(path: Path, item: ManifestEntry, target_db: Path,
+                             audit: sqlite3.Connection) -> tuple[int, int]:
+    imported = issues = 0
+    with path.open("r", encoding="utf-8-sig", newline="") as stream:
+        for row_number, row in enumerate(csv.DictReader(stream, delimiter=";"), start=2):
+            source_record_id = _source_row(item, row_number, row, target_db, audit)
+            try:
+                wallet_id = _crypto_wallet_match(target_db, row)
+                if wallet_id is None:
+                    raise ValueError("balance does not match exactly one configured wallet")
+                quantity = _decimal_text(row.get("balance"), allow_zero=True)
+                fetched_at = (row.get("fetched_at") or "").strip()
+                source = (row.get("source") or "").strip()
+                if not fetched_at or not source:
+                    raise ValueError("balance needs fetched_at and source")
+                observation_id = _stable_id("crypto-balance", source_record_id)
+                with connect_database(target_db, writable=True) as target:
+                    target.execute("INSERT INTO crypto_balance_observations VALUES (?, ?, ?, ?, ?)",
+                                   (observation_id, wallet_id, fetched_at, quantity, source))
+            except (ValueError, sqlite3.IntegrityError) as exc:
+                issues += 1
+                _issue(audit, item.relative_path, str(row_number), "invalid_crypto_balance", str(exc), True)
+                continue
+            link_entity_source(target_db, "crypto_balance_observation", observation_id, source_record_id)
+            imported += 1
+    return imported, issues
+
+
+def _migrate_crypto_transactions(path: Path, item: ManifestEntry, target_db: Path,
+                                 audit: sqlite3.Connection) -> tuple[int, int]:
+    imported = issues = 0
+    with path.open("r", encoding="utf-8-sig", newline="") as stream:
+        for row_number, row in enumerate(csv.DictReader(stream, delimiter=";"), start=2):
+            source_record_id = _source_row(item, row_number, row, target_db, audit)
+            try:
+                wallet_id = _crypto_wallet_match(target_db, row)
+                tx_id = (row.get("tx_id") or "").strip()
+                occurred_on = _legacy_date(row.get("date") or "")
+                operation = (row.get("operation") or "").strip()
+                source = (row.get("source") or "").strip()
+                if wallet_id is None or not tx_id or occurred_on is None or not operation or not source:
+                    raise ValueError("crypto transaction needs wallet, tx ID, date, operation and source")
+                quantity = _optional_decimal_text(row.get("quantity"))
+                fee = _optional_decimal_text(row.get("fee"))
+                entity_id = _stable_id("crypto-transaction", source_record_id)
+                with connect_database(target_db, writable=True) as target:
+                    target.execute("""INSERT INTO crypto_transactions
+                        (id, wallet_id, chain_tx_id, occurred_on, operation, quantity_text,
+                         fee_text, counterparty, source, comment)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        (entity_id, wallet_id, tx_id, occurred_on, operation, quantity, fee,
+                         row.get("counterparty") or "", source, row.get("comment") or ""))
+            except (ValueError, sqlite3.IntegrityError) as exc:
+                issues += 1
+                _issue(audit, item.relative_path, str(row_number), "invalid_crypto_transaction", str(exc), True)
+                continue
+            link_entity_source(target_db, "crypto_transaction", entity_id, source_record_id)
+            imported += 1
+    return imported, issues
+
+
+def _migrate_crypto_refresh_results(path: Path, item: ManifestEntry, target_db: Path,
+                                    audit: sqlite3.Connection) -> tuple[int, int]:
+    imported = issues = 0
+    with path.open("r", encoding="utf-8-sig", newline="") as stream:
+        for row_number, row in enumerate(csv.DictReader(stream, delimiter=";"), start=2):
+            source_record_id = _source_row(item, row_number, row, target_db, audit)
+            try:
+                fetched_at = (row.get("fetched_at") or "").strip()
+                status = (row.get("status") or "").strip()
+                if not fetched_at or not status:
+                    raise ValueError("refresh result needs fetched_at and status")
+                source_row = int(row["row_number"]) if (row.get("row_number") or "").strip() else None
+                wallet_id = _crypto_wallet_match(target_db, row)
+                entity_id = _stable_id("crypto-refresh", source_record_id)
+                with connect_database(target_db, writable=True) as target:
+                    target.execute("""INSERT INTO crypto_refresh_results
+                        (id, fetched_at, wallet_id, source_row_number, observed_account,
+                         observed_chain, observed_asset, observed_address, status, message)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        (entity_id, fetched_at, wallet_id, source_row,
+                         row.get("account") or "", (row.get("chain") or "").lower(),
+                         (row.get("asset") or "").upper(), row.get("address") or "",
+                         status, row.get("message") or ""))
+            except (ValueError, sqlite3.IntegrityError) as exc:
+                issues += 1
+                _issue(audit, item.relative_path, str(row_number), "invalid_crypto_refresh", str(exc), True)
+                continue
+            link_entity_source(target_db, "crypto_refresh_result", entity_id, source_record_id)
+            imported += 1
+    return imported, issues
+
+
+def _crypto_wallet_match(target_db: Path, row: dict) -> str | None:
+    chain = (row.get("chain") or "").strip().lower()
+    asset = (row.get("asset") or "").strip().upper()
+    address = (row.get("address") or "").strip()
+    with connect_database(target_db) as target:
+        matches = target.execute("""SELECT id FROM crypto_wallets
+            WHERE chain = ? AND asset_code = ? AND address = ?""", (chain, asset, address)).fetchall()
+    return matches[0][0] if len(matches) == 1 else None
+
+
 def _draft_cash_category(label: str, comment: str) -> tuple[str | None, str | None]:
     if label == "Доход":
         source = classify_income_comment(comment)
@@ -825,6 +992,13 @@ def _decimal_text(value, *, allow_zero: bool) -> str:
     parsed = parse_money_amount(value, field_name="decimal value")
     if parsed < 0 or (parsed == 0 and not allow_zero):
         raise ValueError("decimal value must be positive" if not allow_zero else "decimal value must be non-negative")
+    return format(parsed, "f")
+
+
+def _optional_decimal_text(value) -> str | None:
+    if value is None or not str(value).strip():
+        return None
+    parsed = parse_money_amount(value, field_name="decimal value")
     return format(parsed, "f")
 
 

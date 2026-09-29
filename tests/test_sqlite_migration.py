@@ -110,6 +110,43 @@ def test_legacy_debt_exceptions_are_preserved_and_reported(tmp_path):
         migration.close()
 
 
+def test_crypto_files_preserve_public_wallet_observations_and_refresh_failures(tmp_path):
+    investments = tmp_path / "investments"
+    investments.mkdir()
+    address = "bc1qexamplepublicaddress"
+    (investments / "crypto_wallets.csv").write_text(
+        "account;chain;asset;address;token_contract;enabled;label\n"
+        f"Cold wallet;bitcoin;BTC;{address};;1;Main\n", encoding="utf-8")
+    (investments / "crypto_balances.csv").write_text(
+        "fetched_at;account;chain;asset;address;balance;source\n"
+        f"2026-01-02T00:00:00Z;Cold wallet;bitcoin;BTC;{address};0.00123456;observer\n",
+        encoding="utf-8")
+    (investments / "crypto_transactions.csv").write_text(
+        "date;account;chain;asset;address;tx_id;operation;quantity;fee;counterparty;source;comment\n"
+        f"2026-01-01;Cold wallet;bitcoin;BTC;{address};tx-1;receive;0.0013;0.00001;sender;observer;demo\n",
+        encoding="utf-8")
+    (investments / "crypto_refresh_status.csv").write_text(
+        "fetched_at;row_number;account;chain;asset;address;status;message\n"
+        f"2026-01-02T00:00:00Z;2;Cold wallet;bitcoin;BTC;{address};ok;\n"
+        "2026-01-02T00:00:00Z;3;Missing;ton;TON;public-ton-address;error;timeout\n",
+        encoding="utf-8")
+    target = tmp_path / "target.sqlite3"
+    summary = migrate_core_csv(tmp_path, target, tmp_path / "migration.sqlite3")
+    assert summary.pending_adapter_files == 0
+    assert (summary.crypto_wallets_imported, summary.crypto_balances_imported,
+            summary.crypto_transactions_imported, summary.crypto_refresh_results_imported,
+            summary.crypto_issues) == (1, 1, 1, 2, 0)
+    with connect_database(target) as connection:
+        assert connection.execute(
+            "SELECT quantity_text FROM crypto_balance_observations").fetchone()[0] == "0.00123456"
+        assert tuple(connection.execute(
+            "SELECT quantity_text, fee_text FROM crypto_transactions").fetchone()) == (
+                "0.0013", "0.00001")
+        failed = connection.execute("""SELECT wallet_id, observed_chain, status, message
+            FROM crypto_refresh_results WHERE status = 'error'""").fetchone()
+        assert tuple(failed) == (None, "ton", "error", "timeout")
+
+
 def test_sample_core_migration_is_repeatable_and_reconciled(tmp_path):
     source = Path(config.SAMPLE_DATA_PATH)
     target_one = tmp_path / "target-one.sqlite3"
@@ -123,7 +160,7 @@ def test_sample_core_migration_is_repeatable_and_reconciled(tmp_path):
     assert first.cash_imported > 0
     assert first.snapshots_imported > 0
     assert first.unresolved_financial_records > 0
-    assert first.pending_adapter_files > 0
+    assert first.pending_adapter_files == 0
     assert first.auxiliary_records_imported > 0
     assert first.drafts_imported == 4
     assert first.debts_imported == 4
@@ -133,6 +170,11 @@ def test_sample_core_migration_is_repeatable_and_reconciled(tmp_path):
     assert first.trades_imported == 8
     assert first.market_prices_imported == 3
     assert first.investment_issues == 0
+    assert first.crypto_wallets_imported == 0
+    assert first.crypto_balances_imported == 0
+    assert first.crypto_transactions_imported == 0
+    assert first.crypto_refresh_results_imported == 0
+    assert first.crypto_issues == 0
 
     with connect_database(target_one) as left, connect_database(target_two) as right:
         stable_queries = {
@@ -172,6 +214,16 @@ def test_sample_core_migration_is_repeatable_and_reconciled(tmp_path):
             "market_price_observations": """SELECT id, instrument_id, price_date,
                 price_text, currency_code, source, fetched_at, sequence
                 FROM market_price_observations ORDER BY id""",
+            "crypto_wallets": """SELECT id, account_label, chain, asset_code, address,
+                token_contract, label, enabled FROM crypto_wallets ORDER BY id""",
+            "crypto_balance_observations": """SELECT id, wallet_id, fetched_at,
+                quantity_text, source FROM crypto_balance_observations ORDER BY id""",
+            "crypto_transactions": """SELECT id, wallet_id, chain_tx_id, occurred_on,
+                operation, quantity_text, fee_text, counterparty, source, comment
+                FROM crypto_transactions ORDER BY id""",
+            "crypto_refresh_results": """SELECT id, fetched_at, wallet_id, source_row_number,
+                observed_account, observed_chain, observed_asset, observed_address, status, message
+                FROM crypto_refresh_results ORDER BY id""",
         }
         for query in stable_queries.values():
             left_rows = left.execute(query).fetchall()
@@ -209,6 +261,9 @@ def test_sample_core_migration_is_repeatable_and_reconciled(tmp_path):
             + metrics["debts_imported"] + metrics["debt_payments_imported"]
             + metrics["instruments_imported"] + metrics["trades_imported"]
             + metrics["market_prices_imported"]
+            + metrics["crypto_wallets_imported"] + metrics["crypto_balances_imported"]
+            + metrics["crypto_transactions_imported"]
+            + metrics["crypto_refresh_results_imported"]
         )
         assert audit.execute(
             "SELECT count(*) FROM migration_issues WHERE code = 'unmapped_category'"

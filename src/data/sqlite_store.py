@@ -248,6 +248,41 @@ _TABLES = (
         sequence INTEGER NOT NULL DEFAULT 0 CHECK (sequence >= 0),
         UNIQUE (instrument_id, price_date, source, fetched_at, sequence)
     ) STRICT""",
+    """CREATE TABLE crypto_wallets (
+        id TEXT PRIMARY KEY,
+        account_label TEXT NOT NULL CHECK (trim(account_label) <> ''),
+        chain TEXT NOT NULL CHECK (trim(chain) <> ''),
+        asset_code TEXT NOT NULL CHECK (trim(asset_code) <> ''),
+        address TEXT NOT NULL CHECK (trim(address) <> ''),
+        token_contract TEXT NOT NULL DEFAULT '', label TEXT NOT NULL DEFAULT '',
+        enabled INTEGER NOT NULL CHECK (enabled IN (0, 1)),
+        created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+        UNIQUE (chain, asset_code, address, token_contract)
+    ) STRICT""",
+    """CREATE TABLE crypto_balance_observations (
+        id TEXT PRIMARY KEY,
+        wallet_id TEXT NOT NULL REFERENCES crypto_wallets(id) ON DELETE RESTRICT,
+        fetched_at TEXT NOT NULL, quantity_text TEXT NOT NULL CHECK (trim(quantity_text) <> ''),
+        source TEXT NOT NULL CHECK (trim(source) <> '')
+    ) STRICT""",
+    """CREATE TABLE crypto_transactions (
+        id TEXT PRIMARY KEY,
+        wallet_id TEXT NOT NULL REFERENCES crypto_wallets(id) ON DELETE RESTRICT,
+        chain_tx_id TEXT NOT NULL CHECK (trim(chain_tx_id) <> ''),
+        occurred_on TEXT NOT NULL CHECK (length(occurred_on) = 10),
+        operation TEXT NOT NULL CHECK (trim(operation) <> ''),
+        quantity_text TEXT, fee_text TEXT, counterparty TEXT NOT NULL DEFAULT '',
+        source TEXT NOT NULL CHECK (trim(source) <> ''), comment TEXT NOT NULL DEFAULT '',
+        UNIQUE (wallet_id, chain_tx_id, operation)
+    ) STRICT""",
+    """CREATE TABLE crypto_refresh_results (
+        id TEXT PRIMARY KEY, fetched_at TEXT NOT NULL,
+        wallet_id TEXT REFERENCES crypto_wallets(id) ON DELETE RESTRICT,
+        source_row_number INTEGER,
+        observed_account TEXT NOT NULL DEFAULT '', observed_chain TEXT NOT NULL DEFAULT '',
+        observed_asset TEXT NOT NULL DEFAULT '', observed_address TEXT NOT NULL DEFAULT '',
+        status TEXT NOT NULL CHECK (trim(status) <> ''), message TEXT NOT NULL DEFAULT ''
+    ) STRICT""",
 )
 
 _INDEXES_AND_TRIGGERS = (
@@ -261,6 +296,8 @@ _INDEXES_AND_TRIGGERS = (
     "CREATE INDEX ix_debt_payments_debt_date ON debt_payments(debt_id, occurred_on, id)",
     "CREATE INDEX ix_investment_trades_instrument_date ON investment_trades(instrument_id, occurred_on, id)",
     "CREATE INDEX ix_market_prices_lookup ON market_price_observations(instrument_id, price_date, fetched_at, sequence)",
+    "CREATE INDEX ix_crypto_balances_wallet_time ON crypto_balance_observations(wallet_id, fetched_at)",
+    "CREATE INDEX ix_crypto_transactions_wallet_date ON crypto_transactions(wallet_id, occurred_on)",
     """CREATE TRIGGER categories_parent_insert BEFORE INSERT ON categories
     WHEN NEW.parent_id IS NOT NULL BEGIN
       SELECT CASE WHEN NOT EXISTS (SELECT 1 FROM categories p WHERE p.id = NEW.parent_id
