@@ -10,10 +10,12 @@ import pytest
 from src import config
 from src.data.sqlite_store import (
     SCHEMA_VERSION,
+    StorageRevisionConflict,
     add_asset_account,
     add_asset_snapshot,
     add_cash_transaction,
     add_category,
+    append_cash_drafts,
     annual_goals,
     asset_snapshot_month,
     asset_snapshots,
@@ -27,6 +29,8 @@ from src.data.sqlite_store import (
     initialize_database,
     link_transaction_source,
     publish_cash_drafts,
+    publish_domain_drafts,
+    remove_transaction_drafts,
     record_crypto_refresh,
     record_debt_payment,
     record_investment_trade,
@@ -37,6 +41,8 @@ from src.data.sqlite_store import (
     save_month,
     saved_asset_months,
     saved_months,
+    transaction_drafts_snapshot,
+    update_cash_drafts,
     upsert_annual_goal,
     upsert_crypto_wallet,
     void_cash_transaction,
@@ -160,6 +166,51 @@ def test_pending_cash_draft_publish_rolls_back(tmp_path):
         assert connection.execute("SELECT count(*) FROM operation_receipts").fetchone()[0] == 0
 
 
+def test_draft_batch_edit_remove_uses_optimistic_revision(tmp_path):
+    database = tmp_path / "synthetic.sqlite3"
+    initialize_database(database)
+    empty_rows, empty_revision = transaction_drafts_snapshot(database)
+    assert empty_rows == []
+    appended = append_cash_drafts(
+        database,
+        expected_revision=empty_revision,
+        rows=[
+            {"draft_id": "draft-1", "occurred_on": "2026-04-01",
+             "flow_direction": "expense", "category_id": "expense.food",
+             "amount": "10", "currency": "RUB", "origin_kind": "bank",
+             "origin_key": "row-1", "bank_status": "posted"},
+            {"draft_id": "draft-2", "occurred_on": "2026-04-02",
+             "flow_direction": "income", "category_id": "income.salary",
+             "amount": "20", "currency": "RUB", "origin_kind": "bank",
+             "origin_key": "row-2", "bank_status": "posted"},
+        ],
+    )
+    assert appended["accepted_rows"] == 2
+    with pytest.raises(StorageRevisionConflict):
+        append_cash_drafts(
+            database,
+            expected_revision=empty_revision,
+            rows=[{"occurred_on": "2026-04-03", "flow_direction": "expense",
+                   "category_id": "expense.food", "amount": "1", "currency": "RUB",
+                   "origin_kind": "bank", "origin_key": "row-3"}],
+        )
+    rows, revision = transaction_drafts_snapshot(database)
+    edited = dict(next(row for row in rows if row["id"] == "draft-1"))
+    edited.update(amount="11.25", comment="updated")
+    next_revision = update_cash_drafts(
+        database, rows=[edited], expected_revision=revision)
+    changed, changed_revision = transaction_drafts_snapshot(database)
+    assert changed_revision == next_revision
+    assert next(row for row in changed if row["id"] == "draft-1")["amount"] == Decimal("11.25")
+    with pytest.raises(StorageRevisionConflict):
+        update_cash_drafts(database, rows=[edited], expected_revision=revision)
+    final_revision = remove_transaction_drafts(
+        database, draft_ids=["draft-2"], expected_revision=changed_revision)
+    final, observed_revision = transaction_drafts_snapshot(database)
+    assert observed_revision == final_revision
+    assert next(row for row in final if row["id"] == "draft-2")["status"] == "ignored"
+
+
 def test_asset_month_replace_is_atomic_and_audited(tmp_path):
     database = tmp_path / "synthetic.sqlite3"
     initialize_database(database)
@@ -272,11 +323,22 @@ def test_debt_commands_are_same_currency_atomic_and_prevent_overpayment(tmp_path
         operation_key="pay-debt-2",
     )
     assert last["closed"] and last["remaining_minor"] == 0
+    published = publish_domain_drafts(
+        database,
+        draft_ids=[created["draft_id"], first["draft_id"], last["draft_id"]],
+        operation_key="publish-debt-events",
+    )
+    assert publish_domain_drafts(
+        database,
+        draft_ids=[created["draft_id"], first["draft_id"], last["draft_id"]],
+        operation_key="publish-debt-events",
+    ) == published
     with connect_database(database) as connection:
         assert connection.execute("SELECT status FROM debts").fetchone()[0] == "closed"
         assert connection.execute("SELECT count(*) FROM debt_payments").fetchone()[0] == 2
         assert connection.execute("SELECT count(*) FROM transaction_drafts").fetchone()[0] == 3
-        assert connection.execute("SELECT count(*) FROM operation_receipts").fetchone()[0] == 3
+        assert connection.execute("SELECT count(*) FROM debt_cash_events").fetchone()[0] == 3
+        assert connection.execute("SELECT count(*) FROM operation_receipts").fetchone()[0] == 4
 
 
 def test_investment_trade_writer_is_exact_idempotent_and_prevents_oversell(tmp_path):

@@ -36,6 +36,10 @@ _SYSTEM_CATEGORIES = (
     ("expense.transport", None, "expense", "Транспорт", 1, None, 100),
 )
 
+
+class StorageRevisionConflict(ValueError):
+    pass
+
 _TABLES = (
     """CREATE TABLE schema_migrations (
         version INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE,
@@ -656,7 +660,7 @@ def create_transaction_draft(
             FROM transaction_drafts WHERE origin_kind = ? AND origin_key = ?""",
             (origin_kind.strip(), origin_key.strip())).fetchone()
         if existing is not None:
-            if tuple(existing)[1:] != values:
+            if tuple(existing)[1:-1] != values[:-1]:
                 raise ValueError("draft origin key was reused with another payload")
             return existing["id"]
         draft_id = draft_id or uuid4().hex
@@ -667,6 +671,149 @@ def create_transaction_draft(
             VALUES (?, ?, 'cash', NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (draft_id, *values, now, now))
     return draft_id
+
+
+def transaction_drafts_snapshot(path: str | Path) -> tuple[list[dict], str]:
+    with connect_database(path) as connection:
+        rows = connection.execute("""SELECT d.*, c.minor_unit FROM transaction_drafts d
+            JOIN currencies c ON c.code = d.currency_code ORDER BY d.id""").fetchall()
+        revision = _draft_revision(connection)
+    return ([{**dict(row), "currency": row["currency_code"],
+              "amount": _amount(row["amount_minor"], row["minor_unit"])}
+             for row in rows], revision)
+
+
+def append_cash_drafts(path: str | Path, *, rows: list[dict],
+                       expected_revision: str | None = None) -> dict:
+    """Atomically append an import batch while preserving origin-level idempotence."""
+    if not rows:
+        with connect_database(path) as connection:
+            revision = _draft_revision(connection)
+        return {"accepted_rows": 0, "skipped_rows": 0, "revision": revision}
+    with connect_database(path, writable=True) as connection:
+        _require_draft_revision(connection, expected_revision)
+        accepted = skipped = 0
+        now = _utc_now()
+        for row in rows:
+            occurred_on = _iso_date(str(row.get("occurred_on", "")), "occurred_on")
+            flow_direction = str(row.get("flow_direction", "")).lower()
+            if flow_direction not in _DIRECTIONS:
+                raise ValueError("flow direction must be income or expense")
+            category_id = str(row.get("category_id", ""))
+            currency = str(row.get("currency", "")).upper()
+            amount_minor = _minor_units(
+                connection, currency, row.get("amount"), allow_zero=False)
+            origin_kind = str(row.get("origin_kind", "")).strip()
+            origin_key = str(row.get("origin_key", "")).strip()
+            bank_status = row.get("bank_status") or None
+            status = str(row.get("status") or "draft")
+            if not origin_kind or not origin_key:
+                raise ValueError("draft origin kind and key are required")
+            if bank_status not in {None, "pending", "posted"}:
+                raise ValueError("unsupported bank status")
+            if status not in {"draft", "ready"}:
+                raise ValueError("a new draft must have draft or ready status")
+            values = (
+                occurred_on, flow_direction, amount_minor, currency, category_id,
+                str(row.get("comment", "")), row.get("source_record_id"), origin_kind,
+                origin_key, bank_status, str(row.get("bank_reference", "")),
+                str(row.get("bank_account_id", "")), status,
+            )
+            existing = connection.execute("""SELECT id, occurred_on, flow_direction,
+                amount_minor, currency_code, category_id, comment, source_record_id,
+                origin_kind, origin_key, bank_status, bank_reference, bank_account_id, status
+                FROM transaction_drafts WHERE origin_kind = ? AND origin_key = ?""",
+                (origin_kind, origin_key)).fetchone()
+            if existing is not None:
+                if tuple(existing)[1:-1] != values[:-1]:
+                    raise ValueError("draft origin key was reused with another payload")
+                skipped += 1
+                continue
+            draft_id = str(row.get("draft_id") or uuid4().hex)
+            connection.execute("""INSERT INTO transaction_drafts
+                (id, occurred_on, draft_kind, domain_action, flow_direction, amount_minor,
+                 currency_code, category_id, comment, source_record_id, origin_kind, origin_key,
+                 bank_status, bank_reference, bank_account_id, status, created_at, updated_at)
+                VALUES (?, ?, 'cash', NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (draft_id, *values, now, now))
+            accepted += 1
+        revision = _draft_revision(connection)
+        return {"accepted_rows": accepted, "skipped_rows": skipped,
+                "revision": revision}
+
+
+def update_cash_drafts(path: str | Path, *, rows: list[dict],
+                       expected_revision: str) -> str:
+    """Apply editable Preview fields with snapshot and row-version checks."""
+    if len({str(row.get("id", "")) for row in rows}) != len(rows):
+        raise ValueError("draft update contains duplicate IDs")
+    with connect_database(path, writable=True) as connection:
+        _require_draft_revision(connection, expected_revision)
+        now = _utc_now()
+        for row in rows:
+            draft_id = str(row.get("id", ""))
+            current = connection.execute(
+                "SELECT * FROM transaction_drafts WHERE id = ?", (draft_id,)).fetchone()
+            if current is None:
+                raise ValueError("unknown transaction draft")
+            if current["draft_kind"] != "cash":
+                raise ValueError("domain draft cannot be edited as cash")
+            if current["status"] in {"exported", "archived", "ignored"}:
+                raise ValueError("published or removed draft cannot be edited")
+            if int(row.get("row_version", -1)) != current["row_version"]:
+                raise StorageRevisionConflict("transaction draft row changed after Preview")
+            occurred_on = _iso_date(str(row.get("occurred_on", "")), "occurred_on")
+            flow_direction = str(row.get("flow_direction", "")).lower()
+            if flow_direction not in _DIRECTIONS:
+                raise ValueError("flow direction must be income or expense")
+            currency = str(row.get("currency", "")).upper()
+            amount_minor = _minor_units(
+                connection, currency, row.get("amount"), allow_zero=False)
+            status = str(row.get("status") or "draft")
+            if status not in {"draft", "ready"}:
+                raise ValueError("editable draft status must be draft or ready")
+            connection.execute("""UPDATE transaction_drafts SET occurred_on = ?,
+                flow_direction = ?, amount_minor = ?, currency_code = ?, category_id = ?,
+                comment = ?, status = ?, row_version = row_version + 1, updated_at = ?
+                WHERE id = ?""",
+                (occurred_on, flow_direction, amount_minor, currency,
+                 str(row.get("category_id", "")), str(row.get("comment", "")),
+                 status, now, draft_id))
+        return _draft_revision(connection)
+
+
+def remove_transaction_drafts(path: str | Path, *, draft_ids: list[str],
+                              expected_revision: str) -> str:
+    """Hide drafts without deleting their source identity or retry history."""
+    requested = sorted(set(draft_ids))
+    if len(requested) != len(draft_ids):
+        raise ValueError("draft IDs must be unique")
+    with connect_database(path, writable=True) as connection:
+        _require_draft_revision(connection, expected_revision)
+        now = _utc_now()
+        for draft_id in requested:
+            current = connection.execute(
+                "SELECT status FROM transaction_drafts WHERE id = ?", (draft_id,)).fetchone()
+            if current is None:
+                raise ValueError("unknown transaction draft")
+            status = "archived" if current["status"] in {"exported", "archived"} else "ignored"
+            connection.execute("""UPDATE transaction_drafts SET status = ?,
+                row_version = row_version + 1, updated_at = ? WHERE id = ?""",
+                (status, now, draft_id))
+        return _draft_revision(connection)
+
+
+def _draft_revision(connection: sqlite3.Connection) -> str:
+    rows = connection.execute(
+        "SELECT id, row_version, status FROM transaction_drafts ORDER BY id").fetchall()
+    payload = [tuple(row) for row in rows]
+    return hashlib.sha256(json.dumps(payload, separators=(",", ":")).encode()).hexdigest()
+
+
+def _require_draft_revision(connection: sqlite3.Connection,
+                            expected_revision: str | None) -> None:
+    if expected_revision is not None and _draft_revision(connection) != expected_revision:
+        raise StorageRevisionConflict("transaction drafts changed after Preview")
 
 
 def publish_cash_drafts(path: str | Path, *, draft_ids: list[str], operation_key: str) -> dict:
@@ -730,6 +877,91 @@ def publish_cash_drafts(path: str | Path, *, draft_ids: list[str], operation_key
             (operation_key, operation_kind, result_entity_type, result_entity_id,
              result_json, created_at) VALUES (?, 'publish_cash_drafts',
              'cash_transaction_batch', ?, ?, ?)""",
+            (operation_key, operation_key, json.dumps(result, sort_keys=True), now))
+        return result
+
+
+def publish_domain_drafts(path: str | Path, *, draft_ids: list[str],
+                          operation_key: str) -> dict:
+    """Publish debt/investment cash movements without treating them as income or expense."""
+    requested_ids = sorted(set(draft_ids))
+    if not requested_ids or len(requested_ids) != len(draft_ids):
+        raise ValueError("draft IDs must be non-empty and unique")
+    if not operation_key.strip():
+        raise ValueError("operation key is required")
+    debt_actions = {
+        "receivable_opening": ("issue", "receivable"),
+        "receivable_payment": ("repayment", "receivable"),
+        "liability_opening": ("issue", "liability"),
+        "liability_payment": ("repayment", "liability"),
+    }
+    with connect_database(path, writable=True) as connection:
+        receipt = connection.execute(
+            "SELECT operation_kind, result_json FROM operation_receipts WHERE operation_key = ?",
+            (operation_key,)).fetchone()
+        if receipt is not None:
+            if receipt["operation_kind"] != "publish_domain_drafts":
+                raise ValueError("operation key was already used for another command")
+            result = json.loads(receipt["result_json"])
+            if result.get("draft_ids") != requested_ids:
+                raise ValueError("operation key was reused with another draft set")
+            return result
+        placeholders = ",".join("?" for _ in requested_ids)
+        drafts = connection.execute(f"""SELECT * FROM transaction_drafts
+            WHERE id IN ({placeholders}) ORDER BY id""", requested_ids).fetchall()
+        if len(drafts) != len(requested_ids):
+            raise ValueError("one or more drafts do not exist")
+        if any(row["draft_kind"] == "cash" for row in drafts):
+            raise ValueError("cash drafts must use the cash publisher")
+        if any(row["status"] not in {"draft", "ready"} for row in drafts):
+            raise ValueError("only draft or ready rows can be published")
+        if any(row["bank_status"] == "pending" for row in drafts):
+            raise ValueError("pending bank rows cannot be published")
+        now = _utc_now()
+        entity_ids = []
+        for draft in drafts:
+            entity_id = hashlib.sha256(
+                f"domain-cash-event\0{draft['id']}".encode()).hexdigest()[:32]
+            if draft["draft_kind"] == "debt":
+                action = debt_actions.get(draft["domain_action"])
+                if action is None:
+                    raise ValueError("unsupported debt draft action")
+                event_kind, side = action
+                connection.execute("""INSERT INTO debt_cash_events
+                    (id, occurred_on, event_kind, side, amount_minor,
+                     currency_code, comment, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (entity_id, draft["occurred_on"], event_kind, side,
+                     draft["amount_minor"], draft["currency_code"], draft["comment"], now))
+                entity_type = "debt_cash_event"
+            elif draft["draft_kind"] == "investment":
+                flow_kind = {
+                    "investment_contribution": "contribution",
+                    "investment_withdrawal": "withdrawal",
+                }.get(draft["domain_action"])
+                if flow_kind is None:
+                    raise ValueError("investment cash movement needs contribution or withdrawal")
+                connection.execute("""INSERT INTO investment_cash_events
+                    (id, occurred_on, flow_kind, amount_minor, currency_code, comment, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                    (entity_id, draft["occurred_on"], flow_kind, draft["amount_minor"],
+                     draft["currency_code"], draft["comment"], now))
+                entity_type = "investment_cash_event"
+            else:
+                raise ValueError("unsupported domain draft kind")
+            if draft["source_record_id"]:
+                connection.execute("INSERT INTO entity_source_links VALUES (?, ?, ?, 'original')",
+                                   (entity_type, entity_id, draft["source_record_id"]))
+            connection.execute("""UPDATE transaction_drafts SET status = 'exported',
+                row_version = row_version + 1, updated_at = ? WHERE id = ?""",
+                (now, draft["id"]))
+            entity_ids.append(entity_id)
+        result = {"draft_ids": requested_ids, "entity_ids": entity_ids,
+                  "published_rows": len(entity_ids)}
+        connection.execute("""INSERT INTO operation_receipts
+            (operation_key, operation_kind, result_entity_type, result_entity_id,
+             result_json, created_at) VALUES (?, 'publish_domain_drafts',
+             'domain_cash_event_batch', ?, ?, ?)""",
             (operation_key, operation_key, json.dumps(result, sort_keys=True), now))
         return result
 
