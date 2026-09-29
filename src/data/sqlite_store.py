@@ -216,6 +216,38 @@ _TABLES = (
         status TEXT NOT NULL CHECK (status = 'posted'),
         created_at TEXT NOT NULL
     ) STRICT""",
+    """CREATE TABLE instruments (
+        id TEXT PRIMARY KEY,
+        ticker TEXT NOT NULL UNIQUE CHECK (trim(ticker) <> ''),
+        name TEXT NOT NULL CHECK (trim(name) <> ''),
+        asset_type TEXT NOT NULL CHECK (asset_type IN ('stocks', 'funds', 'crypto')),
+        quote_currency_code TEXT NOT NULL REFERENCES currencies(code) ON DELETE RESTRICT,
+        provider TEXT NOT NULL DEFAULT '', exchange TEXT NOT NULL DEFAULT '',
+        active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0, 1)),
+        created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+    ) STRICT""",
+    """CREATE TABLE investment_trades (
+        id TEXT PRIMARY KEY,
+        occurred_on TEXT NOT NULL CHECK (length(occurred_on) = 10),
+        operation TEXT NOT NULL CHECK (operation IN ('buy', 'sell')),
+        instrument_id TEXT NOT NULL REFERENCES instruments(id) ON DELETE RESTRICT,
+        quantity_text TEXT NOT NULL CHECK (trim(quantity_text) <> ''),
+        unit_price_text TEXT NOT NULL CHECK (trim(unit_price_text) <> ''),
+        price_currency_code TEXT NOT NULL REFERENCES currencies(code) ON DELETE RESTRICT,
+        fee_minor INTEGER NOT NULL DEFAULT 0 CHECK (fee_minor >= 0),
+        account_label TEXT NOT NULL DEFAULT '', comment TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL
+    ) STRICT""",
+    """CREATE TABLE market_price_observations (
+        id TEXT PRIMARY KEY,
+        instrument_id TEXT NOT NULL REFERENCES instruments(id) ON DELETE RESTRICT,
+        price_date TEXT NOT NULL CHECK (length(price_date) = 10),
+        price_text TEXT NOT NULL CHECK (trim(price_text) <> ''),
+        currency_code TEXT NOT NULL REFERENCES currencies(code) ON DELETE RESTRICT,
+        source TEXT NOT NULL CHECK (trim(source) <> ''), fetched_at TEXT NOT NULL,
+        sequence INTEGER NOT NULL DEFAULT 0 CHECK (sequence >= 0),
+        UNIQUE (instrument_id, price_date, source, fetched_at, sequence)
+    ) STRICT""",
 )
 
 _INDEXES_AND_TRIGGERS = (
@@ -227,6 +259,8 @@ _INDEXES_AND_TRIGGERS = (
     "CREATE INDEX ix_source_records_batch ON source_records(batch_id)",
     "CREATE INDEX ix_audit_entity ON audit_events(entity_type, entity_id, id)",
     "CREATE INDEX ix_debt_payments_debt_date ON debt_payments(debt_id, occurred_on, id)",
+    "CREATE INDEX ix_investment_trades_instrument_date ON investment_trades(instrument_id, occurred_on, id)",
+    "CREATE INDEX ix_market_prices_lookup ON market_price_observations(instrument_id, price_date, fetched_at, sequence)",
     """CREATE TRIGGER categories_parent_insert BEFORE INSERT ON categories
     WHEN NEW.parent_id IS NOT NULL BEGIN
       SELECT CASE WHEN NOT EXISTS (SELECT 1 FROM categories p WHERE p.id = NEW.parent_id

@@ -129,6 +129,10 @@ def test_sample_core_migration_is_repeatable_and_reconciled(tmp_path):
     assert first.debts_imported == 4
     assert first.debt_payments_imported == 4
     assert first.debt_issues == 0
+    assert first.instruments_imported == 3
+    assert first.trades_imported == 8
+    assert first.market_prices_imported == 3
+    assert first.investment_issues == 0
 
     with connect_database(target_one) as left, connect_database(target_two) as right:
         stable_queries = {
@@ -160,6 +164,14 @@ def test_sample_core_migration_is_repeatable_and_reconciled(tmp_path):
             "debt_payments": """SELECT id, debt_id, occurred_on, principal_amount_minor,
                 cash_amount_minor, cash_currency_code, comment, status
                 FROM debt_payments ORDER BY id""",
+            "instruments": """SELECT id, ticker, name, asset_type, quote_currency_code,
+                provider, exchange, active FROM instruments ORDER BY id""",
+            "investment_trades": """SELECT id, occurred_on, operation, instrument_id,
+                quantity_text, unit_price_text, price_currency_code, fee_minor,
+                account_label, comment FROM investment_trades ORDER BY id""",
+            "market_price_observations": """SELECT id, instrument_id, price_date,
+                price_text, currency_code, source, fetched_at, sequence
+                FROM market_price_observations ORDER BY id""",
         }
         for query in stable_queries.values():
             left_rows = left.execute(query).fetchall()
@@ -195,6 +207,8 @@ def test_sample_core_migration_is_repeatable_and_reconciled(tmp_path):
             metrics["source_cash_candidates"] + metrics["source_asset_snapshots"]
             + metrics["auxiliary_records_imported"] + metrics["drafts_imported"]
             + metrics["debts_imported"] + metrics["debt_payments_imported"]
+            + metrics["instruments_imported"] + metrics["trades_imported"]
+            + metrics["market_prices_imported"]
         )
         assert audit.execute(
             "SELECT count(*) FROM migration_issues WHERE code = 'unmapped_category'"

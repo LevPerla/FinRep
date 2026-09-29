@@ -86,7 +86,8 @@ _CATEGORY_BY_LABEL = {
 }
 _ADAPTED_FAMILIES = {
     "cash_transactions", "asset_snapshots", "category_rules", "fx_rates", "annual_goals",
-    "transaction_drafts", "debts", "debt_payments",
+    "transaction_drafts", "debts", "debt_payments", "investment_instruments",
+    "investment_transactions", "market_prices",
 }
 _FAMILY_ORDER = {
     "cash_transactions": 10, "asset_snapshots": 20, "category_rules": 30,
@@ -131,6 +132,10 @@ class MigrationSummary:
     debts_imported: int
     debt_payments_imported: int
     debt_issues: int
+    instruments_imported: int
+    trades_imported: int
+    market_prices_imported: int
+    investment_issues: int
 
 
 def build_manifest(source_root: str | Path) -> tuple[list[ManifestEntry], str]:
@@ -250,7 +255,7 @@ def migrate_core_csv(source_root: str | Path, target_db: str | Path,
     audit = sqlite3.connect(Path(migration_db))
     try:
         cash_imported = snapshots_imported = auxiliary = drafts = unresolved = source_cash = source_snapshots = 0
-        debts = debt_payments = 0
+        debts = debt_payments = instruments = trades = market_prices = 0
         for item in sorted(entries, key=lambda entry: (_FAMILY_ORDER.get(entry.family, 999), entry.relative_path)):
             if item.status != "included":
                 continue
@@ -277,7 +282,14 @@ def migrate_core_csv(source_root: str | Path, target_db: str | Path,
                 debts += _migrate_debts(path, item, target_db, audit)
             elif item.family == "debt_payments":
                 debt_payments += _migrate_debt_payments(path, item, target_db, audit)
+            elif item.family == "investment_instruments":
+                instruments += _migrate_instruments(path, item, target_db, audit)
+            elif item.family == "investment_transactions":
+                trades += _migrate_investment_trades(path, item, target_db, audit)
+            elif item.family == "market_prices":
+                market_prices += _migrate_market_prices(path, item, target_db, audit)
         debt_issues = _reconcile_debts(target_db, audit)
+        investment_issues = _reconcile_investments(target_db, audit)
         metrics = {
             "manifest_files": len(entries),
             "included_files": sum(item.status == "included" for item in entries),
@@ -295,6 +307,10 @@ def migrate_core_csv(source_root: str | Path, target_db: str | Path,
             "debts_imported": debts,
             "debt_payments_imported": debt_payments,
             "debt_issues": debt_issues,
+            "instruments_imported": instruments,
+            "trades_imported": trades,
+            "market_prices_imported": market_prices,
+            "investment_issues": investment_issues,
         }
         audit.executemany("INSERT INTO reconciliation VALUES (?, ?)", metrics.items())
         audit.commit()
@@ -305,6 +321,7 @@ def migrate_core_csv(source_root: str | Path, target_db: str | Path,
         cash_imported, snapshots_imported, unresolved,
         sum(item.status == "included" and item.family not in _ADAPTED_FAMILIES for item in entries),
         auxiliary, drafts, debts, debt_payments, debt_issues,
+        instruments, trades, market_prices, investment_issues,
     )
 
 
@@ -626,6 +643,130 @@ def _reconcile_debts(target_db: Path, audit: sqlite3.Connection) -> int:
     return issues
 
 
+def _migrate_instruments(path: Path, item: ManifestEntry, target_db: Path,
+                         audit: sqlite3.Connection) -> int:
+    imported = 0
+    with path.open("r", encoding="utf-8-sig", newline="") as stream:
+        for row_number, row in enumerate(csv.DictReader(stream, delimiter=";"), start=2):
+            source_record_id = _source_row(item, row_number, row, target_db, audit)
+            try:
+                ticker = (row.get("ticker") or "").strip().upper()
+                name = (row.get("name") or "").strip() or ticker
+                asset_type = (row.get("asset_type") or "").strip().lower()
+                currency = (row.get("currency") or "").strip().upper()
+                if not ticker or asset_type not in {"stocks", "funds", "crypto"}:
+                    raise ValueError("instrument needs ticker and supported asset type")
+                with connect_database(target_db) as target:
+                    if target.execute("SELECT 1 FROM currencies WHERE code = ?", (currency,)).fetchone() is None:
+                        raise ValueError("unsupported instrument currency")
+                instrument_id = _stable_id("instrument", ticker)
+                with connect_database(target_db, writable=True) as target:
+                    target.execute("""INSERT INTO instruments
+                        (id, ticker, name, asset_type, quote_currency_code, provider, exchange,
+                         created_at, updated_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))""",
+                        (instrument_id, ticker, name, asset_type, currency,
+                         (row.get("provider") or "").strip(), (row.get("exchange") or "").strip()))
+            except (ValueError, sqlite3.IntegrityError) as exc:
+                _issue(audit, item.relative_path, str(row_number), "invalid_instrument", str(exc), True)
+                continue
+            link_entity_source(target_db, "instrument", instrument_id, source_record_id)
+            imported += 1
+    return imported
+
+
+def _migrate_investment_trades(path: Path, item: ManifestEntry, target_db: Path,
+                               audit: sqlite3.Connection) -> int:
+    imported = 0
+    with path.open("r", encoding="utf-8-sig", newline="") as stream:
+        for row_number, row in enumerate(csv.DictReader(stream, delimiter=";"), start=2):
+            source_record_id = _source_row(item, row_number, row, target_db, audit)
+            try:
+                ticker = (row.get("ticker") or "").strip().upper()
+                operation = (row.get("operation") or "").strip().lower()
+                asset_type = (row.get("asset_type") or "").strip().lower()
+                occurred_on = _legacy_date(row.get("date") or "")
+                currency = (row.get("currency") or "").strip().upper()
+                with connect_database(target_db) as target:
+                    instrument = target.execute(
+                        "SELECT id, asset_type FROM instruments WHERE ticker = ?", (ticker,)
+                    ).fetchone()
+                if instrument is None or instrument["asset_type"] != asset_type:
+                    raise ValueError("trade needs a known instrument with matching asset type")
+                if operation not in {"buy", "sell"} or occurred_on is None:
+                    raise ValueError("trade needs supported operation and valid date")
+                quantity = _decimal_text(row.get("quantity"), allow_zero=False)
+                price = _decimal_text(row.get("price"), allow_zero=True)
+                fee_minor = _nonnegative_minor(target_db, currency, row.get("fee") or "0")
+                trade_id = _stable_id("investment-trade", source_record_id)
+                with connect_database(target_db, writable=True) as target:
+                    target.execute("""INSERT INTO investment_trades
+                        (id, occurred_on, operation, instrument_id, quantity_text,
+                         unit_price_text, price_currency_code, fee_minor, account_label,
+                         comment, created_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))""",
+                        (trade_id, occurred_on, operation, instrument["id"], quantity,
+                         price, currency, fee_minor, row.get("account") or "",
+                         row.get("comment") or ""))
+            except (ValueError, sqlite3.IntegrityError) as exc:
+                _issue(audit, item.relative_path, str(row_number), "invalid_investment_trade", str(exc), True)
+                continue
+            link_entity_source(target_db, "investment_trade", trade_id, source_record_id)
+            imported += 1
+    return imported
+
+
+def _migrate_market_prices(path: Path, item: ManifestEntry, target_db: Path,
+                           audit: sqlite3.Connection) -> int:
+    imported = 0
+    with path.open("r", encoding="utf-8-sig", newline="") as stream:
+        for row_number, row in enumerate(csv.DictReader(stream, delimiter=";"), start=2):
+            source_record_id = _source_row(item, row_number, row, target_db, audit)
+            try:
+                ticker = (row.get("ticker") or "").strip().upper()
+                price_date = _legacy_date(row.get("date") or "")
+                currency = (row.get("currency") or "").strip().upper()
+                source = (row.get("source") or "migration").strip()
+                with connect_database(target_db) as target:
+                    instrument = target.execute("SELECT id FROM instruments WHERE ticker = ?", (ticker,)).fetchone()
+                if instrument is None or price_date is None or not source:
+                    raise ValueError("price needs known instrument, date and source")
+                price = _decimal_text(row.get("price"), allow_zero=False)
+                observation_id = _stable_id("market-price", source_record_id)
+                with connect_database(target_db, writable=True) as target:
+                    target.execute("""INSERT INTO market_price_observations
+                        (id, instrument_id, price_date, price_text, currency_code,
+                         source, fetched_at, sequence)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                        (observation_id, instrument["id"], price_date, price, currency,
+                         source, (row.get("fetched_at") or "").strip(), row_number - 2))
+            except (ValueError, sqlite3.IntegrityError) as exc:
+                _issue(audit, item.relative_path, str(row_number), "invalid_market_price", str(exc), True)
+                continue
+            link_entity_source(target_db, "market_price_observation", observation_id, source_record_id)
+            imported += 1
+    return imported
+
+
+def _reconcile_investments(target_db: Path, audit: sqlite3.Connection) -> int:
+    issues = 0
+    positions: dict[str, Decimal] = {}
+    with connect_database(target_db) as target:
+        rows = target.execute("""SELECT t.id, t.operation, t.quantity_text, i.ticker
+            FROM investment_trades t JOIN instruments i ON i.id = t.instrument_id
+            ORDER BY t.occurred_on, t.id""").fetchall()
+    for row in rows:
+        quantity = Decimal(row["quantity_text"])
+        balance = positions.get(row["ticker"], Decimal("0"))
+        balance += quantity if row["operation"] == "buy" else -quantity
+        positions[row["ticker"]] = balance
+        if balance < 0:
+            issues += 1
+            _issue(audit, "investments/transactions.csv", row["id"], "investment_oversell",
+                   f"sell exceeds known quantity for {row['ticker']}", True)
+    return issues
+
+
 def _draft_cash_category(label: str, comment: str) -> tuple[str | None, str | None]:
     if label == "Доход":
         source = classify_income_comment(comment)
@@ -671,6 +812,20 @@ def _optional_minor(target_db: Path, currency: str, value: str) -> int | None:
     if scaled != scaled.to_integral_value():
         raise ValueError("goal exceeds currency minor-unit precision")
     return int(scaled)
+
+
+def _nonnegative_minor(target_db: Path, currency: str, value) -> int:
+    result = _optional_minor(target_db, currency, value)
+    if result is None:
+        raise ValueError("money amount is required")
+    return result
+
+
+def _decimal_text(value, *, allow_zero: bool) -> str:
+    parsed = parse_money_amount(value, field_name="decimal value")
+    if parsed < 0 or (parsed == 0 and not allow_zero):
+        raise ValueError("decimal value must be positive" if not allow_zero else "decimal value must be non-negative")
+    return format(parsed, "f")
 
 
 def _cash_classification(column: str, amount: Decimal, comment: str):
