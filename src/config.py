@@ -47,7 +47,8 @@ STOCK_API = 'yf'  # yf, td
 FX_BASE_CURRENCY = 'USD'
 FX_PROVIDER_ORDER = ['yfinance', 'cbr']
 
-NOT_COST_COLS = ['Доход', 'Сбережения', 'Инвестиции',
+INCOME_CATEGORY_LABELS = ['Зарплата', 'Проценты', 'Инвест доход', 'Прочие доходы']
+NOT_COST_COLS = ['Доход', 'Сбережения', *INCOME_CATEGORY_LABELS, 'Инвестиции',
                  'Дебиторская задолженность', 'Погашение деб. зад.',
                  'Кредиторская задолженность', 'Погашение кред. зад.']
 DEBUG = False
@@ -77,6 +78,26 @@ def is_test_mode() -> bool:
 def active_data_path(*parts: str) -> Path:
     root = Path(SAMPLE_DATA_PATH if is_test_mode() else DATA_PATH)
     return root.joinpath(*parts)
+
+
+def get_storage_backend() -> str:
+    backend = os.environ.get("FINREP_STORAGE_BACKEND", "csv").strip().lower()
+    if backend not in {"csv", "sqlite"}:
+        raise ValueError("FINREP_STORAGE_BACKEND must be csv or sqlite")
+    return backend
+
+
+def use_sqlite_storage() -> bool:
+    # TEST remains the immutable sample CSV dataset until a sample SQLite artifact exists.
+    return get_storage_backend() == "sqlite" and not is_test_mode()
+
+
+def active_database_path() -> Path:
+    configured = os.environ.get("FINREP_SQLITE_PATH")
+    if configured:
+        path = Path(configured).expanduser()
+        return path if path.is_absolute() else PROJECT_PATH / path
+    return Path(DATA_PATH) / "finrep.sqlite3"
 
 
 def require_writable_mode() -> None:

@@ -90,6 +90,24 @@ def build_instrument_registry(transactions: pd.DataFrame | None = None) -> pd.Da
 
 
 def read_investment_transactions(path: str | Path | None = None, legacy_path: str | Path | None = None) -> pd.DataFrame:
+    if path is None and config.use_sqlite_storage():
+        from src.data.sqlite_store import connect_database
+
+        with connect_database(config.active_database_path()) as connection:
+            rows = connection.execute("""SELECT t.occurred_on AS date, t.operation,
+                i.asset_type, i.ticker, t.quantity_text AS quantity,
+                t.unit_price_text AS price, t.price_currency_code AS currency,
+                t.fee_minor, c.minor_unit, t.account_label AS account, t.comment
+                FROM investment_trades t JOIN instruments i ON i.id = t.instrument_id
+                JOIN currencies c ON c.code = t.price_currency_code
+                ORDER BY t.occurred_on, t.id""").fetchall()
+        records = []
+        for row in rows:
+            item = dict(row)
+            item["fee"] = format_money_amount(
+                Decimal(item.pop("fee_minor")).scaleb(-item.pop("minor_unit")))
+            records.append(item)
+        return normalize_investment_transactions(pd.DataFrame(records, columns=TRANSACTION_COLUMNS))
     transaction_path = Path(path or config.active_data_path("investments", "transactions.csv"))
     if transaction_path.exists():
         data = pd.read_csv(transaction_path, sep=";", dtype=str, encoding="utf-8-sig", keep_default_na=False)
@@ -98,6 +116,14 @@ def read_investment_transactions(path: str | Path | None = None, legacy_path: st
 
 
 def read_instrument_registry(path: str | Path | None = None) -> pd.DataFrame:
+    if path is None and config.use_sqlite_storage():
+        from src.data.sqlite_store import connect_database
+
+        with connect_database(config.active_database_path()) as connection:
+            rows = connection.execute("""SELECT ticker, name, asset_type,
+                quote_currency_code AS currency, provider, exchange
+                FROM instruments WHERE active = 1 ORDER BY ticker""").fetchall()
+        return pd.DataFrame([dict(row) for row in rows], columns=INSTRUMENT_COLUMNS)
     registry_path = Path(path or config.active_data_path("investments", "instruments.csv"))
     if not registry_path.exists():
         return build_instrument_registry()
@@ -113,6 +139,15 @@ def read_instrument_registry(path: str | Path | None = None) -> pd.DataFrame:
 
 
 def read_price_cache(path: str | Path | None = None) -> pd.DataFrame:
+    if path is None and config.use_sqlite_storage():
+        from src.data.sqlite_store import connect_database
+
+        with connect_database(config.active_database_path()) as connection:
+            rows = connection.execute("""SELECT p.price_date AS date, i.ticker,
+                p.price_text AS price, p.currency_code AS currency, p.source, p.fetched_at
+                FROM market_price_observations p JOIN instruments i ON i.id = p.instrument_id
+                ORDER BY p.price_date, p.fetched_at, p.sequence, p.id""").fetchall()
+        return pd.DataFrame([dict(row) for row in rows], columns=PRICE_CACHE_COLUMNS)
     cache_path = _price_cache_path(path)
     if not cache_path.exists():
         return pd.DataFrame(columns=PRICE_CACHE_COLUMNS)
@@ -127,6 +162,8 @@ def read_price_cache(path: str | Path | None = None) -> pd.DataFrame:
 
 
 def ensure_price_cache_file(path: str | Path | None = None) -> Path:
+    if path is None and config.use_sqlite_storage():
+        return config.active_database_path()
     cache_path = _price_cache_path(path)
     if config.is_test_mode() and not cache_path.exists():
         return cache_path
@@ -151,6 +188,20 @@ def write_price_cache(data: pd.DataFrame, path: str | Path | None = None) -> Non
     for row_number, price in enumerate(normalized["price"], start=2):
         if _to_float(price) is None:
             raise ValueError(f"row {row_number}: price must be finite")
+    if path is None and config.use_sqlite_storage():
+        from src.data.sqlite_store import save_market_price
+
+        sequence_by_identity = {}
+        for row in normalized.to_dict("records"):
+            identity = (row["ticker"], row["date"], row["source"], row["fetched_at"])
+            sequence = sequence_by_identity.get(identity, 0)
+            save_market_price(
+                config.active_database_path(), ticker=row["ticker"], price_date=row["date"],
+                price=row["price"], currency=row["currency"], source=row["source"],
+                fetched_at=row["fetched_at"], sequence=sequence)
+            sequence_by_identity[identity] = sequence + 1
+        clear_valuation_caches()
+        return
     cache_path = ensure_price_cache_file(path)
     atomic_write_csv(normalized, cache_path, sep=";", index=False, encoding="utf-8-sig")
     clear_valuation_caches()

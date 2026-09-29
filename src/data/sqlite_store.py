@@ -1453,8 +1453,6 @@ def record_crypto_refresh(
     if not fetched_at.strip() or not source.strip() or not operation_key.strip():
         raise ValueError("refresh time, source and operation key are required")
     balance_text = None if balance is None else _non_negative_decimal_text(balance, "balance")
-    if status == "ok" and balance_text is None:
-        raise ValueError("successful crypto refresh requires a balance")
     if status == "error" and (balance_text is not None or transactions):
         raise ValueError("failed crypto refresh cannot contain new observations")
     normalized_transactions = []
@@ -1573,6 +1571,47 @@ def fx_rates(path: str | Path) -> list[dict]:
             usd_per_unit_text AS usd_rate_text, source, fetched_at, sequence
             FROM v_effective_fx_rates ORDER BY rate_date, currency_code""").fetchall()
     return [{**dict(row), "usd_rate": Decimal(row["usd_rate_text"])} for row in rows]
+
+
+def save_market_price(path: str | Path, *, ticker: str, price_date: str, price,
+                      currency: str, source: str, fetched_at: str,
+                      sequence: int = 0) -> str:
+    ticker = ticker.strip().upper()
+    price_date = _iso_date(price_date, "price_date")
+    price_text = _positive_decimal_text(price, "market price")
+    currency = currency.upper()
+    if not ticker or not source.strip() or not fetched_at.strip() or sequence < 0:
+        raise ValueError("price ticker, source, fetched_at and non-negative sequence are required")
+    identity = f"{ticker}\0{price_date}\0{source.strip()}\0{fetched_at.strip()}\0{sequence}"
+    observation_id = hashlib.sha256(f"market-price\0{identity}".encode()).hexdigest()[:32]
+    with connect_database(path, writable=True) as connection:
+        instrument = connection.execute(
+            "SELECT id FROM instruments WHERE ticker = ?", (ticker,)).fetchone()
+        if instrument is None:
+            raise ValueError("market price needs a known instrument")
+        if connection.execute("SELECT 1 FROM currencies WHERE code = ?", (currency,)).fetchone() is None:
+            raise ValueError("unsupported currency")
+        same_observation = connection.execute("""SELECT id FROM market_price_observations
+            WHERE instrument_id = ? AND price_date = ? AND price_text = ?
+            AND currency_code = ? AND source = ? AND fetched_at = ? LIMIT 1""",
+            (instrument["id"], price_date, price_text, currency,
+             source.strip(), fetched_at.strip())).fetchone()
+        if same_observation is not None:
+            return same_observation["id"]
+        existing = connection.execute("""SELECT id, price_text, currency_code
+            FROM market_price_observations WHERE instrument_id = ? AND price_date = ?
+            AND source = ? AND fetched_at = ? AND sequence = ?""",
+            (instrument["id"], price_date, source.strip(), fetched_at.strip(), sequence)).fetchone()
+        if existing is not None:
+            if (existing["price_text"], existing["currency_code"]) != (price_text, currency):
+                raise ValueError("market price identity has conflicting payload")
+            return existing["id"]
+        connection.execute("""INSERT INTO market_price_observations
+            (id, instrument_id, price_date, price_text, currency_code, source,
+             fetched_at, sequence) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (observation_id, instrument["id"], price_date, price_text, currency,
+             source.strip(), fetched_at.strip(), sequence))
+    return observation_id
 
 
 def register_source_record(path: str | Path, *, source_kind: str, document_hash: str,
