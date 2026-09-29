@@ -134,14 +134,23 @@ _TABLES = (
     ) STRICT""",
     """CREATE TABLE transaction_drafts (
         id TEXT PRIMARY KEY, occurred_on TEXT NOT NULL CHECK (length(occurred_on) = 10),
-        flow_direction TEXT NOT NULL CHECK (flow_direction IN ('income', 'expense')),
+        draft_kind TEXT NOT NULL CHECK (draft_kind IN ('cash', 'debt', 'investment')),
+        domain_action TEXT,
+        flow_direction TEXT CHECK (flow_direction IN ('income', 'expense')),
         amount_minor INTEGER NOT NULL CHECK (amount_minor > 0),
         currency_code TEXT NOT NULL REFERENCES currencies(code) ON DELETE RESTRICT,
         category_id TEXT REFERENCES categories(id) ON DELETE RESTRICT, comment TEXT NOT NULL DEFAULT '',
         source_record_id TEXT UNIQUE REFERENCES source_records(id) ON DELETE RESTRICT,
-        status TEXT NOT NULL CHECK (status IN ('draft', 'ready', 'posted', 'error')),
+        origin_kind TEXT NOT NULL CHECK (trim(origin_kind) <> ''),
+        origin_key TEXT NOT NULL CHECK (trim(origin_key) <> ''),
+        bank_status TEXT CHECK (bank_status IN ('pending', 'posted')),
+        status TEXT NOT NULL CHECK (status IN ('draft', 'ready', 'exported', 'archived', 'ignored')),
         row_version INTEGER NOT NULL DEFAULT 1 CHECK (row_version >= 1),
-        created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+        created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+        UNIQUE (origin_kind, origin_key),
+        CHECK ((draft_kind = 'cash' AND domain_action IS NULL)
+            OR (draft_kind <> 'cash' AND domain_action IS NOT NULL
+                AND flow_direction IS NULL AND category_id IS NULL))
     ) STRICT""",
     """CREATE TABLE operation_receipts (
         operation_key TEXT PRIMARY KEY, operation_kind TEXT NOT NULL CHECK (trim(operation_kind) <> ''),

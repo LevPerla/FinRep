@@ -86,6 +86,15 @@ _CATEGORY_BY_LABEL = {
 }
 _ADAPTED_FAMILIES = {
     "cash_transactions", "asset_snapshots", "category_rules", "fx_rates", "annual_goals",
+    "transaction_drafts",
+}
+_DRAFT_DOMAIN_ACTIONS = {
+    "Дебиторская задолженность": ("debt", "receivable_opening"),
+    "Погашение деб. зад.": ("debt", "receivable_payment"),
+    "Кредиторская задолженность": ("debt", "liability_opening"),
+    "Погашение кред. зад.": ("debt", "liability_payment"),
+    "Долги (у меня)": ("debt", "receivable_opening"),
+    "Инвестиции": ("investment", "cash_movement"),
 }
 
 
@@ -111,6 +120,7 @@ class MigrationSummary:
     unresolved_financial_records: int
     pending_adapter_files: int
     auxiliary_records_imported: int
+    drafts_imported: int
 
 
 def build_manifest(source_root: str | Path) -> tuple[list[ManifestEntry], str]:
@@ -229,7 +239,7 @@ def migrate_core_csv(source_root: str | Path, target_db: str | Path,
 
     audit = sqlite3.connect(Path(migration_db))
     try:
-        cash_imported = snapshots_imported = auxiliary = unresolved = source_cash = source_snapshots = 0
+        cash_imported = snapshots_imported = auxiliary = drafts = unresolved = source_cash = source_snapshots = 0
         for item in entries:
             if item.status != "included":
                 continue
@@ -250,6 +260,8 @@ def migrate_core_csv(source_root: str | Path, target_db: str | Path,
                 auxiliary += _migrate_fx_rates(path, item, target_db, audit)
             elif item.family == "annual_goals":
                 auxiliary += _migrate_annual_goals(path, item, target_db, audit)
+            elif item.family == "transaction_drafts":
+                drafts += _migrate_transaction_drafts(path, item, target_db, audit)
         metrics = {
             "manifest_files": len(entries),
             "included_files": sum(item.status == "included" for item in entries),
@@ -263,6 +275,7 @@ def migrate_core_csv(source_root: str | Path, target_db: str | Path,
                 for item in entries
             ),
             "auxiliary_records_imported": auxiliary,
+            "drafts_imported": drafts,
         }
         audit.executemany("INSERT INTO reconciliation VALUES (?, ?)", metrics.items())
         audit.commit()
@@ -272,7 +285,7 @@ def migrate_core_csv(source_root: str | Path, target_db: str | Path,
         manifest_hash, len(entries), sum(item.status == "included" for item in entries),
         cash_imported, snapshots_imported, unresolved,
         sum(item.status == "included" and item.family not in _ADAPTED_FAMILIES for item in entries),
-        auxiliary,
+        auxiliary, drafts,
     )
 
 
@@ -442,6 +455,77 @@ def _migrate_annual_goals(path: Path, item: ManifestEntry, target_db: Path,
             link_entity_source(target_db, "annual_goal", entity_id, source_record_id)
             imported += 1
     return imported
+
+
+def _migrate_transaction_drafts(path: Path, item: ManifestEntry, target_db: Path,
+                                audit: sqlite3.Connection) -> int:
+    imported = 0
+    with path.open("r", encoding="utf-8-sig", newline="") as stream:
+        for row_number, row in enumerate(csv.DictReader(stream, delimiter=";"), start=2):
+            source_record_id = _source_row(item, row_number, row, target_db, audit)
+            category_label = (row.get("category") or "").strip()
+            domain = _DRAFT_DOMAIN_ACTIONS.get(category_label)
+            direction = category_id = domain_action = None
+            draft_kind = "cash"
+            if domain:
+                draft_kind, domain_action = domain
+            else:
+                category_id, direction = _draft_cash_category(category_label, row.get("comment") or "")
+                explicit = {"credit": "income", "debit": "expense", "": direction}.get(
+                    (row.get("direction") or "").strip().lower()
+                )
+                if category_id is None or explicit is None or explicit != direction:
+                    _issue(audit, item.relative_path, str(row_number), "unresolved_draft_category",
+                           f"draft category/direction requires review: {category_label!r}", True)
+                    continue
+            try:
+                occurred_on = _legacy_date(row.get("date") or "")
+                if occurred_on is None:
+                    raise ValueError("draft date must be ISO or DD.MM.YYYY")
+                amount_minor = _positive_minor(
+                    target_db, (row.get("currency") or "").strip().upper(), row.get("amount")
+                )
+                status = (row.get("status") or "draft").strip()
+                if status not in {"draft", "ready", "exported", "archived", "ignored"}:
+                    raise ValueError("unsupported draft status")
+                bank_status = (row.get("bank_status") or "").strip().lower() or None
+                if bank_status not in {None, "pending", "posted"}:
+                    raise ValueError("unsupported bank status")
+                origin_kind = (row.get("source") or "manual").strip() or "manual"
+                origin_key = (row.get("source_id") or "").strip() or source_record_id
+                draft_id = _stable_id("transaction-draft", source_record_id)
+                with connect_database(target_db, writable=True) as target:
+                    target.execute("""INSERT INTO transaction_drafts
+                        (id, occurred_on, draft_kind, domain_action, flow_direction,
+                         amount_minor, currency_code, category_id, comment, source_record_id,
+                         origin_kind, origin_key, bank_status, status, created_at, updated_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))""",
+                        (draft_id, occurred_on, draft_kind, domain_action, direction,
+                         amount_minor, (row.get("currency") or "").strip().upper(), category_id,
+                         sanitize_transaction_comment(row.get("comment") or ""), source_record_id,
+                         origin_kind, origin_key, bank_status, status))
+            except (ValueError, sqlite3.IntegrityError) as exc:
+                _issue(audit, item.relative_path, str(row_number), "invalid_transaction_draft", str(exc), True)
+                continue
+            imported += 1
+    return imported
+
+
+def _draft_cash_category(label: str, comment: str) -> tuple[str | None, str | None]:
+    if label == "Доход":
+        source = classify_income_comment(comment)
+        category_id = {"salary": "income.salary", "deposit_interest": "income.interest"}.get(
+            source, "income.unknown")
+        return category_id, "income"
+    category_id = _CATEGORY_BY_LABEL.get(label)
+    return (category_id, category_id.split(".", 1)[0]) if category_id else (None, None)
+
+
+def _positive_minor(target_db: Path, currency: str, value) -> int:
+    result = _optional_minor(target_db, currency, value)
+    if result is None or result <= 0:
+        raise ValueError("draft amount must be positive")
+    return result
 
 
 def _source_row(item: ManifestEntry, row_number: int, row: dict, target_db: Path,

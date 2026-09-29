@@ -1,4 +1,5 @@
 from pathlib import Path
+import csv
 import sqlite3
 
 from src import config
@@ -48,6 +49,38 @@ def test_empty_months_and_identical_files_remain_distinct(tmp_path):
         ).fetchone()[0] == "2026-01"
 
 
+def test_cash_drafts_preserve_direction_category_status_and_source_key(tmp_path):
+    staging = tmp_path / "staging"
+    staging.mkdir()
+    path = staging / "transaction_drafts.csv"
+    columns = [
+        "date", "category", "currency", "amount", "comment", "source", "source_id",
+        "direction", "bank_status", "bank_reference", "bank_account_id", "status",
+    ]
+    rows = [
+        ["2026-01-01", "Пища", "RUB", "12.34", "Lunch", "manual", "m1",
+         "debit", "", "", "", "ready"],
+        ["2026-01-02", "Доход", "USD", "25", "Salary", "bank", "b1",
+         "credit", "posted", "ref", "account", "exported"],
+    ]
+    with path.open("w", encoding="utf-8", newline="") as stream:
+        writer = csv.writer(stream, delimiter=";")
+        writer.writerow(columns)
+        writer.writerows(rows)
+    target = tmp_path / "target.sqlite3"
+    summary = migrate_core_csv(tmp_path, target, tmp_path / "migration.sqlite3")
+    assert summary.drafts_imported == 2
+    assert summary.pending_adapter_files == 0
+    with connect_database(target) as connection:
+        drafts = connection.execute("""SELECT flow_direction, amount_minor, currency_code,
+            category_id, origin_kind, origin_key, bank_status, status
+            FROM transaction_drafts ORDER BY occurred_on""").fetchall()
+    assert [tuple(row) for row in drafts] == [
+        ("expense", 1234, "RUB", "expense.food", "manual", "m1", None, "ready"),
+        ("income", 2500, "USD", "income.salary", "bank", "b1", "posted", "exported"),
+    ]
+
+
 def test_sample_core_migration_is_repeatable_and_reconciled(tmp_path):
     source = Path(config.SAMPLE_DATA_PATH)
     target_one = tmp_path / "target-one.sqlite3"
@@ -63,6 +96,7 @@ def test_sample_core_migration_is_repeatable_and_reconciled(tmp_path):
     assert first.unresolved_financial_records > 0
     assert first.pending_adapter_files > 0
     assert first.auxiliary_records_imported > 0
+    assert first.drafts_imported == 4
 
     with connect_database(target_one) as left, connect_database(target_two) as right:
         stable_queries = {
@@ -84,6 +118,10 @@ def test_sample_core_migration_is_repeatable_and_reconciled(tmp_path):
             "annual_goals": """SELECT year, currency_code, target_capital_minor,
                 target_monthly_income_minor, target_monthly_expense_minor, notes
                 FROM annual_goals ORDER BY year, currency_code""",
+            "transaction_drafts": """SELECT id, occurred_on, draft_kind, domain_action,
+                flow_direction, amount_minor, currency_code, category_id, comment,
+                source_record_id, origin_kind, origin_key, bank_status, status
+                FROM transaction_drafts ORDER BY id""",
         }
         for query in stable_queries.values():
             left_rows = left.execute(query).fetchall()
@@ -93,6 +131,12 @@ def test_sample_core_migration_is_repeatable_and_reconciled(tmp_path):
         assert left.execute("PRAGMA foreign_key_check").fetchall() == []
         assert left.execute("SELECT count(*) FROM transaction_source_links").fetchone()[0] == first.cash_imported
         assert left.execute("SELECT count(*) FROM v_cash_transactions").fetchone()[0] == first.cash_imported
+        assert left.execute(
+            "SELECT count(*) FROM transaction_drafts WHERE draft_kind = 'debt' AND category_id IS NULL"
+        ).fetchone()[0] == 4
+        assert {row[0] for row in left.execute(
+            "SELECT domain_action FROM transaction_drafts"
+        )} == {"receivable_opening", "liability_payment"}
         runtime_columns = {
             row["name"]
             for table in ("cash_transactions", "asset_snapshots")
@@ -111,7 +155,7 @@ def test_sample_core_migration_is_repeatable_and_reconciled(tmp_path):
         assert metrics["source_asset_snapshots"] == metrics["imported_asset_snapshots"]
         assert audit.execute("SELECT count(*) FROM raw_records").fetchone()[0] == (
             metrics["source_cash_candidates"] + metrics["source_asset_snapshots"]
-            + metrics["auxiliary_records_imported"]
+            + metrics["auxiliary_records_imported"] + metrics["drafts_imported"]
         )
         assert audit.execute(
             "SELECT count(*) FROM migration_issues WHERE code = 'unmapped_category'"
