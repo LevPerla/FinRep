@@ -684,16 +684,33 @@ def transaction_drafts_snapshot(path: str | Path) -> tuple[list[dict], str]:
 
 
 def append_cash_drafts(path: str | Path, *, rows: list[dict],
-                       expected_revision: str | None = None) -> dict:
+                       expected_revision: str | None = None,
+                       pending_replacements: dict[tuple[str, str], tuple[str, str]] | None = None) -> dict:
     """Atomically append an import batch while preserving origin-level idempotence."""
     if not rows:
         with connect_database(path) as connection:
             revision = _draft_revision(connection)
-        return {"accepted_rows": 0, "skipped_rows": 0, "revision": revision}
+        return {"accepted_rows": 0, "skipped_rows": 0,
+                "replaced_pending_rows": 0, "revision": revision}
     with connect_database(path, writable=True) as connection:
         _require_draft_revision(connection, expected_revision)
-        accepted = skipped = 0
+        accepted = skipped = replaced = 0
         now = _utc_now()
+        for new_key, old_key in (pending_replacements or {}).items():
+            if not any(
+                str(row.get("origin_kind", "")).strip() == new_key[0]
+                and str(row.get("origin_key", "")).strip() == new_key[1]
+                for row in rows
+            ):
+                raise StorageRevisionConflict("replacement row is missing from the import batch")
+            old = connection.execute("""SELECT id, bank_status, status FROM transaction_drafts
+                WHERE origin_kind = ? AND origin_key = ?""", old_key).fetchone()
+            if old is None or old["bank_status"] != "pending" or old["status"] not in {"draft", "ready"}:
+                raise StorageRevisionConflict("pending draft changed after Preview")
+            connection.execute("""UPDATE transaction_drafts SET status = 'ignored',
+                row_version = row_version + 1, updated_at = ? WHERE id = ?""",
+                (now, old["id"]))
+            replaced += 1
         for row in rows:
             occurred_on = _iso_date(str(row.get("occurred_on", "")), "occurred_on")
             flow_direction = str(row.get("flow_direction", "")).lower()
@@ -739,6 +756,7 @@ def append_cash_drafts(path: str | Path, *, rows: list[dict],
             accepted += 1
         revision = _draft_revision(connection)
         return {"accepted_rows": accepted, "skipped_rows": skipped,
+                "replaced_pending_rows": replaced,
                 "revision": revision}
 
 

@@ -15,6 +15,7 @@ from src.data.crypto import (
     refresh_crypto_balances,
 )
 from src.data.sqlite_store import upsert_crypto_wallet
+from src.data import staging
 import pandas as pd
 
 
@@ -148,3 +149,29 @@ def test_sqlite_crypto_balance_refresh_keeps_success_after_failure(tmp_path, mon
     assert second.attrs["errors"]
     assert read_crypto_balances()["balance"].tolist() == ["0.25"]
     assert read_crypto_refresh_status()["status"].tolist() == ["error"]
+
+
+def test_sqlite_staging_adapter_supports_batch_edit_and_remove(tmp_path, monkeypatch):
+    database = tmp_path / "target.sqlite3"
+    initialize_database(database)
+    monkeypatch.setenv("FINREP_STORAGE_BACKEND", "sqlite")
+    monkeypatch.setenv("FINREP_SQLITE_PATH", str(database))
+    _, revision = staging.read_transaction_drafts_snapshot()
+    result = staging.append_transaction_draft_rows(
+        pd.DataFrame([{
+            "date": "2026-06-01", "category": "Пища", "currency": "RUB",
+            "amount": "100.25", "comment": "Lunch", "source": "manual",
+            "source_id": "manual:1", "status": "draft",
+        }]), expected_revision=revision)
+    assert result["accepted_rows"] == 1
+    rows, revision = staging.read_transaction_drafts_snapshot()
+    assert rows.iloc[0]["category"] == "Пища"
+    assert rows.iloc[0]["amount"] == "100.25"
+    edited = rows.to_dict("records")
+    edited[0]["amount"] = "110.50"
+    staging.merge_transaction_draft_rows(edited, expected_revision=revision)
+    rows, revision = staging.read_transaction_drafts_snapshot()
+    assert rows.iloc[0]["amount"] == "110.5"
+    staging.delete_transaction_drafts(rows.to_dict("records"), expected_revision=revision)
+    hidden, _ = staging.read_transaction_drafts_snapshot()
+    assert hidden.empty
