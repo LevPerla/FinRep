@@ -76,6 +76,13 @@ _PASS_THROUGH_TRANSACTION_COLUMNS = {
     "Инвестиции", "Дебиторская задолженность", "Погашение деб. зад.",
     "Кредиторская задолженность", "Погашение кред. зад.", "Долги (у меня)",
 }
+_DEBT_CASH_ACTIONS = {
+    "Дебиторская задолженность": ("issue", "receivable"),
+    "Долги (у меня)": ("issue", "receivable"),
+    "Погашение деб. зад.": ("repayment", "receivable"),
+    "Кредиторская задолженность": ("issue", "liability"),
+    "Погашение кред. зад.": ("repayment", "liability"),
+}
 _CATEGORY_BY_LABEL = {
     **_EXPENSE_CATEGORIES,
     "Зарплата": "income.salary",
@@ -88,13 +95,14 @@ _ADAPTED_FAMILIES = {
     "cash_transactions", "asset_snapshots", "category_rules", "fx_rates", "annual_goals",
     "transaction_drafts", "debts", "debt_payments", "investment_instruments",
     "investment_transactions", "market_prices",
+    "investments_legacy",
     "crypto_wallets", "crypto_balances", "crypto_transactions", "crypto_refresh_status",
 }
 _FAMILY_ORDER = {
     "cash_transactions": 10, "asset_snapshots": 20, "category_rules": 30,
     "fx_rates": 40, "annual_goals": 50, "transaction_drafts": 60,
-    "debts": 70, "debt_payments": 80, "investment_instruments": 90,
-    "investment_transactions": 100, "market_prices": 110, "crypto_wallets": 120,
+    "debts": 70, "debt_payments": 80, "investments_legacy": 85, "investment_instruments": 90,
+    "investment_transactions": 100, "crypto_wallets": 105, "market_prices": 110,
     "crypto_balances": 130, "crypto_transactions": 140, "crypto_refresh_status": 150,
 }
 _DRAFT_DOMAIN_ACTIONS = {
@@ -127,6 +135,7 @@ class MigrationSummary:
     cash_imported: int
     snapshots_imported: int
     unresolved_financial_records: int
+    domain_cash_events_imported: int
     pending_adapter_files: int
     auxiliary_records_imported: int
     drafts_imported: int
@@ -260,16 +269,18 @@ def migrate_core_csv(source_root: str | Path, target_db: str | Path,
 
     audit = sqlite3.connect(Path(migration_db))
     try:
-        cash_imported = snapshots_imported = auxiliary = drafts = unresolved = source_cash = source_snapshots = 0
-        debts = debt_payments = instruments = trades = market_prices = 0
+        cash_imported = domain_events = snapshots_imported = auxiliary = drafts = unresolved = source_cash = source_snapshots = 0
+        debts = debt_payments = instruments = trades = market_prices = investment_adapter_issues = 0
         crypto_wallets = crypto_balances = crypto_transactions = crypto_refresh = crypto_issues = 0
         for item in sorted(entries, key=lambda entry: (_FAMILY_ORDER.get(entry.family, 999), entry.relative_path)):
             if item.status != "included":
                 continue
             path = root / item.relative_path
             if item.family == "cash_transactions":
-                imported, candidates, problems = _migrate_transaction_file(path, item, target_db, audit)
+                imported, domain_imported, candidates, problems = _migrate_transaction_file(
+                    path, item, target_db, audit)
                 cash_imported += imported
+                domain_events += domain_imported
                 source_cash += candidates
                 unresolved += problems
             elif item.family == "asset_snapshots":
@@ -291,10 +302,20 @@ def migrate_core_csv(source_root: str | Path, target_db: str | Path,
                 debt_payments += _migrate_debt_payments(path, item, target_db, audit)
             elif item.family == "investment_instruments":
                 instruments += _migrate_instruments(path, item, target_db, audit)
+            elif item.family == "investments_legacy":
+                added_instruments, added_trades, issues = _migrate_legacy_investments(
+                    path, item, target_db, audit)
+                instruments += added_instruments
+                trades += added_trades
+                investment_adapter_issues += issues
             elif item.family == "investment_transactions":
                 trades += _migrate_investment_trades(path, item, target_db, audit)
             elif item.family == "market_prices":
-                market_prices += _migrate_market_prices(path, item, target_db, audit)
+                added_prices, added_instruments, issues = _migrate_market_prices(
+                    path, item, target_db, audit)
+                market_prices += added_prices
+                instruments += added_instruments
+                investment_adapter_issues += issues
             elif item.family == "crypto_wallets":
                 imported, issues = _migrate_crypto_wallets(path, item, target_db, audit)
                 crypto_wallets += imported
@@ -312,12 +333,13 @@ def migrate_core_csv(source_root: str | Path, target_db: str | Path,
                 crypto_refresh += imported
                 crypto_issues += issues
         debt_issues = _reconcile_debts(target_db, audit)
-        investment_issues = _reconcile_investments(target_db, audit)
+        investment_issues = investment_adapter_issues + _reconcile_investments(target_db, audit)
         metrics = {
             "manifest_files": len(entries),
             "included_files": sum(item.status == "included" for item in entries),
             "source_cash_candidates": source_cash,
             "imported_cash_transactions": cash_imported,
+            "imported_domain_cash_events": domain_events,
             "source_asset_snapshots": source_snapshots,
             "imported_asset_snapshots": snapshots_imported,
             "unresolved_financial_records": unresolved,
@@ -346,7 +368,7 @@ def migrate_core_csv(source_root: str | Path, target_db: str | Path,
         audit.close()
     return MigrationSummary(
         manifest_hash, len(entries), sum(item.status == "included" for item in entries),
-        cash_imported, snapshots_imported, unresolved,
+        cash_imported, snapshots_imported, unresolved, domain_events,
         sum(item.status == "included" and item.family not in _ADAPTED_FAMILIES for item in entries),
         auxiliary, drafts, debts, debt_payments, debt_issues,
         instruments, trades, market_prices, investment_issues,
@@ -355,8 +377,8 @@ def migrate_core_csv(source_root: str | Path, target_db: str | Path,
 
 
 def _migrate_transaction_file(path: Path, item: ManifestEntry, target_db: Path,
-                              audit: sqlite3.Connection) -> tuple[int, int, int]:
-    imported = candidates = problems = 0
+                              audit: sqlite3.Connection) -> tuple[int, int, int, int]:
+    imported = domain_imported = candidates = problems = 0
     save_month(target_db, path.stem.rstrip("_").replace("_", "-"))
     with path.open("r", encoding="utf-8-sig", newline="") as stream:
         for row_number, row in enumerate(csv.DictReader(stream, delimiter=";"), start=2):
@@ -381,11 +403,23 @@ def _migrate_transaction_file(path: Path, item: ManifestEntry, target_db: Path,
                          column, part_number, part, payload_hash)
                     amount, currency, comment = parsed
                     classification = _cash_classification(column, amount, comment)
+                    if classification is None and column in _PASS_THROUGH_TRANSACTION_COLUMNS:
+                        try:
+                            if occurred_on is None or amount == 0:
+                                raise ValueError("domain cash event needs a valid date and non-zero amount")
+                            _add_domain_cash_event(
+                                target_db, source_record_id, occurred_on, column,
+                                amount, currency, comment)
+                        except (ValueError, sqlite3.IntegrityError) as exc:
+                            problems += 1
+                            _issue(audit, item.relative_path, coordinate,
+                                   "invalid_domain_cash_event", str(exc), True)
+                        else:
+                            domain_imported += 1
+                        continue
                     if occurred_on is None or classification is None:
                         problems += 1
-                        code = "invalid_date" if occurred_on is None else (
-                            "pass_through_cash_event" if column in _PASS_THROUGH_TRANSACTION_COLUMNS
-                            else "unmapped_category")
+                        code = "invalid_date" if occurred_on is None else "unmapped_category"
                         _issue(audit, item.relative_path, coordinate, code,
                                f"requires manual route for column {column!r}", True)
                         continue
@@ -398,7 +432,31 @@ def _migrate_transaction_file(path: Path, item: ManifestEntry, target_db: Path,
                     )
                     link_transaction_source(target_db, transaction_id, source_record_id)
                     imported += 1
-    return imported, candidates, problems
+    return imported, domain_imported, candidates, problems
+
+
+def _add_domain_cash_event(target_db: Path, source_record_id: str, occurred_on: str,
+                           column: str, amount: Decimal, currency: str, comment: str) -> None:
+    amount_minor = _positive_minor(target_db, currency, abs(amount))
+    entity_id = _stable_id("domain-cash-event", source_record_id)
+    with connect_database(target_db, writable=True) as target:
+        if column == "Инвестиции":
+            flow_kind = "contribution" if amount > 0 else "withdrawal"
+            target.execute("""INSERT INTO investment_cash_events
+                (id, occurred_on, flow_kind, amount_minor, currency_code, comment, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, datetime('now'))""",
+                (entity_id, occurred_on, flow_kind, amount_minor, currency, comment))
+            entity_type = "investment_cash_event"
+        else:
+            if amount < 0:
+                raise ValueError("negative debt cash event requires manual review")
+            event_kind, side = _DEBT_CASH_ACTIONS[column]
+            target.execute("""INSERT INTO debt_cash_events
+                (id, occurred_on, event_kind, side, amount_minor, currency_code, comment, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))""",
+                (entity_id, occurred_on, event_kind, side, amount_minor, currency, comment))
+            entity_type = "debt_cash_event"
+    link_entity_source(target_db, entity_type, entity_id, source_record_id)
 
 
 def _migrate_asset_file(path: Path, item: ManifestEntry, target_db: Path,
@@ -451,8 +509,13 @@ def _migrate_category_rules(path: Path, item: ManifestEntry, target_db: Path,
     with path.open("r", encoding="utf-8-sig", newline="") as stream:
         for row_number, row in enumerate(csv.DictReader(stream, delimiter=";"), start=2):
             source_record_id = _source_row(item, row_number, row, target_db, audit)
-            category_id = _CATEGORY_BY_LABEL.get((row.get("category") or "").strip())
             pattern = (row.get("pattern") or "").strip()
+            source_category = (row.get("category") or "").strip()
+            category_id = _CATEGORY_BY_LABEL.get(source_category)
+            if source_category == "Доход":
+                reason = classify_income_comment(pattern)
+                category_id = {"salary": "income.salary", "deposit_interest": "income.interest"}.get(
+                    reason)
             if not category_id or not pattern:
                 _issue(audit, item.relative_path, str(row_number), "invalid_category_rule",
                        "rule needs a known category and non-empty pattern", True)
@@ -468,6 +531,57 @@ def _migrate_category_rules(path: Path, item: ManifestEntry, target_db: Path,
             link_entity_source(target_db, "categorization_rule", entity_id, source_record_id)
             imported += 1
     return imported
+
+
+def _migrate_legacy_investments(path: Path, item: ManifestEntry, target_db: Path,
+                                audit: sqlite3.Connection) -> tuple[int, int, int]:
+    instruments_added = trades_added = issues = 0
+    operation_map = {"Покупка": "buy", "Продажа": "sell"}
+    asset_map = {"Акции": "stocks", "Фонды": "funds", "Крипто": "crypto"}
+    with path.open("r", encoding="utf-8-sig", newline="") as stream:
+        for row_number, row in enumerate(csv.DictReader(stream, delimiter=";"), start=2):
+            source_record_id = _source_row(item, row_number, row, target_db, audit)
+            try:
+                ticker = (row.get("Тикер") or "").strip().upper()
+                operation = operation_map.get((row.get("Тип_транзакции") or "").strip())
+                asset_type = asset_map.get((row.get("Актив") or "").strip())
+                occurred_on = _legacy_date(row.get("Дата") or "")
+                price_parts = (row.get("Цена") or "").split("|", 1)
+                price = _decimal_text(price_parts[0], allow_zero=True)
+                currency = (price_parts[1] if len(price_parts) == 2 else "RUB").strip().upper()
+                quantity = _decimal_text(row.get("Количество"), allow_zero=False)
+                if not ticker or operation is None or asset_type is None or occurred_on is None:
+                    raise ValueError("legacy trade has unsupported identity, operation, type or date")
+                instrument_id = _stable_id("instrument", ticker)
+                with connect_database(target_db) as target:
+                    instrument = target.execute(
+                        "SELECT id, asset_type FROM instruments WHERE ticker = ?", (ticker,)
+                    ).fetchone()
+                if instrument is None:
+                    with connect_database(target_db, writable=True) as target:
+                        target.execute("""INSERT INTO instruments
+                            (id, ticker, name, asset_type, quote_currency_code,
+                             created_at, updated_at)
+                            VALUES (?, ?, ?, ?, ?, datetime('now'), datetime('now'))""",
+                            (instrument_id, ticker, ticker, asset_type, currency))
+                    link_entity_source(target_db, "instrument", instrument_id, source_record_id)
+                    instruments_added += 1
+                elif instrument["asset_type"] != asset_type:
+                    raise ValueError("legacy ticker maps to conflicting asset types")
+                trade_id = _stable_id("investment-trade", source_record_id)
+                with connect_database(target_db, writable=True) as target:
+                    target.execute("""INSERT INTO investment_trades
+                        (id, occurred_on, operation, instrument_id, quantity_text,
+                         unit_price_text, price_currency_code, fee_minor, created_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, 0, datetime('now'))""",
+                        (trade_id, occurred_on, operation, instrument_id, quantity, price, currency))
+            except (ValueError, sqlite3.IntegrityError) as exc:
+                issues += 1
+                _issue(audit, item.relative_path, str(row_number), "invalid_legacy_investment", str(exc), True)
+                continue
+            link_entity_source(target_db, "investment_trade", trade_id, source_record_id)
+            trades_added += 1
+    return instruments_added, trades_added, issues
 
 
 def _migrate_fx_rates(path: Path, item: ManifestEntry, target_db: Path,
@@ -746,8 +860,8 @@ def _migrate_investment_trades(path: Path, item: ManifestEntry, target_db: Path,
 
 
 def _migrate_market_prices(path: Path, item: ManifestEntry, target_db: Path,
-                           audit: sqlite3.Connection) -> int:
-    imported = 0
+                           audit: sqlite3.Connection) -> tuple[int, int, int]:
+    imported = instruments_added = issues = 0
     with path.open("r", encoding="utf-8-sig", newline="") as stream:
         for row_number, row in enumerate(csv.DictReader(stream, delimiter=";"), start=2):
             source_record_id = _source_row(item, row_number, row, target_db, audit)
@@ -758,8 +872,22 @@ def _migrate_market_prices(path: Path, item: ManifestEntry, target_db: Path,
                 source = (row.get("source") or "migration").strip()
                 with connect_database(target_db) as target:
                     instrument = target.execute("SELECT id FROM instruments WHERE ticker = ?", (ticker,)).fetchone()
+                    crypto_wallet = target.execute(
+                        "SELECT 1 FROM crypto_wallets WHERE asset_code = ? LIMIT 1", (ticker,)
+                    ).fetchone()
+                if instrument is None and crypto_wallet is not None:
+                    instrument_id = _stable_id("instrument", ticker)
+                    with connect_database(target_db, writable=True) as target:
+                        target.execute("""INSERT INTO instruments
+                            (id, ticker, name, asset_type, quote_currency_code,
+                             created_at, updated_at)
+                            VALUES (?, ?, ?, 'crypto', ?, datetime('now'), datetime('now'))""",
+                            (instrument_id, ticker, ticker, currency))
+                    link_entity_source(target_db, "instrument", instrument_id, source_record_id)
+                    instrument = {"id": instrument_id}
+                    instruments_added += 1
                 if instrument is None or price_date is None or not source:
-                    raise ValueError("price needs known instrument, date and source")
+                    raise ValueError("price needs known trade/wallet instrument, date and source")
                 price = _decimal_text(row.get("price"), allow_zero=False)
                 observation_id = _stable_id("market-price", source_record_id)
                 with connect_database(target_db, writable=True) as target:
@@ -770,11 +898,12 @@ def _migrate_market_prices(path: Path, item: ManifestEntry, target_db: Path,
                         (observation_id, instrument["id"], price_date, price, currency,
                          source, (row.get("fetched_at") or "").strip(), row_number - 2))
             except (ValueError, sqlite3.IntegrityError) as exc:
+                issues += 1
                 _issue(audit, item.relative_path, str(row_number), "invalid_market_price", str(exc), True)
                 continue
             link_entity_source(target_db, "market_price_observation", observation_id, source_record_id)
             imported += 1
-    return imported
+    return imported, instruments_added, issues
 
 
 def _reconcile_investments(target_db: Path, audit: sqlite3.Connection) -> int:

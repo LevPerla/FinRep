@@ -147,6 +147,31 @@ def test_crypto_files_preserve_public_wallet_observations_and_refresh_failures(t
         assert tuple(failed) == (None, "ton", "error", "timeout")
 
 
+def test_legacy_investments_create_instruments_before_prices(tmp_path):
+    investments = tmp_path / "investments"
+    investments.mkdir()
+    (investments / "investments.csv").write_text(
+        "Тип_транзакции;Актив;Тикер;Количество;Дата;Цена\n"
+        "Покупка;Акции;ABC;1.25;01.02.2026;10.5|USD\n",
+        encoding="utf-8",
+    )
+    (investments / "price_cache.csv").write_text(
+        "date;ticker;price;currency;source;fetched_at\n"
+        "2026-02-02;ABC;11.2;USD;sample;2026-02-02T00:00:00Z\n",
+        encoding="utf-8",
+    )
+    target = tmp_path / "target.sqlite3"
+    summary = migrate_core_csv(tmp_path, target, tmp_path / "migration.sqlite3")
+    assert summary.pending_adapter_files == 0
+    assert (summary.instruments_imported, summary.trades_imported,
+            summary.market_prices_imported, summary.investment_issues) == (1, 1, 1, 0)
+    with connect_database(target) as connection:
+        assert tuple(connection.execute("""SELECT i.ticker, t.quantity_text, t.unit_price_text,
+            t.price_currency_code FROM investment_trades t
+            JOIN instruments i ON i.id = t.instrument_id""").fetchone()) == (
+                "ABC", "1.25", "10.5", "USD")
+
+
 def test_sample_core_migration_is_repeatable_and_reconciled(tmp_path):
     source = Path(config.SAMPLE_DATA_PATH)
     target_one = tmp_path / "target-one.sqlite3"
@@ -158,6 +183,7 @@ def test_sample_core_migration_is_repeatable_and_reconciled(tmp_path):
     second = migrate_core_csv(source, target_two, audit_two)
     assert first == second
     assert first.cash_imported > 0
+    assert first.domain_cash_events_imported > 0
     assert first.snapshots_imported > 0
     assert first.unresolved_financial_records > 0
     assert first.pending_adapter_files == 0
@@ -206,6 +232,10 @@ def test_sample_core_migration_is_repeatable_and_reconciled(tmp_path):
             "debt_payments": """SELECT id, debt_id, occurred_on, principal_amount_minor,
                 cash_amount_minor, cash_currency_code, comment, status
                 FROM debt_payments ORDER BY id""",
+            "debt_cash_events": """SELECT id, occurred_on, event_kind, side,
+                amount_minor, currency_code, comment FROM debt_cash_events ORDER BY id""",
+            "investment_cash_events": """SELECT id, occurred_on, flow_kind,
+                amount_minor, currency_code, comment FROM investment_cash_events ORDER BY id""",
             "instruments": """SELECT id, ticker, name, asset_type, quote_currency_code,
                 provider, exchange, active FROM instruments ORDER BY id""",
             "investment_trades": """SELECT id, occurred_on, operation, instrument_id,
@@ -252,7 +282,8 @@ def test_sample_core_migration_is_repeatable_and_reconciled(tmp_path):
     try:
         metrics = dict(audit.execute("SELECT metric, value FROM reconciliation"))
         assert metrics["source_cash_candidates"] == (
-            metrics["imported_cash_transactions"] + metrics["unresolved_financial_records"]
+            metrics["imported_cash_transactions"] + metrics["imported_domain_cash_events"]
+            + metrics["unresolved_financial_records"]
         )
         assert metrics["source_asset_snapshots"] == metrics["imported_asset_snapshots"]
         assert audit.execute("SELECT count(*) FROM raw_records").fetchone()[0] == (
@@ -270,7 +301,7 @@ def test_sample_core_migration_is_repeatable_and_reconciled(tmp_path):
         ).fetchone()[0] > 0
         assert audit.execute(
             "SELECT count(*) FROM migration_issues WHERE code = 'pass_through_cash_event'"
-        ).fetchone()[0] > 0
+        ).fetchone()[0] == 0
         assert audit.execute(
             "SELECT count(*) FROM migration_issues WHERE code = 'adapter_pending'"
         ).fetchone()[0] == metrics["pending_adapter_files"]

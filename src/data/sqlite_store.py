@@ -15,7 +15,7 @@ from src import config
 from src.data.money import parse_money_amount
 
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 _DIRECTIONS = {"income", "expense"}
 _DATASETS = {"cash_transactions", "asset_snapshots"}
 _SYSTEM_CATEGORIES = (
@@ -283,6 +283,21 @@ _TABLES = (
         observed_asset TEXT NOT NULL DEFAULT '', observed_address TEXT NOT NULL DEFAULT '',
         status TEXT NOT NULL CHECK (trim(status) <> ''), message TEXT NOT NULL DEFAULT ''
     ) STRICT""",
+    """CREATE TABLE investment_cash_events (
+        id TEXT PRIMARY KEY, occurred_on TEXT NOT NULL CHECK (length(occurred_on) = 10),
+        flow_kind TEXT NOT NULL CHECK (flow_kind IN ('contribution', 'withdrawal')),
+        amount_minor INTEGER NOT NULL CHECK (amount_minor > 0),
+        currency_code TEXT NOT NULL REFERENCES currencies(code) ON DELETE RESTRICT,
+        comment TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL
+    ) STRICT""",
+    """CREATE TABLE debt_cash_events (
+        id TEXT PRIMARY KEY, occurred_on TEXT NOT NULL CHECK (length(occurred_on) = 10),
+        event_kind TEXT NOT NULL CHECK (event_kind IN ('issue', 'repayment')),
+        side TEXT NOT NULL CHECK (side IN ('receivable', 'liability')),
+        amount_minor INTEGER NOT NULL CHECK (amount_minor > 0),
+        currency_code TEXT NOT NULL REFERENCES currencies(code) ON DELETE RESTRICT,
+        comment TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL
+    ) STRICT""",
 )
 
 _INDEXES_AND_TRIGGERS = (
@@ -298,6 +313,8 @@ _INDEXES_AND_TRIGGERS = (
     "CREATE INDEX ix_market_prices_lookup ON market_price_observations(instrument_id, price_date, fetched_at, sequence)",
     "CREATE INDEX ix_crypto_balances_wallet_time ON crypto_balance_observations(wallet_id, fetched_at)",
     "CREATE INDEX ix_crypto_transactions_wallet_date ON crypto_transactions(wallet_id, occurred_on)",
+    "CREATE INDEX ix_investment_cash_events_date ON investment_cash_events(occurred_on, currency_code)",
+    "CREATE INDEX ix_debt_cash_events_date ON debt_cash_events(occurred_on, side, event_kind)",
     """CREATE TRIGGER categories_parent_insert BEFORE INSERT ON categories
     WHEN NEW.parent_id IS NOT NULL BEGIN
       SELECT CASE WHEN NOT EXISTS (SELECT 1 FROM categories p WHERE p.id = NEW.parent_id
