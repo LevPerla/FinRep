@@ -677,12 +677,15 @@ def _migrate_transaction_drafts(path: Path, item: ManifestEntry, target_db: Path
                     target.execute("""INSERT INTO transaction_drafts
                         (id, occurred_on, draft_kind, domain_action, flow_direction,
                          amount_minor, currency_code, category_id, comment, source_record_id,
-                         origin_kind, origin_key, bank_status, status, created_at, updated_at)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))""",
+                         origin_kind, origin_key, bank_status, bank_reference, bank_account_id,
+                         status, created_at, updated_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))""",
                         (draft_id, occurred_on, draft_kind, domain_action, direction,
                          amount_minor, (row.get("currency") or "").strip().upper(), category_id,
                          sanitize_transaction_comment(row.get("comment") or ""), source_record_id,
-                         origin_kind, origin_key, bank_status, status))
+                         origin_kind, origin_key, bank_status,
+                         (row.get("bank_reference") or "").strip(),
+                         (row.get("bank_account_id") or "").strip(), status))
             except (ValueError, sqlite3.IntegrityError) as exc:
                 _issue(audit, item.relative_path, str(row_number), "invalid_transaction_draft", str(exc), True)
                 continue

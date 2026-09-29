@@ -14,20 +14,31 @@ from src.data.sqlite_store import (
     add_asset_snapshot,
     add_cash_transaction,
     add_category,
+    annual_goals,
+    asset_snapshot_month,
     asset_snapshots,
     backup_database,
     cash_transactions,
     change_transaction_category,
     connect_database,
+    create_transaction_draft,
+    create_debt_record,
     fx_rates,
     initialize_database,
     link_transaction_source,
+    publish_cash_drafts,
+    record_crypto_refresh,
+    record_debt_payment,
+    record_investment_trade,
+    replace_asset_snapshot_month,
     register_source_record,
     save_asset_month,
     save_fx_rate,
     save_month,
     saved_asset_months,
     saved_months,
+    upsert_annual_goal,
+    upsert_crypto_wallet,
     void_cash_transaction,
 )
 
@@ -44,7 +55,7 @@ def _add_transaction(database, transaction_id, direction, category, amount="1.00
     )
 
 
-def test_v4_schema_is_strict_and_categories_match_contract(tmp_path):
+def test_v6_schema_is_strict_and_categories_match_contract(tmp_path):
     database = tmp_path / "synthetic.sqlite3"
     initialize_database(database)
     initialize_database(database)
@@ -67,6 +78,326 @@ def test_v4_schema_is_strict_and_categories_match_contract(tmp_path):
     assert names["income"] == {"Зарплата", "Проценты", "Инвест доход", "Прочие доходы"}
     assert len(names["expense"]) == 10
     assert strict and set(strict.values()) == {1}
+
+
+def test_cash_draft_publish_is_atomic_and_idempotent(tmp_path):
+    database = tmp_path / "synthetic.sqlite3"
+    initialize_database(database)
+    draft_id = create_transaction_draft(
+        database,
+        occurred_on="2026-02-03",
+        flow_direction="income",
+        category_id="income.salary",
+        amount="123.45",
+        currency="RUB",
+        origin_kind="manual",
+        origin_key="request-1",
+        comment="Оклад",
+        bank_status="posted",
+        bank_reference="bank-ref",
+        bank_account_id="card-1",
+    )
+    assert create_transaction_draft(
+        database,
+        occurred_on="2026-02-03",
+        flow_direction="income",
+        category_id="income.salary",
+        amount="123.45",
+        currency="RUB",
+        origin_kind="manual",
+        origin_key="request-1",
+        comment="Оклад",
+        bank_status="posted",
+        bank_reference="bank-ref",
+        bank_account_id="card-1",
+    ) == draft_id
+    with pytest.raises(ValueError, match="another payload"):
+        create_transaction_draft(
+            database,
+            occurred_on="2026-02-03",
+            flow_direction="income",
+            category_id="income.salary",
+            amount="999",
+            currency="RUB",
+            origin_kind="manual",
+            origin_key="request-1",
+        )
+
+    first = publish_cash_drafts(database, draft_ids=[draft_id], operation_key="publish-1")
+    second = publish_cash_drafts(database, draft_ids=[draft_id], operation_key="publish-1")
+    assert first == second
+    assert first["published_rows"] == 1
+    with connect_database(database) as connection:
+        assert connection.execute("SELECT count(*) FROM cash_transactions").fetchone()[0] == 1
+        assert connection.execute(
+            "SELECT status FROM transaction_drafts WHERE id = ?", (draft_id,)
+        ).fetchone()[0] == "exported"
+        assert connection.execute("SELECT count(*) FROM operation_receipts").fetchone()[0] == 1
+        assert tuple(connection.execute("""SELECT bank_reference, bank_account_id
+            FROM transaction_drafts WHERE id = ?""", (draft_id,)).fetchone()) == (
+                "bank-ref", "card-1")
+
+
+def test_pending_cash_draft_publish_rolls_back(tmp_path):
+    database = tmp_path / "synthetic.sqlite3"
+    initialize_database(database)
+    draft_id = create_transaction_draft(
+        database,
+        occurred_on="2026-02-03",
+        flow_direction="expense",
+        category_id="expense.food",
+        amount="10",
+        currency="RUB",
+        origin_kind="bank",
+        origin_key="pending-1",
+        bank_status="pending",
+    )
+    with pytest.raises(ValueError, match="pending bank"):
+        publish_cash_drafts(database, draft_ids=[draft_id], operation_key="publish-pending")
+    with connect_database(database) as connection:
+        assert connection.execute("SELECT count(*) FROM cash_transactions").fetchone()[0] == 0
+        assert connection.execute("SELECT status FROM transaction_drafts").fetchone()[0] == "draft"
+        assert connection.execute("SELECT count(*) FROM operation_receipts").fetchone()[0] == 0
+
+
+def test_asset_month_replace_is_atomic_and_audited(tmp_path):
+    database = tmp_path / "synthetic.sqlite3"
+    initialize_database(database)
+    first = replace_asset_snapshot_month(
+        database,
+        period="2026-03",
+        rows=[
+            {"account": "Card", "currency": "RUB", "amount": "100.00"},
+            {"account": "Cash", "currency": "USD", "amount": "5.00"},
+        ],
+    )
+    second = replace_asset_snapshot_month(
+        database,
+        period="2026-03",
+        rows=[{"account": "Card", "currency": "RUB", "amount": "125.50"}],
+    )
+    assert first == {"inserted": 2, "updated": 0, "deleted": 0, "rows": 2}
+    assert second == {"inserted": 0, "updated": 1, "deleted": 1, "rows": 1}
+    rows = asset_snapshot_month(database, "2026-03")
+    assert [(row["account_name"], row["currency_code"], row["amount"])
+            for row in rows] == [("Card", "RUB", Decimal("125.50"))]
+    with connect_database(database) as connection:
+        assert connection.execute(
+            "SELECT revision FROM period_states WHERE period = '2026-03' AND dataset = 'asset_snapshots'"
+        ).fetchone()[0] == 2
+        assert connection.execute(
+            "SELECT count(*) FROM audit_events WHERE entity_type = 'asset_snapshot'"
+        ).fetchone()[0] == 2
+
+
+def test_annual_goal_upsert_preserves_optional_values(tmp_path):
+    database = tmp_path / "synthetic.sqlite3"
+    initialize_database(database)
+    upsert_annual_goal(
+        database,
+        year=2027,
+        currency="RUB",
+        target_capital="1000000.25",
+        target_monthly_income=None,
+        target_monthly_expense="50000",
+        notes="first",
+    )
+    upsert_annual_goal(
+        database,
+        year=2027,
+        currency="RUB",
+        target_capital="1100000.25",
+        target_monthly_income="90000",
+        target_monthly_expense="50000",
+        notes="updated",
+    )
+    rows = annual_goals(database)
+    assert len(rows) == 1
+    assert rows[0]["target_capital"] == Decimal("1100000.25")
+    assert rows[0]["target_monthly_income"] == Decimal("90000.00")
+    assert rows[0]["target_monthly_expense"] == Decimal("50000.00")
+    assert rows[0]["notes"] == "updated"
+
+
+def test_debt_commands_are_same_currency_atomic_and_prevent_overpayment(tmp_path):
+    database = tmp_path / "synthetic.sqlite3"
+    initialize_database(database)
+    created = create_debt_record(
+        database,
+        kind="receivable",
+        counterparty="Friend",
+        opened_on="2026-01-10",
+        principal_amount="100.00",
+        currency="RUB",
+        operation_key="create-debt-1",
+        comment="Personal loan",
+    )
+    assert create_debt_record(
+        database,
+        kind="receivable",
+        counterparty="Friend",
+        opened_on="2026-01-10",
+        principal_amount="100.00",
+        currency="RUB",
+        operation_key="create-debt-1",
+        comment="Personal loan",
+    ) == created
+    first = record_debt_payment(
+        database,
+        debt_id=created["debt_id"],
+        occurred_on="2026-02-01",
+        amount="60",
+        operation_key="pay-debt-1",
+    )
+    assert record_debt_payment(
+        database,
+        debt_id=created["debt_id"],
+        occurred_on="2026-02-01",
+        amount="60",
+        operation_key="pay-debt-1",
+    ) == first
+    with pytest.raises(ValueError, match="exceeds"):
+        record_debt_payment(
+            database,
+            debt_id=created["debt_id"],
+            occurred_on="2026-02-02",
+            amount="41",
+            operation_key="pay-debt-too-much",
+        )
+    last = record_debt_payment(
+        database,
+        debt_id=created["debt_id"],
+        occurred_on="2026-02-02",
+        amount="40",
+        operation_key="pay-debt-2",
+    )
+    assert last["closed"] and last["remaining_minor"] == 0
+    with connect_database(database) as connection:
+        assert connection.execute("SELECT status FROM debts").fetchone()[0] == "closed"
+        assert connection.execute("SELECT count(*) FROM debt_payments").fetchone()[0] == 2
+        assert connection.execute("SELECT count(*) FROM transaction_drafts").fetchone()[0] == 3
+        assert connection.execute("SELECT count(*) FROM operation_receipts").fetchone()[0] == 3
+
+
+def test_investment_trade_writer_is_exact_idempotent_and_prevents_oversell(tmp_path):
+    database = tmp_path / "synthetic.sqlite3"
+    initialize_database(database)
+    bought = record_investment_trade(
+        database,
+        occurred_on="2026-01-01",
+        operation="buy",
+        ticker="ABC",
+        asset_type="stocks",
+        quantity="1.23456789",
+        unit_price="10.005",
+        currency="USD",
+        fee="0.10",
+        operation_key="trade-buy-1",
+    )
+    assert record_investment_trade(
+        database,
+        occurred_on="2026-01-01",
+        operation="buy",
+        ticker="ABC",
+        asset_type="stocks",
+        quantity="1.23456789",
+        unit_price="10.005",
+        currency="USD",
+        fee="0.10",
+        operation_key="trade-buy-1",
+    ) == bought
+    sold = record_investment_trade(
+        database,
+        occurred_on="2026-02-01",
+        operation="sell",
+        ticker="ABC",
+        asset_type="stocks",
+        quantity="0.23456789",
+        unit_price="12.50",
+        currency="USD",
+        operation_key="trade-sell-1",
+    )
+    assert sold["trade_id"] != bought["trade_id"]
+    with pytest.raises(ValueError, match="exceeds"):
+        record_investment_trade(
+            database,
+            occurred_on="2026-03-01",
+            operation="sell",
+            ticker="ABC",
+            asset_type="stocks",
+            quantity="1.00000001",
+            unit_price="11",
+            currency="USD",
+            operation_key="trade-sell-too-much",
+        )
+    with connect_database(database) as connection:
+        rows = connection.execute("""SELECT operation, quantity_text, unit_price_text, fee_minor
+            FROM investment_trades ORDER BY occurred_on""").fetchall()
+        assert [tuple(row) for row in rows] == [
+            ("buy", "1.23456789", "10.005", 10),
+            ("sell", "0.23456789", "12.50", 0),
+        ]
+        assert connection.execute("SELECT count(*) FROM instruments").fetchone()[0] == 1
+        assert connection.execute("SELECT count(*) FROM operation_receipts").fetchone()[0] == 2
+
+
+def test_crypto_refresh_is_atomic_idempotent_and_preserves_last_success(tmp_path):
+    database = tmp_path / "synthetic.sqlite3"
+    initialize_database(database)
+    wallet_id = upsert_crypto_wallet(
+        database,
+        account_label="Cold wallet",
+        chain="bitcoin",
+        asset_code="BTC",
+        address="public-address",
+    )
+    first = record_crypto_refresh(
+        database,
+        wallet_id=wallet_id,
+        fetched_at="2026-03-01T10:00:00Z",
+        status="ok",
+        operation_key="crypto-refresh-1",
+        source="observer",
+        balance="0.00123456",
+        transactions=[{
+            "occurred_on": "2026-02-28",
+            "chain_tx_id": "tx-1",
+            "operation": "receive",
+            "quantity": "0.0013",
+            "fee": "0.00001",
+            "counterparty": "sender",
+        }],
+    )
+    assert record_crypto_refresh(
+        database,
+        wallet_id=wallet_id,
+        fetched_at="2026-03-01T10:00:00Z",
+        status="ok",
+        operation_key="crypto-refresh-1",
+        source="observer",
+        balance="0.00123456",
+        transactions=[{
+            "occurred_on": "2026-02-28", "chain_tx_id": "tx-1",
+            "operation": "receive", "quantity": "0.0013", "fee": "0.00001",
+            "counterparty": "sender",
+        }],
+    ) == first
+    failed = record_crypto_refresh(
+        database,
+        wallet_id=wallet_id,
+        fetched_at="2026-03-02T10:00:00Z",
+        status="error",
+        operation_key="crypto-refresh-2",
+        source="observer",
+        message="timeout",
+    )
+    assert failed["status"] == "error" and failed["observation_id"] is None
+    with connect_database(database) as connection:
+        assert connection.execute("SELECT count(*) FROM crypto_balance_observations").fetchone()[0] == 1
+        assert connection.execute("SELECT quantity_text FROM crypto_balance_observations").fetchone()[0] == "0.00123456"
+        assert connection.execute("SELECT count(*) FROM crypto_transactions").fetchone()[0] == 1
+        assert connection.execute("SELECT count(*) FROM crypto_refresh_results").fetchone()[0] == 2
+        assert connection.execute("SELECT count(*) FROM operation_receipts").fetchone()[0] == 2
 
 
 def test_sample_money_round_trip_uses_exact_minor_units(tmp_path):

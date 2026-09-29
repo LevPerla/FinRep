@@ -224,7 +224,8 @@ def test_sample_core_migration_is_repeatable_and_reconciled(tmp_path):
                 FROM annual_goals ORDER BY year, currency_code""",
             "transaction_drafts": """SELECT id, occurred_on, draft_kind, domain_action,
                 flow_direction, amount_minor, currency_code, category_id, comment,
-                source_record_id, origin_kind, origin_key, bank_status, status
+                source_record_id, origin_kind, origin_key, bank_status, bank_reference,
+                bank_account_id, status
                 FROM transaction_drafts ORDER BY id""",
             "debts": """SELECT id, kind, counterparty, opened_on, principal_amount_minor,
                 principal_currency_code, cash_amount_minor, cash_currency_code, comment, status
