@@ -192,6 +192,30 @@ _TABLES = (
         notes TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL,
         PRIMARY KEY (year, currency_code)
     ) STRICT""",
+    """CREATE TABLE debts (
+        id TEXT PRIMARY KEY,
+        kind TEXT NOT NULL CHECK (kind IN ('receivable', 'liability')),
+        counterparty TEXT NOT NULL CHECK (trim(counterparty) <> ''),
+        opened_on TEXT NOT NULL CHECK (length(opened_on) = 10),
+        principal_amount_minor INTEGER NOT NULL CHECK (principal_amount_minor > 0),
+        principal_currency_code TEXT NOT NULL REFERENCES currencies(code) ON DELETE RESTRICT,
+        cash_amount_minor INTEGER NOT NULL CHECK (cash_amount_minor > 0),
+        cash_currency_code TEXT NOT NULL REFERENCES currencies(code) ON DELETE RESTRICT,
+        comment TEXT NOT NULL DEFAULT '',
+        status TEXT NOT NULL CHECK (status IN ('active', 'closed')),
+        created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+    ) STRICT""",
+    """CREATE TABLE debt_payments (
+        id TEXT PRIMARY KEY,
+        debt_id TEXT NOT NULL REFERENCES debts(id) ON DELETE RESTRICT,
+        occurred_on TEXT NOT NULL CHECK (length(occurred_on) = 10),
+        principal_amount_minor INTEGER NOT NULL CHECK (principal_amount_minor > 0),
+        cash_amount_minor INTEGER NOT NULL CHECK (cash_amount_minor > 0),
+        cash_currency_code TEXT NOT NULL REFERENCES currencies(code) ON DELETE RESTRICT,
+        comment TEXT NOT NULL DEFAULT '',
+        status TEXT NOT NULL CHECK (status = 'posted'),
+        created_at TEXT NOT NULL
+    ) STRICT""",
 )
 
 _INDEXES_AND_TRIGGERS = (
@@ -202,6 +226,7 @@ _INDEXES_AND_TRIGGERS = (
     "CREATE INDEX ix_fx_lookup ON fx_rate_observations(currency_code, rate_date, fetched_at, sequence)",
     "CREATE INDEX ix_source_records_batch ON source_records(batch_id)",
     "CREATE INDEX ix_audit_entity ON audit_events(entity_type, entity_id, id)",
+    "CREATE INDEX ix_debt_payments_debt_date ON debt_payments(debt_id, occurred_on, id)",
     """CREATE TRIGGER categories_parent_insert BEFORE INSERT ON categories
     WHEN NEW.parent_id IS NOT NULL BEGIN
       SELECT CASE WHEN NOT EXISTS (SELECT 1 FROM categories p WHERE p.id = NEW.parent_id

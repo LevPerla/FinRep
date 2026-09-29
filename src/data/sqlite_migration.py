@@ -86,7 +86,14 @@ _CATEGORY_BY_LABEL = {
 }
 _ADAPTED_FAMILIES = {
     "cash_transactions", "asset_snapshots", "category_rules", "fx_rates", "annual_goals",
-    "transaction_drafts",
+    "transaction_drafts", "debts", "debt_payments",
+}
+_FAMILY_ORDER = {
+    "cash_transactions": 10, "asset_snapshots": 20, "category_rules": 30,
+    "fx_rates": 40, "annual_goals": 50, "transaction_drafts": 60,
+    "debts": 70, "debt_payments": 80, "investment_instruments": 90,
+    "investment_transactions": 100, "market_prices": 110, "crypto_wallets": 120,
+    "crypto_balances": 130, "crypto_transactions": 140, "crypto_refresh_status": 150,
 }
 _DRAFT_DOMAIN_ACTIONS = {
     "Дебиторская задолженность": ("debt", "receivable_opening"),
@@ -121,6 +128,9 @@ class MigrationSummary:
     pending_adapter_files: int
     auxiliary_records_imported: int
     drafts_imported: int
+    debts_imported: int
+    debt_payments_imported: int
+    debt_issues: int
 
 
 def build_manifest(source_root: str | Path) -> tuple[list[ManifestEntry], str]:
@@ -234,13 +244,14 @@ def migrate_core_csv(source_root: str | Path, target_db: str | Path,
     prepare_migration_database(migration_db, entries, manifest_hash)
     initialize_database(target_db, data_mode="migration")
     with connect_database(target_db) as target:
-        if target.execute("SELECT 1 FROM cash_transactions UNION ALL SELECT 1 FROM asset_snapshots LIMIT 1").fetchone():
+        if target.execute("SELECT 1 FROM source_batches LIMIT 1").fetchone():
             raise ValueError("target database must not contain migrated facts")
 
     audit = sqlite3.connect(Path(migration_db))
     try:
         cash_imported = snapshots_imported = auxiliary = drafts = unresolved = source_cash = source_snapshots = 0
-        for item in entries:
+        debts = debt_payments = 0
+        for item in sorted(entries, key=lambda entry: (_FAMILY_ORDER.get(entry.family, 999), entry.relative_path)):
             if item.status != "included":
                 continue
             path = root / item.relative_path
@@ -262,6 +273,11 @@ def migrate_core_csv(source_root: str | Path, target_db: str | Path,
                 auxiliary += _migrate_annual_goals(path, item, target_db, audit)
             elif item.family == "transaction_drafts":
                 drafts += _migrate_transaction_drafts(path, item, target_db, audit)
+            elif item.family == "debts":
+                debts += _migrate_debts(path, item, target_db, audit)
+            elif item.family == "debt_payments":
+                debt_payments += _migrate_debt_payments(path, item, target_db, audit)
+        debt_issues = _reconcile_debts(target_db, audit)
         metrics = {
             "manifest_files": len(entries),
             "included_files": sum(item.status == "included" for item in entries),
@@ -276,6 +292,9 @@ def migrate_core_csv(source_root: str | Path, target_db: str | Path,
             ),
             "auxiliary_records_imported": auxiliary,
             "drafts_imported": drafts,
+            "debts_imported": debts,
+            "debt_payments_imported": debt_payments,
+            "debt_issues": debt_issues,
         }
         audit.executemany("INSERT INTO reconciliation VALUES (?, ?)", metrics.items())
         audit.commit()
@@ -285,7 +304,7 @@ def migrate_core_csv(source_root: str | Path, target_db: str | Path,
         manifest_hash, len(entries), sum(item.status == "included" for item in entries),
         cash_imported, snapshots_imported, unresolved,
         sum(item.status == "included" and item.family not in _ADAPTED_FAMILIES for item in entries),
-        auxiliary, drafts,
+        auxiliary, drafts, debts, debt_payments, debt_issues,
     )
 
 
@@ -509,6 +528,102 @@ def _migrate_transaction_drafts(path: Path, item: ManifestEntry, target_db: Path
                 continue
             imported += 1
     return imported
+
+
+def _migrate_debts(path: Path, item: ManifestEntry, target_db: Path,
+                   audit: sqlite3.Connection) -> int:
+    imported = 0
+    with path.open("r", encoding="utf-8-sig", newline="") as stream:
+        for row_number, row in enumerate(csv.DictReader(stream, delimiter=";"), start=2):
+            source_record_id = _source_row(item, row_number, row, target_db, audit)
+            try:
+                debt_id = (row.get("debt_id") or "").strip()
+                kind = (row.get("type") or "").strip().lower()
+                counterparty = (row.get("counterparty") or "").strip()
+                opened_on = _legacy_date(row.get("opened_date") or "")
+                principal_currency = (row.get("principal_currency") or "").strip().upper()
+                cash_currency = (row.get("cash_currency") or "").strip().upper()
+                status = (row.get("status") or "active").strip().lower()
+                if not debt_id or not counterparty or opened_on is None:
+                    raise ValueError("debt needs ID, counterparty and valid opened date")
+                if kind not in {"receivable", "liability"} or status not in {"active", "closed"}:
+                    raise ValueError("unsupported debt type or status")
+                principal_minor = _positive_minor(target_db, principal_currency, row.get("principal_amount"))
+                cash_minor = _positive_minor(target_db, cash_currency, row.get("cash_amount"))
+                with connect_database(target_db, writable=True) as target:
+                    target.execute("""INSERT INTO debts
+                        (id, kind, counterparty, opened_on, principal_amount_minor,
+                         principal_currency_code, cash_amount_minor, cash_currency_code,
+                         comment, status, created_at, updated_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))""",
+                        (debt_id, kind, counterparty, opened_on, principal_minor,
+                         principal_currency, cash_minor, cash_currency,
+                         row.get("comment") or "", status))
+            except (ValueError, sqlite3.IntegrityError) as exc:
+                _issue(audit, item.relative_path, str(row_number), "invalid_debt", str(exc), True)
+                continue
+            link_entity_source(target_db, "debt", debt_id, source_record_id)
+            imported += 1
+    return imported
+
+
+def _migrate_debt_payments(path: Path, item: ManifestEntry, target_db: Path,
+                           audit: sqlite3.Connection) -> int:
+    imported = 0
+    with path.open("r", encoding="utf-8-sig", newline="") as stream:
+        for row_number, row in enumerate(csv.DictReader(stream, delimiter=";"), start=2):
+            source_record_id = _source_row(item, row_number, row, target_db, audit)
+            try:
+                payment_id = (row.get("payment_id") or "").strip()
+                debt_id = (row.get("debt_id") or "").strip()
+                occurred_on = _legacy_date(row.get("date") or "")
+                cash_currency = (row.get("cash_currency") or "").strip().upper()
+                status = (row.get("status") or "posted").strip().lower()
+                with connect_database(target_db) as target:
+                    debt = target.execute(
+                        "SELECT principal_currency_code FROM debts WHERE id = ?", (debt_id,)
+                    ).fetchone()
+                if not payment_id or occurred_on is None or debt is None or status != "posted":
+                    raise ValueError("payment needs ID, known debt, valid date and posted status")
+                principal_minor = _positive_minor(target_db, debt[0], row.get("amount"))
+                cash_minor = _positive_minor(target_db, cash_currency, row.get("cash_amount"))
+                with connect_database(target_db, writable=True) as target:
+                    target.execute("""INSERT INTO debt_payments
+                        (id, debt_id, occurred_on, principal_amount_minor,
+                         cash_amount_minor, cash_currency_code, comment, status, created_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))""",
+                        (payment_id, debt_id, occurred_on, principal_minor, cash_minor,
+                         cash_currency, row.get("comment") or "", status))
+            except (ValueError, sqlite3.IntegrityError) as exc:
+                _issue(audit, item.relative_path, str(row_number), "invalid_debt_payment", str(exc), True)
+                continue
+            link_entity_source(target_db, "debt_payment", payment_id, source_record_id)
+            imported += 1
+    return imported
+
+
+def _reconcile_debts(target_db: Path, audit: sqlite3.Connection) -> int:
+    issues = 0
+    with connect_database(target_db) as target:
+        rows = target.execute("""SELECT d.id, d.opened_on, d.principal_amount_minor, d.status,
+            COALESCE(SUM(p.principal_amount_minor), 0) AS paid_minor,
+            MIN(p.occurred_on) AS first_payment
+            FROM debts d LEFT JOIN debt_payments p ON p.debt_id = d.id GROUP BY d.id""").fetchall()
+    for row in rows:
+        if row["paid_minor"] > row["principal_amount_minor"]:
+            issues += 1
+            _issue(audit, "debts/debt_payments.csv", row["id"], "debt_overpayment",
+                   "payments exceed principal", True)
+        if row["first_payment"] and row["first_payment"] < row["opened_on"]:
+            issues += 1
+            _issue(audit, "debts/debt_payments.csv", row["id"], "payment_before_opening",
+                   "payment date precedes debt opening", True)
+        expected_closed = row["paid_minor"] == row["principal_amount_minor"]
+        if expected_closed != (row["status"] == "closed"):
+            issues += 1
+            _issue(audit, "debts/debts.csv", row["id"], "debt_status_mismatch",
+                   "closed status does not match outstanding principal", True)
+    return issues
 
 
 def _draft_cash_category(label: str, comment: str) -> tuple[str | None, str | None]:

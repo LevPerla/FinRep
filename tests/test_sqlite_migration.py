@@ -81,6 +81,35 @@ def test_cash_drafts_preserve_direction_category_status_and_source_key(tmp_path)
     ]
 
 
+def test_legacy_debt_exceptions_are_preserved_and_reported(tmp_path):
+    debts_dir = tmp_path / "debts"
+    debts_dir.mkdir()
+    (debts_dir / "debts.csv").write_text(
+        "debt_id;type;counterparty;opened_date;principal_amount;principal_currency;"
+        "cash_amount;cash_currency;comment;status\n"
+        "d1;receivable;Alex;2026-02-01;100;USD;100;USD;;active\n",
+        encoding="utf-8",
+    )
+    (debts_dir / "debt_payments.csv").write_text(
+        "payment_id;debt_id;date;amount;cash_amount;cash_currency;comment;status\n"
+        "p1;d1;2026-01-01;110;110;USD;;posted\n",
+        encoding="utf-8",
+    )
+    target = tmp_path / "target.sqlite3"
+    audit = tmp_path / "migration.sqlite3"
+    summary = migrate_core_csv(tmp_path, target, audit)
+    assert summary.debts_imported == 1
+    assert summary.debt_payments_imported == 1
+    assert summary.debt_issues == 2
+    migration = sqlite3.connect(audit)
+    try:
+        assert {row[0] for row in migration.execute(
+            "SELECT code FROM migration_issues WHERE blocking = 1"
+        )} == {"debt_overpayment", "payment_before_opening"}
+    finally:
+        migration.close()
+
+
 def test_sample_core_migration_is_repeatable_and_reconciled(tmp_path):
     source = Path(config.SAMPLE_DATA_PATH)
     target_one = tmp_path / "target-one.sqlite3"
@@ -97,6 +126,9 @@ def test_sample_core_migration_is_repeatable_and_reconciled(tmp_path):
     assert first.pending_adapter_files > 0
     assert first.auxiliary_records_imported > 0
     assert first.drafts_imported == 4
+    assert first.debts_imported == 4
+    assert first.debt_payments_imported == 4
+    assert first.debt_issues == 0
 
     with connect_database(target_one) as left, connect_database(target_two) as right:
         stable_queries = {
@@ -122,6 +154,12 @@ def test_sample_core_migration_is_repeatable_and_reconciled(tmp_path):
                 flow_direction, amount_minor, currency_code, category_id, comment,
                 source_record_id, origin_kind, origin_key, bank_status, status
                 FROM transaction_drafts ORDER BY id""",
+            "debts": """SELECT id, kind, counterparty, opened_on, principal_amount_minor,
+                principal_currency_code, cash_amount_minor, cash_currency_code, comment, status
+                FROM debts ORDER BY id""",
+            "debt_payments": """SELECT id, debt_id, occurred_on, principal_amount_minor,
+                cash_amount_minor, cash_currency_code, comment, status
+                FROM debt_payments ORDER BY id""",
         }
         for query in stable_queries.values():
             left_rows = left.execute(query).fetchall()
@@ -156,6 +194,7 @@ def test_sample_core_migration_is_repeatable_and_reconciled(tmp_path):
         assert audit.execute("SELECT count(*) FROM raw_records").fetchone()[0] == (
             metrics["source_cash_candidates"] + metrics["source_asset_snapshots"]
             + metrics["auxiliary_records_imported"] + metrics["drafts_imported"]
+            + metrics["debts_imported"] + metrics["debt_payments_imported"]
         )
         assert audit.execute(
             "SELECT count(*) FROM migration_issues WHERE code = 'unmapped_category'"
