@@ -19,9 +19,11 @@ from src.data.sqlite_store import (
     add_cash_transaction,
     connect_database,
     initialize_database,
+    link_entity_source,
     link_transaction_source,
     register_source_record,
     save_asset_month,
+    save_fx_rate,
     save_month,
 )
 from src.data.staging import TRANSACTION_BOUNDARY_RE, sanitize_transaction_comment
@@ -74,6 +76,17 @@ _PASS_THROUGH_TRANSACTION_COLUMNS = {
     "Инвестиции", "Дебиторская задолженность", "Погашение деб. зад.",
     "Кредиторская задолженность", "Погашение кред. зад.", "Долги (у меня)",
 }
+_CATEGORY_BY_LABEL = {
+    **_EXPENSE_CATEGORIES,
+    "Зарплата": "income.salary",
+    "Проценты": "income.interest",
+    "Инвест доход": "income.investment",
+    "Прочие доходы": "income.other",
+    "Сбережения": "income.other",
+}
+_ADAPTED_FAMILIES = {
+    "cash_transactions", "asset_snapshots", "category_rules", "fx_rates", "annual_goals",
+}
 
 
 @dataclass(frozen=True)
@@ -97,6 +110,7 @@ class MigrationSummary:
     snapshots_imported: int
     unresolved_financial_records: int
     pending_adapter_files: int
+    auxiliary_records_imported: int
 
 
 def build_manifest(source_root: str | Path) -> tuple[list[ManifestEntry], str]:
@@ -194,7 +208,7 @@ def prepare_migration_database(path: str | Path, entries: list[ManifestEntry], m
         for item in entries:
             if item.status == "unknown":
                 _issue(database, item.relative_path, "file", "unknown_file", item.reason, True)
-            elif item.status == "included" and item.family not in {"cash_transactions", "asset_snapshots"}:
+            elif item.status == "included" and item.family not in _ADAPTED_FAMILIES:
                 _issue(database, item.relative_path, "file", "adapter_pending",
                        f"{item.family} adapter is required before cutover", True)
         database.commit()
@@ -215,7 +229,7 @@ def migrate_core_csv(source_root: str | Path, target_db: str | Path,
 
     audit = sqlite3.connect(Path(migration_db))
     try:
-        cash_imported = snapshots_imported = unresolved = source_cash = source_snapshots = 0
+        cash_imported = snapshots_imported = auxiliary = unresolved = source_cash = source_snapshots = 0
         for item in entries:
             if item.status != "included":
                 continue
@@ -230,6 +244,12 @@ def migrate_core_csv(source_root: str | Path, target_db: str | Path,
                 snapshots_imported += imported
                 source_snapshots += candidates
                 unresolved += problems
+            elif item.family == "category_rules":
+                auxiliary += _migrate_category_rules(path, item, target_db, audit)
+            elif item.family == "fx_rates":
+                auxiliary += _migrate_fx_rates(path, item, target_db, audit)
+            elif item.family == "annual_goals":
+                auxiliary += _migrate_annual_goals(path, item, target_db, audit)
         metrics = {
             "manifest_files": len(entries),
             "included_files": sum(item.status == "included" for item in entries),
@@ -239,9 +259,10 @@ def migrate_core_csv(source_root: str | Path, target_db: str | Path,
             "imported_asset_snapshots": snapshots_imported,
             "unresolved_financial_records": unresolved,
             "pending_adapter_files": sum(
-                item.status == "included" and item.family not in {"cash_transactions", "asset_snapshots"}
+                item.status == "included" and item.family not in _ADAPTED_FAMILIES
                 for item in entries
             ),
+            "auxiliary_records_imported": auxiliary,
         }
         audit.executemany("INSERT INTO reconciliation VALUES (?, ?)", metrics.items())
         audit.commit()
@@ -250,8 +271,8 @@ def migrate_core_csv(source_root: str | Path, target_db: str | Path,
     return MigrationSummary(
         manifest_hash, len(entries), sum(item.status == "included" for item in entries),
         cash_imported, snapshots_imported, unresolved,
-        sum(item.status == "included" and item.family not in {"cash_transactions", "asset_snapshots"}
-            for item in entries),
+        sum(item.status == "included" and item.family not in _ADAPTED_FAMILIES for item in entries),
+        auxiliary,
     )
 
 
@@ -344,6 +365,113 @@ def _migrate_asset_file(path: Path, item: ManifestEntry, target_db: Path,
             )
             imported += 1
     return imported, candidates, problems
+
+
+def _migrate_category_rules(path: Path, item: ManifestEntry, target_db: Path,
+                            audit: sqlite3.Connection) -> int:
+    imported = 0
+    with path.open("r", encoding="utf-8-sig", newline="") as stream:
+        for row_number, row in enumerate(csv.DictReader(stream, delimiter=";"), start=2):
+            source_record_id = _source_row(item, row_number, row, target_db, audit)
+            category_id = _CATEGORY_BY_LABEL.get((row.get("category") or "").strip())
+            pattern = (row.get("pattern") or "").strip()
+            if not category_id or not pattern:
+                _issue(audit, item.relative_path, str(row_number), "invalid_category_rule",
+                       "rule needs a known category and non-empty pattern", True)
+                continue
+            entity_id = _stable_id("category-rule", source_record_id)
+            direction = category_id.split(".", 1)[0]
+            with connect_database(target_db, writable=True) as target:
+                target.execute("""INSERT INTO categorization_rules
+                    (id, priority, direction_scope, matcher_type, pattern, category_id,
+                     active, created_at, updated_at)
+                    VALUES (?, ?, ?, 'contains', ?, ?, 1, datetime('now'), datetime('now'))""",
+                    (entity_id, row_number - 2, direction, pattern, category_id))
+            link_entity_source(target_db, "categorization_rule", entity_id, source_record_id)
+            imported += 1
+    return imported
+
+
+def _migrate_fx_rates(path: Path, item: ManifestEntry, target_db: Path,
+                      audit: sqlite3.Connection) -> int:
+    imported = 0
+    with path.open("r", encoding="utf-8-sig", newline="") as stream:
+        for row_number, row in enumerate(csv.DictReader(stream, delimiter=";"), start=2):
+            source_record_id = _source_row(item, row_number, row, target_db, audit)
+            observation_id = _stable_id("fx-observation", source_record_id)
+            try:
+                save_fx_rate(
+                    target_db, observation_id=observation_id,
+                    rate_date=(row.get("date") or "").strip(),
+                    currency=(row.get("currency") or "").strip(),
+                    usd_rate=row.get("usd_rate"), source=(row.get("source") or "migration").strip(),
+                    fetched_at=(row.get("fetched_at") or "").strip(),
+                    sequence=row_number - 2,
+                )
+            except (ValueError, sqlite3.IntegrityError) as exc:
+                _issue(audit, item.relative_path, str(row_number), "invalid_fx_rate", str(exc), True)
+                continue
+            link_entity_source(target_db, "fx_rate_observation", observation_id, source_record_id)
+            imported += 1
+    return imported
+
+
+def _migrate_annual_goals(path: Path, item: ManifestEntry, target_db: Path,
+                          audit: sqlite3.Connection) -> int:
+    imported = 0
+    with path.open("r", encoding="utf-8-sig", newline="") as stream:
+        for row_number, row in enumerate(csv.DictReader(stream, delimiter=";"), start=2):
+            source_record_id = _source_row(item, row_number, row, target_db, audit)
+            currency = (row.get("currency") or "").strip().upper()
+            try:
+                year = int(row.get("year") or "")
+                values = [
+                    _optional_minor(target_db, currency, row.get(column, ""))
+                    for column in ("target_capital", "target_monthly_income", "target_monthly_expense")
+                ]
+                with connect_database(target_db, writable=True) as target:
+                    target.execute("""INSERT INTO annual_goals
+                        (year, currency_code, target_capital_minor, target_monthly_income_minor,
+                         target_monthly_expense_minor, notes, updated_at)
+                        VALUES (?, ?, ?, ?, ?, ?, datetime('now'))""",
+                        (year, currency, *values, row.get("notes") or ""))
+            except (ValueError, sqlite3.IntegrityError) as exc:
+                _issue(audit, item.relative_path, str(row_number), "invalid_annual_goal", str(exc), True)
+                continue
+            entity_id = f"{year}:{currency}"
+            link_entity_source(target_db, "annual_goal", entity_id, source_record_id)
+            imported += 1
+    return imported
+
+
+def _source_row(item: ManifestEntry, row_number: int, row: dict, target_db: Path,
+                audit: sqlite3.Connection) -> str:
+    raw = json.dumps(row, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    payload_hash = hashlib.sha256(raw.encode()).hexdigest()
+    coordinate = str(row_number)
+    record_key = _stable_id("source-coordinate", f"{item.relative_path}\0{coordinate}")
+    _, source_record_id = register_source_record(
+        target_db, source_kind=item.family, document_hash=item.sha256,
+        parser_version=PARSER_VERSION, record_key=record_key, payload_hash=payload_hash,
+    )
+    _raw(audit, source_record_id, item.relative_path, row_number, "*", 1, raw, payload_hash)
+    return source_record_id
+
+
+def _optional_minor(target_db: Path, currency: str, value: str) -> int | None:
+    if value is None or not str(value).strip():
+        return None
+    amount = parse_money_amount(value)
+    if amount < 0:
+        raise ValueError("goal amount must be non-negative")
+    with connect_database(target_db) as target:
+        row = target.execute("SELECT minor_unit FROM currencies WHERE code = ?", (currency,)).fetchone()
+    if row is None:
+        raise ValueError("unsupported goal currency")
+    scaled = amount * (10 ** row[0])
+    if scaled != scaled.to_integral_value():
+        raise ValueError("goal exceeds currency minor-unit precision")
+    return int(scaled)
 
 
 def _cash_classification(column: str, amount: Decimal, comment: str):

@@ -125,6 +125,13 @@ _TABLES = (
         allocated_amount_minor INTEGER CHECK (allocated_amount_minor > 0),
         PRIMARY KEY (transaction_id, source_record_id, link_role)
     ) STRICT""",
+    """CREATE TABLE entity_source_links (
+        entity_type TEXT NOT NULL CHECK (trim(entity_type) <> ''),
+        entity_id TEXT NOT NULL CHECK (trim(entity_id) <> ''),
+        source_record_id TEXT NOT NULL REFERENCES source_records(id) ON DELETE RESTRICT,
+        link_role TEXT NOT NULL DEFAULT 'original' CHECK (link_role IN ('original', 'replacement')),
+        PRIMARY KEY (entity_type, entity_id, source_record_id, link_role)
+    ) STRICT""",
     """CREATE TABLE transaction_drafts (
         id TEXT PRIMARY KEY, occurred_on TEXT NOT NULL CHECK (length(occurred_on) = 10),
         flow_direction TEXT NOT NULL CHECK (flow_direction IN ('income', 'expense')),
@@ -527,7 +534,8 @@ def asset_snapshots(path: str | Path) -> list[dict]:
 
 
 def save_fx_rate(path: str | Path, *, rate_date: str, currency: str, usd_rate,
-                 source: str = "manual", fetched_at: str = "", sequence: int = 0) -> None:
+                 source: str = "manual", fetched_at: str = "", sequence: int = 0,
+                 observation_id: str | None = None) -> str:
     rate_date = _iso_date(rate_date, "rate_date")
     if not source.strip():
         raise ValueError("FX source is required")
@@ -537,11 +545,13 @@ def save_fx_rate(path: str | Path, *, rate_date: str, currency: str, usd_rate,
     with connect_database(path, writable=True) as connection:
         if connection.execute("SELECT 1 FROM currencies WHERE code = ?", (currency.upper(),)).fetchone() is None:
             raise ValueError("unsupported currency")
+        observation_id = observation_id or uuid4().hex
         connection.execute(
             """INSERT INTO fx_rate_observations VALUES (?, ?, ?, ?, ?, ?, ?)""",
-            (uuid4().hex, rate_date, currency.upper(), format(rate, "f"), source.strip(),
+            (observation_id, rate_date, currency.upper(), format(rate, "f"), source.strip(),
              fetched_at or _utc_now(), sequence),
         )
+    return observation_id
 
 
 def fx_rates(path: str | Path) -> list[dict]:
@@ -586,6 +596,13 @@ def link_transaction_source(path: str | Path, transaction_id: str, source_record
     with connect_database(path, writable=True) as connection:
         connection.execute("INSERT INTO transaction_source_links VALUES (?, ?, ?, ?)",
                            (transaction_id, source_record_id, role, allocated_amount_minor))
+
+
+def link_entity_source(path: str | Path, entity_type: str, entity_id: str,
+                       source_record_id: str, *, role: str = "original") -> None:
+    with connect_database(path, writable=True) as connection:
+        connection.execute("INSERT INTO entity_source_links VALUES (?, ?, ?, ?)",
+                           (entity_type, entity_id, source_record_id, role))
 
 
 def backup_database(source_path: str | Path, destination_path: str | Path) -> None:

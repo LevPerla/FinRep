@@ -62,6 +62,7 @@ def test_sample_core_migration_is_repeatable_and_reconciled(tmp_path):
     assert first.snapshots_imported > 0
     assert first.unresolved_financial_records > 0
     assert first.pending_adapter_files > 0
+    assert first.auxiliary_records_imported > 0
 
     with connect_database(target_one) as left, connect_database(target_two) as right:
         stable_queries = {
@@ -75,6 +76,14 @@ def test_sample_core_migration_is_repeatable_and_reconciled(tmp_path):
                 FROM source_batches ORDER BY id""",
             "source_records": "SELECT id, batch_id, record_key, payload_hash FROM source_records ORDER BY id",
             "transaction_source_links": "SELECT * FROM transaction_source_links ORDER BY 1, 2, 3",
+            "entity_source_links": "SELECT * FROM entity_source_links ORDER BY 1, 2, 3, 4",
+            "categorization_rules": """SELECT id, priority, direction_scope, matcher_type,
+                pattern, category_id, active FROM categorization_rules ORDER BY id""",
+            "fx_rate_observations": """SELECT id, rate_date, currency_code, usd_per_unit_text,
+                source, fetched_at, sequence FROM fx_rate_observations ORDER BY id""",
+            "annual_goals": """SELECT year, currency_code, target_capital_minor,
+                target_monthly_income_minor, target_monthly_expense_minor, notes
+                FROM annual_goals ORDER BY year, currency_code""",
         }
         for query in stable_queries.values():
             left_rows = left.execute(query).fetchall()
@@ -102,6 +111,7 @@ def test_sample_core_migration_is_repeatable_and_reconciled(tmp_path):
         assert metrics["source_asset_snapshots"] == metrics["imported_asset_snapshots"]
         assert audit.execute("SELECT count(*) FROM raw_records").fetchone()[0] == (
             metrics["source_cash_candidates"] + metrics["source_asset_snapshots"]
+            + metrics["auxiliary_records_imported"]
         )
         assert audit.execute(
             "SELECT count(*) FROM migration_issues WHERE code = 'unmapped_category'"
