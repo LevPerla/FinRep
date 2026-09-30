@@ -424,6 +424,8 @@ def ensure_monthly_transaction_csv(year: str, month: str, transactions_root: str
 
 
 def read_monthly_transaction_csv(year: str, month: str, transactions_root: str | Path | None = None) -> pd.DataFrame:
+    if config.use_sqlite_storage():
+        return _sqlite_month_ledger(year, month)
     ensure_monthly_transaction_csv(year, month, transactions_root)
     target_path = monthly_transaction_csv_path(year, month, transactions_root)
     return _read_or_create_month_table(year, month, target_path)
@@ -445,10 +447,132 @@ def prepare_monthly_transaction_export(
     path: str | Path | None = None,
     transactions_root: str | Path | None = None,
 ) -> tuple[pd.DataFrame, dict]:
+    if path is None and config.use_sqlite_storage():
+        preview, _, preview_state = _sqlite_monthly_export_snapshot(year, month)
+        return preview, preview_state
     preview, _, preview_state = _monthly_transaction_export_snapshot(
         year, month, path, transactions_root
     )
     return preview, preview_state
+
+
+def _sqlite_monthly_export_snapshot(
+    year: str, month: str,
+) -> tuple[pd.DataFrame, pd.DataFrame, dict]:
+    from src.data.sqlite_store import transaction_drafts_snapshot
+
+    year_key = str(int(year)).zfill(4)
+    month_key = str(int(month)).zfill(2)
+    display, revision = _sqlite_drafts_frame()
+    stored, observed_revision = transaction_drafts_snapshot(config.active_database_path())
+    if revision != observed_revision:
+        raise DraftRevisionConflict("Черновики изменились во время построения Preview.")
+    stored_by_key = {
+        (row["origin_kind"], row["origin_key"]): row for row in stored
+    }
+    dates = pd.to_datetime(display["date"], errors="coerce")
+    mask = (
+        dates.dt.year.eq(int(year_key))
+        & dates.dt.month.eq(int(month_key))
+        & display["status"].isin(EXPORTABLE_STATUSES)
+        & display["bank_status"].ne("pending")
+    )
+    preview = display[mask].copy(deep=True).sort_values(
+        ["date", "source", "source_id"], kind="mergesort").reset_index(drop=True)
+    if preview.empty:
+        raise ValueError("Нет черновиков со статусом draft/ready для выбранного месяца.")
+    metadata = []
+    for _, row in preview.iterrows():
+        key = (str(row["source"]), str(row["source_id"]))
+        stored_row = stored_by_key[key]
+        metadata.append({
+            "source": key[0], "source_id": key[1], "id": stored_row["id"],
+            "row_version": stored_row["row_version"],
+            "draft_kind": stored_row["draft_kind"],
+            "domain_action": stored_row["domain_action"] or "",
+        })
+    identity = {
+        "data_mode": config.get_data_mode(), "year": year_key, "month": month_key,
+        "revision": revision, "draft_rows": metadata,
+    }
+    operation_key = "publish-preview-" + sha256(json.dumps(
+        identity, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode()).hexdigest()
+    state = {"version": 2, **identity, "operation_key": operation_key,
+             "draft_ids": [
+                 {"source": item["source"], "source_id": item["source_id"]}
+                 for item in metadata
+             ]}
+    return preview[DRAFT_COLUMNS], preview[DRAFT_COLUMNS], state
+
+
+def _export_sqlite_monthly_transaction_drafts(
+    year: str,
+    month: str,
+    *,
+    preview_rows: list[dict] | None,
+    preview_state: dict | None,
+) -> dict:
+    from src.data.sqlite_store import (
+        StorageRevisionConflict,
+        publish_transaction_draft_preview,
+    )
+
+    if not isinstance(preview_state, dict) or preview_state.get("version") != 2:
+        raise ValueError("Сначала нажми Preview, затем подтверди экспорт.")
+    year_key = str(int(year)).zfill(4)
+    month_key = str(int(month)).zfill(2)
+    if (preview_state.get("data_mode") != config.get_data_mode()
+            or str(preview_state.get("year")) != year_key
+            or str(preview_state.get("month")) != month_key):
+        raise ValueError("Preview создан для другого режима или периода: построй Preview заново.")
+    identity = {
+        "data_mode": preview_state["data_mode"], "year": year_key, "month": month_key,
+        "revision": preview_state.get("revision"),
+        "draft_rows": preview_state.get("draft_rows", []),
+    }
+    expected_operation_key = "publish-preview-" + sha256(json.dumps(
+        identity, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode()).hexdigest()
+    if preview_state.get("operation_key") != expected_operation_key:
+        raise ValueError("Состояние Preview повреждено: построй Preview заново.")
+    preview = _normalize_drafts(pd.DataFrame(preview_rows or [], dtype=object))
+    if preview.empty:
+        raise ValueError("Preview пустой: сначала нажми Preview или заполни таблицу.")
+    expected_keys = [
+        (str(item["source"]), str(item["source_id"]))
+        for item in preview_state.get("draft_rows", [])
+    ]
+    received_keys = list(zip(preview["source"].astype(str), preview["source_id"].astype(str)))
+    if sorted(received_keys) != sorted(expected_keys) or len(received_keys) != len(set(received_keys)):
+        raise ValueError("Состав строк Preview изменился: построй Preview заново.")
+    metadata = {
+        (str(item["source"]), str(item["source_id"])): item
+        for item in preview_state.get("draft_rows", [])
+    }
+    updates = []
+    for _, row in preview.iterrows():
+        key = (str(row["source"]), str(row["source_id"]))
+        item = metadata[key]
+        update = _sqlite_preview_update_payload(row, item)
+        update.update({"id": item["id"], "row_version": item["row_version"]})
+        updates.append(update)
+    try:
+        published = publish_transaction_draft_preview(
+            config.active_database_path(), rows=updates,
+            draft_ids=[item["id"] for item in preview_state["draft_rows"]],
+            expected_revision=str(preview_state.get("revision", "")),
+            operation_key=expected_operation_key,
+        )
+    except StorageRevisionConflict as exc:
+        raise DraftRevisionConflict(
+            "Preview устарел: черновики изменились, построй Preview заново.") from exc
+    _clear_transaction_report_caches()
+    return {
+        "target_path": str(config.active_database_path()),
+        "backup_path": None,
+        "exported_rows": published["published_rows"],
+    }
 
 
 def _monthly_transaction_export_snapshot(
@@ -502,6 +626,9 @@ def export_monthly_transaction_drafts(
     preview_state: dict | None = None,
 ) -> dict:
     config.require_writable_mode()
+    if path is None and config.use_sqlite_storage():
+        return _export_sqlite_monthly_transaction_drafts(
+            year, month, preview_rows=preview_rows, preview_state=preview_state)
     draft_path = _draft_path(path)
     target_path = monthly_transaction_csv_path(year, month, transactions_root)
     with _transaction_drafts_lock(draft_path):
@@ -951,9 +1078,9 @@ def _sqlite_drafts_frame() -> tuple[pd.DataFrame, str]:
         "receivable_payment": "Погашение деб. зад.",
         "liability_opening": "Кредиторская задолженность",
         "liability_payment": "Погашение кред. зад.",
-        "investment_contribution": "Инвестиции",
-        "investment_withdrawal": "Инвестиции",
-        "cash_movement": "Инвестиции",
+        "investment_contribution": "Инвестиции: пополнение",
+        "investment_withdrawal": "Инвестиции: вывод",
+        "cash_movement": "Инвестиции: выбери направление",
     }
     records = []
     for row in rows:
@@ -972,6 +1099,102 @@ def _sqlite_drafts_frame() -> tuple[pd.DataFrame, str]:
             "bank_account_id": row["bank_account_id"], "status": row["status"],
         })
     return pd.DataFrame(records, columns=DRAFT_COLUMNS), revision
+
+
+def _sqlite_preview_update_payload(row: pd.Series | dict, metadata: dict) -> dict:
+    kind = str(metadata.get("draft_kind", ""))
+    if kind == "cash":
+        return _sqlite_cash_draft_payload(row)
+    domain_actions = {
+        "debt": {
+            "Дебиторская задолженность": "receivable_opening",
+            "Погашение деб. зад.": "receivable_payment",
+            "Кредиторская задолженность": "liability_opening",
+            "Погашение кред. зад.": "liability_payment",
+        },
+        "investment": {
+            "Инвестиции: пополнение": "investment_contribution",
+            "Инвестиции: вывод": "investment_withdrawal",
+        },
+    }
+    label = str(row.get("category", "")).strip()
+    action = domain_actions.get(kind, {}).get(label)
+    if action is None:
+        if kind == "investment" and label in {"Инвестиции", "Инвестиции: выбери направление"}:
+            raise ValueError("Для инвестиционной операции выбери пополнение или вывод.")
+        raise ValueError(f"Категория {label!r} не соответствует предметной операции.")
+    return {
+        "occurred_on": str(row.get("date", "")), "amount": row.get("amount"),
+        "currency": str(row.get("currency", "")), "comment": row.get("comment", ""),
+        "domain_action": action,
+        "bank_status": str(row.get("bank_status", "")) or None,
+        "bank_reference": str(row.get("bank_reference", "")),
+        "bank_account_id": str(row.get("bank_account_id", "")),
+        "status": str(row.get("status", "draft")),
+    }
+
+
+def _sqlite_month_ledger(year: str, month: str) -> pd.DataFrame:
+    from decimal import Decimal
+    from src.data.sqlite_store import connect_database
+
+    period = f"{int(year):04d}-{int(month):02d}"
+    with connect_database(config.active_database_path()) as connection:
+        cash = connection.execute("""SELECT t.id, t.occurred_on, c.name_ru AS category,
+            t.currency_code, t.amount_minor, u.minor_unit, t.comment, t.flow_direction
+            FROM cash_transactions t JOIN categories c ON c.id = t.category_id
+            JOIN currencies u ON u.code = t.currency_code
+            WHERE t.status = 'posted' AND substr(t.occurred_on, 1, 7) = ?
+            ORDER BY t.occurred_on, t.id""", (period,)).fetchall()
+        debt = connection.execute("""SELECT e.*, u.minor_unit FROM debt_cash_events e
+            JOIN currencies u ON u.code = e.currency_code
+            WHERE substr(e.occurred_on, 1, 7) = ? ORDER BY e.occurred_on, e.id""",
+            (period,)).fetchall()
+        investments = connection.execute("""SELECT e.*, u.minor_unit
+            FROM investment_cash_events e JOIN currencies u ON u.code = e.currency_code
+            WHERE substr(e.occurred_on, 1, 7) = ? ORDER BY e.occurred_on, e.id""",
+            (period,)).fetchall()
+
+    def amount(row) -> str:
+        return format_money_amount(
+            Decimal(row["amount_minor"]) / (Decimal(10) ** row["minor_unit"]))
+
+    records = [{
+        "date": row["occurred_on"], "category": row["category"],
+        "currency": row["currency_code"], "amount": amount(row),
+        "comment": row["comment"], "source": "sqlite", "source_id": row["id"],
+        "direction": "credit" if row["flow_direction"] == "income" else "debit",
+        "bank_status": "", "bank_reference": "", "bank_account_id": "",
+        "status": "exported",
+    } for row in cash]
+    debt_labels = {
+        ("issue", "receivable"): "Дебиторская задолженность",
+        ("repayment", "receivable"): "Погашение деб. зад.",
+        ("issue", "liability"): "Кредиторская задолженность",
+        ("repayment", "liability"): "Погашение кред. зад.",
+    }
+    records.extend({
+        "date": row["occurred_on"],
+        "category": debt_labels[(row["event_kind"], row["side"])],
+        "currency": row["currency_code"], "amount": amount(row),
+        "comment": row["comment"], "source": "sqlite", "source_id": row["id"],
+        "direction": "", "bank_status": "", "bank_reference": "",
+        "bank_account_id": "", "status": "exported",
+    } for row in debt)
+    records.extend({
+        "date": row["occurred_on"],
+        "category": ("Инвестиции: пополнение" if row["flow_kind"] == "contribution"
+                     else "Инвестиции: вывод"),
+        "currency": row["currency_code"],
+        "amount": (amount(row) if row["flow_kind"] == "contribution"
+                   else format_money_amount(-Decimal(row["amount_minor"])
+                                            / (Decimal(10) ** row["minor_unit"]))),
+        "comment": row["comment"], "source": "sqlite", "source_id": row["id"],
+        "direction": "", "bank_status": "", "bank_reference": "",
+        "bank_account_id": "", "status": "exported",
+    } for row in investments)
+    return pd.DataFrame(records, columns=DRAFT_COLUMNS).sort_values(
+        ["date", "source_id"], kind="mergesort").reset_index(drop=True)
 
 
 def _sqlite_cash_draft_payload(row: pd.Series | dict) -> dict:

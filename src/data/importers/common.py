@@ -158,8 +158,20 @@ def categorize(details: str, amount: float, history_categories: dict[str, str] |
     rules = _load_rules()
     normalized = _normalize_text(details)
     for _, rule in rules.iterrows():
+        direction_scope = str(rule.get("direction_scope", "any"))
+        direction = "income" if amount > 0 else "expense"
+        if direction_scope not in {"", "any", direction}:
+            continue
         pattern = _normalize_text(rule.get("pattern", ""))
-        if pattern and pattern in normalized:
+        matcher = str(rule.get("matcher_type", "contains"))
+        matched = (
+            bool(pattern)
+            and ((matcher == "contains" and pattern in normalized)
+                 or (matcher == "exact" and pattern == normalized)
+                 or (matcher == "regex" and re.search(str(rule.get("pattern", "")), details,
+                                                       flags=re.IGNORECASE) is not None))
+        )
+        if matched:
             return _category_for_direction(
                 str(rule.get("category", DEFAULT_EXPENSE_CATEGORY)), amount
             )
@@ -193,6 +205,16 @@ def _history_category_lookup() -> dict[str, str]:
 
 
 def _load_rules() -> pd.DataFrame:
+    if config.use_sqlite_storage():
+        from src.data.sqlite_store import connect_database
+
+        with connect_database(config.active_database_path()) as connection:
+            rows = connection.execute("""SELECT r.pattern, c.name_ru AS category,
+                r.matcher_type, r.direction_scope FROM categorization_rules r
+                JOIN categories c ON c.id = r.category_id
+                WHERE r.active = 1 ORDER BY r.priority, r.id""").fetchall()
+        return pd.DataFrame([dict(row) for row in rows], columns=[
+            "pattern", "category", "matcher_type", "direction_scope"])
     rules_path = config.active_data_path("import_rules", "categories.csv")
     if not rules_path.exists():
         return pd.DataFrame(columns=["pattern", "category"])

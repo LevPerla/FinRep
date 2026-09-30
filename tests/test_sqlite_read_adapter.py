@@ -1,9 +1,16 @@
 from pathlib import Path
 
+import pytest
+
 from src import config
 from src.data.get import clear_data_cache, get_assets, get_investments, get_transactions
 from src.data.sqlite_migration import migrate_core_csv
-from src.data.sqlite_store import initialize_database
+from src.data.sqlite_store import (
+    add_cash_transaction,
+    create_debt_record,
+    initialize_database,
+    publish_domain_drafts,
+)
 from src.data.assets_editor import ensure_asset_snapshot, read_asset_snapshot, write_asset_snapshot
 from src.dashboard.planning_data import _load_goals, save_goal_targets
 from src.data.get_finance import _append_cache_rows, _read_cache
@@ -16,6 +23,8 @@ from src.data.crypto import (
 )
 from src.data.sqlite_store import upsert_crypto_wallet
 from src.data import staging
+from src.data.validation import validate_all_data
+from src.model.create_tables import clear_table_cache, get_balance_by_month
 import pandas as pd
 
 
@@ -35,12 +44,14 @@ def test_sqlite_backend_feeds_existing_analytics_shapes(tmp_path, monkeypatch):
 
     assert list(transactions.columns) == [
         "Дата", "Категория", "Валюта", "Значение", "Комментарий", "Год", "Квартал", "Месяц"]
-    assert len(transactions) == summary.cash_imported
+    assert len(transactions) == summary.cash_imported + summary.domain_cash_events_imported
     assert set(transactions["Категория"]).issubset({
         "Зарплата", "Проценты", "Инвест доход", "Прочие доходы",
         "Быт и товары для дома", "На себя", "Одежда", "Пища", "Поездки",
         "Прочее", "Связь", "Развлечения", "Соц жизнь", "Транспорт",
         "Доход без категории",
+        "Инвестиции", "Дебиторская задолженность", "Погашение деб. зад.",
+        "Кредиторская задолженность", "Погашение кред. зад.",
     })
     assert list(assets.columns) == ["Счет", "Валюта", "Значение", "Год", "Квартал", "Месяц"]
     assert len(assets) == summary.snapshots_imported
@@ -175,3 +186,147 @@ def test_sqlite_staging_adapter_supports_batch_edit_and_remove(tmp_path, monkeyp
     staging.delete_transaction_drafts(rows.to_dict("records"), expected_revision=revision)
     hidden, _ = staging.read_transaction_drafts_snapshot()
     assert hidden.empty
+
+
+def test_sqlite_month_preview_publishes_edited_cash_and_domain_rows(tmp_path, monkeypatch):
+    database = tmp_path / "target.sqlite3"
+    initialize_database(database)
+    monkeypatch.setenv("FINREP_STORAGE_BACKEND", "sqlite")
+    monkeypatch.setenv("FINREP_SQLITE_PATH", str(database))
+    _, revision = staging.read_transaction_drafts_snapshot()
+    staging.append_transaction_draft_rows(pd.DataFrame([{
+        "date": "2026-06-01", "category": "Пища", "currency": "RUB",
+        "amount": "100.25", "comment": "Lunch", "source": "manual",
+        "source_id": "manual:preview", "status": "draft",
+    }]), expected_revision=revision)
+    create_debt_record(
+        database, kind="receivable", counterparty="Friend", opened_on="2026-06-02",
+        principal_amount="500", currency="RUB", operation_key="preview-debt")
+
+    preview, state = staging.prepare_monthly_transaction_export("2026", "6")
+    assert preview["category"].tolist() == ["Пища", "Дебиторская задолженность"]
+    edited = preview.to_dict("records")
+    edited[0]["amount"] = "110.50"
+    edited[0]["comment"] = "Edited lunch"
+    first = staging.export_monthly_transaction_drafts(
+        "2026", "6", preview_rows=edited, preview_state=state)
+    second = staging.export_monthly_transaction_drafts(
+        "2026", "6", preview_rows=edited, preview_state=state)
+    assert first == second
+    assert first["exported_rows"] == 2
+    assert first["target_path"] == str(database)
+    ledger = staging.read_monthly_transaction_csv("2026", "6")
+    assert ledger["category"].tolist() == ["Пища", "Дебиторская задолженность"]
+    assert ledger.iloc[0]["amount"] == "110.5"
+    assert ledger.iloc[0]["comment"] == "Edited lunch"
+
+
+def test_sqlite_month_preview_rejects_stale_revision(tmp_path, monkeypatch):
+    database = tmp_path / "target.sqlite3"
+    initialize_database(database)
+    monkeypatch.setenv("FINREP_STORAGE_BACKEND", "sqlite")
+    monkeypatch.setenv("FINREP_SQLITE_PATH", str(database))
+    _, revision = staging.read_transaction_drafts_snapshot()
+    staging.append_transaction_draft_rows(pd.DataFrame([{
+        "date": "2026-07-01", "category": "Пища", "currency": "RUB",
+        "amount": "10", "source": "manual", "source_id": "stale:1",
+        "status": "draft",
+    }]), expected_revision=revision)
+    preview, state = staging.prepare_monthly_transaction_export("2026", "7")
+    _, revision = staging.read_transaction_drafts_snapshot()
+    staging.append_transaction_draft_rows(pd.DataFrame([{
+        "date": "2026-07-02", "category": "Пища", "currency": "RUB",
+        "amount": "20", "source": "manual", "source_id": "stale:2",
+        "status": "draft",
+    }]), expected_revision=revision)
+    with pytest.raises(staging.DraftRevisionConflict, match="Preview устарел"):
+        staging.export_monthly_transaction_drafts(
+            "2026", "7", preview_rows=preview.to_dict("records"), preview_state=state)
+    assert staging.read_monthly_transaction_csv("2026", "7").empty
+
+
+def test_sqlite_validation_does_not_fall_back_to_csv(tmp_path, monkeypatch):
+    database = tmp_path / "target.sqlite3"
+    initialize_database(database)
+    monkeypatch.setenv("FINREP_STORAGE_BACKEND", "sqlite")
+    monkeypatch.setenv("FINREP_SQLITE_PATH", str(database))
+    monkeypatch.setattr(config, "DATA_PATH", str(tmp_path / "missing-csv-root"))
+
+    assert validate_all_data(False) == []
+
+
+def test_sqlite_balance_uses_new_income_categories_and_domain_cash_events(tmp_path, monkeypatch):
+    database = tmp_path / "target.sqlite3"
+    initialize_database(database)
+    add_cash_transaction(
+        database, transaction_id="salary", occurred_on="2026-08-01",
+        flow_direction="income", category_id="income.salary",
+        amount="100", currency="RUB")
+    add_cash_transaction(
+        database, transaction_id="interest", occurred_on="2026-08-02",
+        flow_direction="income", category_id="income.interest",
+        amount="20", currency="RUB")
+    add_cash_transaction(
+        database, transaction_id="food", occurred_on="2026-08-03",
+        flow_direction="expense", category_id="expense.food",
+        amount="30", currency="RUB")
+    debt = create_debt_record(
+        database, kind="receivable", counterparty="Friend", opened_on="2026-08-04",
+        principal_amount="50", currency="RUB", operation_key="balance-debt")
+    publish_domain_drafts(
+        database, draft_ids=[debt["draft_id"]], operation_key="balance-debt-publish")
+    monkeypatch.setenv("FINREP_STORAGE_BACKEND", "sqlite")
+    monkeypatch.setenv("FINREP_SQLITE_PATH", str(database))
+    monkeypatch.setattr(config, "DEBUG", True)
+    clear_data_cache()
+    clear_table_cache()
+    try:
+        balance = get_balance_by_month("RUB")
+    finally:
+        clear_data_cache()
+        clear_table_cache()
+
+    assert balance.iloc[0]["Доход"] == 120
+    assert balance.iloc[0]["Расход"] == 30
+    assert balance.iloc[0]["Дебиторская задолженность"] == 50
+    assert balance.iloc[0]["Баланс"] == 40
+
+
+def test_sqlite_cutover_smoke_restarts_after_preview_without_csv_readers(tmp_path, monkeypatch):
+    from src.dashboard.app import create_app
+
+    database = tmp_path / "target.sqlite3"
+    migrate_core_csv(
+        Path(config.SAMPLE_DATA_PATH), database, tmp_path / "migration.sqlite3")
+    monkeypatch.setenv("FINREP_STORAGE_BACKEND", "sqlite")
+    monkeypatch.setenv("FINREP_SQLITE_PATH", str(database))
+    monkeypatch.setattr("src.data.proccess.get_actual_fx_rate", lambda *_args: 1.0)
+
+    def no_csv_fallback(*_args, **_kwargs):
+        raise AssertionError("SQLite runtime attempted to read a source CSV dataset")
+
+    no_csv_fallback.cache_clear = lambda: None
+    monkeypatch.setattr("src.data.get._get_transactions_cached", no_csv_fallback)
+    monkeypatch.setattr("src.data.get._get_assets_cached", no_csv_fallback)
+    monkeypatch.setattr("src.data.get._get_investments_cached", no_csv_fallback)
+    clear_data_cache()
+    clear_table_cache()
+    first = create_app()
+    assert first.layout is not None
+
+    _, revision = staging.read_transaction_drafts_snapshot()
+    staging.append_transaction_draft_rows(pd.DataFrame([{
+        "date": "2027-01-03", "category": "Пища", "currency": "RUB",
+        "amount": "125.50", "comment": "Cutover smoke", "source": "manual",
+        "source_id": "cutover-smoke", "status": "ready",
+    }]), expected_revision=revision)
+    preview, state = staging.prepare_monthly_transaction_export("2027", "1")
+    staging.export_monthly_transaction_drafts(
+        "2027", "1", preview_rows=preview.to_dict("records"), preview_state=state)
+
+    clear_data_cache()
+    clear_table_cache()
+    restarted = create_app()
+    assert restarted.layout is not None
+    assert staging.read_monthly_transaction_csv("2027", "1")["comment"].tolist() == [
+        "Cutover smoke"]

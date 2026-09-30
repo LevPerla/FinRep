@@ -3,6 +3,7 @@ from unittest.mock import patch
 import pandas as pd
 
 from src.data.importers import common
+from src.data.sqlite_store import connect_database, initialize_database
 
 
 def test_category_comes_from_latest_transaction_with_same_comment():
@@ -37,3 +38,19 @@ def test_category_falls_back_to_import_rules_without_history_match(tmp_path, mon
     category = common.categorize("Cafe near home", -500.0, {})
 
     assert category == "Пища"
+
+
+def test_category_rules_are_read_from_sqlite_backend(tmp_path, monkeypatch):
+    database = tmp_path / "target.sqlite3"
+    initialize_database(database)
+    with connect_database(database, writable=True) as connection:
+        connection.execute("""INSERT INTO categorization_rules
+            (id, priority, direction_scope, matcher_type, pattern, category_id,
+             active, created_at, updated_at)
+            VALUES ('rule-cafe', 1, 'expense', 'contains', 'cafe', 'expense.food',
+             1, datetime('now'), datetime('now'))""")
+    monkeypatch.setenv("FINREP_STORAGE_BACKEND", "sqlite")
+    monkeypatch.setenv("FINREP_SQLITE_PATH", str(database))
+
+    assert common.categorize("Cafe near home", -500.0, {}) == "Пища"
+    assert common.categorize("Cafe refund", 500.0, {}) == "Доход"

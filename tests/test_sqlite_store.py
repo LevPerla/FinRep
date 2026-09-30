@@ -30,6 +30,7 @@ from src.data.sqlite_store import (
     link_transaction_source,
     publish_cash_drafts,
     publish_domain_drafts,
+    publish_transaction_draft_preview,
     remove_transaction_drafts,
     record_crypto_refresh,
     record_debt_payment,
@@ -164,6 +165,70 @@ def test_pending_cash_draft_publish_rolls_back(tmp_path):
         assert connection.execute("SELECT count(*) FROM cash_transactions").fetchone()[0] == 0
         assert connection.execute("SELECT status FROM transaction_drafts").fetchone()[0] == "draft"
         assert connection.execute("SELECT count(*) FROM operation_receipts").fetchone()[0] == 0
+
+
+def test_preview_publish_applies_edits_and_mixed_drafts_atomically(tmp_path):
+    database = tmp_path / "synthetic.sqlite3"
+    initialize_database(database)
+    cash_id = create_transaction_draft(
+        database, occurred_on="2026-02-03", flow_direction="expense",
+        category_id="expense.food", amount="10", currency="RUB",
+        origin_kind="manual", origin_key="cash-1")
+    debt = create_debt_record(
+        database, kind="receivable", counterparty="Friend", opened_on="2026-02-04",
+        principal_amount="50", currency="RUB", operation_key="create-debt-preview")
+    drafts, revision = transaction_drafts_snapshot(database)
+    by_id = {row["id"]: row for row in drafts}
+    rows = [
+        {**by_id[cash_id], "occurred_on": "2026-02-05", "amount": "12.25",
+         "currency": "RUB", "comment": "edited", "status": "ready",
+         "flow_direction": "expense", "category_id": "expense.food"},
+        {**by_id[debt["draft_id"]], "amount": "50", "currency": "RUB",
+         "domain_action": "receivable_opening", "status": "ready"},
+    ]
+    first = publish_transaction_draft_preview(
+        database, rows=rows, draft_ids=[cash_id, debt["draft_id"]],
+        expected_revision=revision, operation_key="publish-mixed-preview")
+    second = publish_transaction_draft_preview(
+        database, rows=rows, draft_ids=[cash_id, debt["draft_id"]],
+        expected_revision=revision, operation_key="publish-mixed-preview")
+    assert first == second
+    assert first["published_rows"] == 2
+    with connect_database(database) as connection:
+        cash = connection.execute("SELECT * FROM cash_transactions").fetchone()
+        assert (cash["occurred_on"], cash["amount_minor"], cash["comment"]) == (
+            "2026-02-05", 1225, "edited")
+        assert connection.execute("SELECT count(*) FROM debt_cash_events").fetchone()[0] == 1
+        assert {row[0] for row in connection.execute(
+            "SELECT status FROM transaction_drafts")} == {"exported"}
+
+
+def test_preview_publish_rolls_back_edits_when_one_domain_action_is_invalid(tmp_path):
+    database = tmp_path / "synthetic.sqlite3"
+    initialize_database(database)
+    cash_id = create_transaction_draft(
+        database, occurred_on="2026-02-03", flow_direction="expense",
+        category_id="expense.food", amount="10", currency="RUB",
+        origin_kind="manual", origin_key="cash-rollback")
+    debt = create_debt_record(
+        database, kind="liability", counterparty="Bank", opened_on="2026-02-04",
+        principal_amount="50", currency="RUB", operation_key="create-debt-rollback")
+    drafts, revision = transaction_drafts_snapshot(database)
+    by_id = {row["id"]: row for row in drafts}
+    rows = [
+        {**by_id[cash_id], "amount": "99", "currency": "RUB", "status": "ready"},
+        {**by_id[debt["draft_id"]], "amount": "50", "currency": "RUB",
+         "domain_action": "unsupported", "status": "ready"},
+    ]
+    with pytest.raises(ValueError, match="unsupported debt"):
+        publish_transaction_draft_preview(
+            database, rows=rows, draft_ids=[cash_id, debt["draft_id"]],
+            expected_revision=revision, operation_key="publish-invalid-preview")
+    drafts, _ = transaction_drafts_snapshot(database)
+    assert next(row for row in drafts if row["id"] == cash_id)["amount"] == Decimal("10")
+    with connect_database(database) as connection:
+        assert connection.execute("SELECT count(*) FROM cash_transactions").fetchone()[0] == 0
+        assert connection.execute("SELECT count(*) FROM debt_cash_events").fetchone()[0] == 0
 
 
 def test_draft_batch_edit_remove_uses_optimistic_revision(tmp_path):

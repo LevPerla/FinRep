@@ -128,9 +128,13 @@ def _get_balance_by_month_cached(data_root: str, currency: str) -> pd.DataFrame:
     # all_stats_df['Потенциальная прибыль'] = buy_df.set_index('Дата').resample('M')['Потенциальная прибыль'].sum()
     # all_stats_df['Доход от инвестирования'] = sell_df.set_index('Дата').resample('M')['Прибыль/убыток'].sum()
     all_stats_df = all_stats_df.fillna(0)
-    for column in [
+    income_columns = [
         'Доход',
         'Сбережения',
+        *config.INCOME_CATEGORY_LABELS,
+    ]
+    for column in [
+        *income_columns,
         'Дебиторская задолженность',
         'Погашение деб. зад.',
         'Кредиторская задолженность',
@@ -139,7 +143,9 @@ def _get_balance_by_month_cached(data_root: str, currency: str) -> pd.DataFrame:
         if column not in all_stats_df.columns:
             all_stats_df[column] = 0.0
 
-    all_stats_df['Баланс'] = (all_stats_df['Доход'] + all_stats_df['Сбережения']
+    all_stats_df['Доход'] = all_stats_df[income_columns].sum(axis=1)
+
+    all_stats_df['Баланс'] = (all_stats_df['Доход']
                             #   + all_stats_df['Потенциальная прибыль']
                             #   + all_stats_df['Доход от инвестирования']
                               - all_stats_df['Дебиторская задолженность'] + all_stats_df['Погашение деб. зад.']

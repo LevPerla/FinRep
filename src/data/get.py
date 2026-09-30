@@ -53,14 +53,32 @@ def _get_transactions_sqlite_cached(database_path: str):
 
     with connect_database(database_path) as connection:
         rows = connection.execute("""SELECT v.occurred_on, v.category_name_ru,
-            v.currency_code, v.amount_minor, v.comment, c.minor_unit
+            v.currency_code, v.amount_minor, v.comment, c.minor_unit,
+            'cash' AS row_kind, '' AS event_kind, '' AS side
             FROM v_cash_transactions v JOIN currencies c ON c.code = v.currency_code
-            ORDER BY v.occurred_on, v.id""").fetchall()
+            UNION ALL
+            SELECT e.occurred_on, '', e.currency_code, e.amount_minor, e.comment,
+            c.minor_unit, 'debt', e.event_kind, e.side
+            FROM debt_cash_events e JOIN currencies c ON c.code = e.currency_code
+            UNION ALL
+            SELECT e.occurred_on, 'Инвестиции', e.currency_code,
+            CASE e.flow_kind WHEN 'withdrawal' THEN -e.amount_minor ELSE e.amount_minor END,
+            e.comment, c.minor_unit, 'investment', e.flow_kind, ''
+            FROM investment_cash_events e JOIN currencies c ON c.code = e.currency_code
+            ORDER BY occurred_on""").fetchall()
     if not rows:
         return _empty_frame(TRANSACTION_COLUMNS)
     data = pd.DataFrame([dict(row) for row in rows])
     data["Дата"] = pd.to_datetime(data.pop("occurred_on"))
-    data["Категория"] = data.pop("category_name_ru")
+    debt_categories = {
+        ("issue", "receivable"): "Дебиторская задолженность",
+        ("repayment", "receivable"): "Погашение деб. зад.",
+        ("issue", "liability"): "Кредиторская задолженность",
+        ("repayment", "liability"): "Погашение кред. зад.",
+    }
+    data["Категория"] = data.apply(
+        lambda row: debt_categories[(row["event_kind"], row["side"])]
+        if row["row_kind"] == "debt" else row["category_name_ru"], axis=1)
     data["Валюта"] = data.pop("currency_code")
     data["Значение"] = data.apply(
         lambda row: float(row["amount_minor"] / (10 ** row["minor_unit"])), axis=1)
