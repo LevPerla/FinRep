@@ -1750,7 +1750,10 @@ def _statistics_report_layout(
         groups.append(html.Div(
             [
                 html.H3(str(section), className="finrep-cockpit-group-title"),
-                html.Div(cards, className="finrep-cockpit-grid"),
+                html.Div(
+                    cards,
+                    className="finrep-cockpit-grid finrep-mobile-metric-grid",
+                ),
             ],
             id=f"data-statistics-group-{index}",
             className="finrep-cockpit-group",

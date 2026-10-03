@@ -1,5 +1,6 @@
 from io import BytesIO
 from datetime import date
+from pathlib import Path
 
 from openpyxl import load_workbook
 
@@ -31,6 +32,20 @@ def _component_text(component):
     if isinstance(component, (list, tuple)):
         return [text for child in component for text in _component_text(child)]
     return _component_text(getattr(component, "children", None))
+
+
+def _components_with_class(component, class_name):
+    matches = []
+    if component is None:
+        return matches
+    if isinstance(component, (list, tuple)):
+        for child in component:
+            matches.extend(_components_with_class(child, class_name))
+        return matches
+    classes = str(getattr(component, "className", "") or "").split()
+    if class_name in classes:
+        matches.append(component)
+    return matches + _components_with_class(getattr(component, "children", None), class_name)
 
 
 def test_empty_database_statistics_are_explicit(tmp_path):
@@ -151,6 +166,9 @@ def test_statistics_ui_and_xlsx_share_the_same_dataset(tmp_path):
     assert "Статистика" in visible_text
     assert "Всего транзакций" in visible_text
     assert "1" in visible_text
+    metric_grids = _components_with_class(layout, "finrep-mobile-metric-grid")
+    assert metric_grids
+    assert all("finrep-cockpit-grid" in grid.className.split() for grid in metric_grids)
 
     workbook = load_workbook(
         BytesIO(_dataframe_to_xlsx_bytes(dataset.dataframe, dataset.title)),
@@ -180,3 +198,14 @@ def test_statistics_layout_localizes_labels_without_changing_raw_data(tmp_path):
     assert "Total transactions" in visible_text
     assert "History coverage" in visible_text
     assert raw["data_statistics"].dataframe.loc[0, "Показатель"] == "Всего транзакций"
+
+
+def test_statistics_mobile_grid_uses_two_compact_columns():
+    css = (Path(__file__).resolve().parents[1] / "assets" / "dashboard.css").read_text(
+        encoding="utf-8"
+    )
+
+    assert ".finrep-mobile-metric-grid {" in css
+    assert "grid-template-columns: repeat(2, minmax(0, 1fr));" in css
+    assert ".finrep-mobile-metric-grid .finrep-cockpit-card" in css
+    assert "min-height: 70px;" in css
