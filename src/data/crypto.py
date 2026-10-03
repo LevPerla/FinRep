@@ -92,6 +92,8 @@ class CryptoValidationIssue:
 
 
 def ensure_crypto_wallets_file(path: str | Path | None = None) -> Path:
+    if path is None and config.use_sqlite_storage():
+        return config.active_database_path()
     wallets_path = Path(path or config.active_data_path("investments", "crypto_wallets.csv"))
     if config.is_test_mode() and not wallets_path.exists():
         return wallets_path
@@ -104,6 +106,14 @@ def ensure_crypto_wallets_file(path: str | Path | None = None) -> Path:
 
 
 def read_crypto_wallets(path: str | Path | None = None) -> pd.DataFrame:
+    if path is None and config.use_sqlite_storage():
+        from src.data.sqlite_store import connect_database
+
+        with connect_database(config.active_database_path()) as connection:
+            rows = connection.execute("""SELECT account_label AS account, chain,
+                asset_code AS asset, address, token_contract, enabled, label
+                FROM crypto_wallets ORDER BY account_label, chain, asset_code""").fetchall()
+        return _normalize_wallet_rows(pd.DataFrame([dict(row) for row in rows], columns=WALLET_COLUMNS))
     wallets_path = ensure_crypto_wallets_file(path)
     if not wallets_path.exists():
         return pd.DataFrame(columns=WALLET_COLUMNS)
@@ -121,6 +131,19 @@ def read_crypto_wallets(path: str | Path | None = None) -> pd.DataFrame:
 
 
 def read_crypto_balances(path: str | Path | None = None) -> pd.DataFrame:
+    if path is None and config.use_sqlite_storage():
+        from src.data.sqlite_store import connect_database
+
+        with connect_database(config.active_database_path()) as connection:
+            rows = connection.execute("""SELECT fetched_at, account_label AS account, chain,
+                asset_code AS asset, address, quantity_text AS balance, source FROM (
+                  SELECT b.*, w.account_label, w.chain, w.asset_code, w.address,
+                    ROW_NUMBER() OVER (PARTITION BY b.wallet_id
+                      ORDER BY b.fetched_at DESC, b.id DESC) AS rank
+                  FROM crypto_balance_observations b
+                  JOIN crypto_wallets w ON w.id = b.wallet_id
+                ) WHERE rank = 1 ORDER BY account, chain, asset""").fetchall()
+        return pd.DataFrame([dict(row) for row in rows], columns=BALANCE_COLUMNS)
     balance_path = Path(path or config.active_data_path("investments", "crypto_balances.csv"))
     if not balance_path.exists():
         return pd.DataFrame(columns=BALANCE_COLUMNS)
@@ -135,6 +158,17 @@ def read_crypto_balances(path: str | Path | None = None) -> pd.DataFrame:
 
 
 def read_crypto_refresh_status(path: str | Path | None = None) -> pd.DataFrame:
+    if path is None and config.use_sqlite_storage():
+        from src.data.sqlite_store import connect_database
+
+        with connect_database(config.active_database_path()) as connection:
+            rows = connection.execute("""SELECT fetched_at, source_row_number AS row_number,
+                observed_account AS account, observed_chain AS chain,
+                observed_asset AS asset, observed_address AS address, status, message
+                FROM crypto_refresh_results
+                WHERE fetched_at = (SELECT MAX(fetched_at) FROM crypto_refresh_results)
+                ORDER BY row_number, id""").fetchall()
+        return pd.DataFrame([dict(row) for row in rows], columns=REFRESH_STATUS_COLUMNS).fillna("")
     status_path = Path(path or config.active_data_path("investments", "crypto_refresh_status.csv"))
     if not status_path.exists():
         return pd.DataFrame(columns=REFRESH_STATUS_COLUMNS)
@@ -147,6 +181,8 @@ def read_crypto_refresh_status(path: str | Path | None = None) -> pd.DataFrame:
 
 def write_crypto_refresh_status(data: pd.DataFrame, path: str | Path | None = None) -> None:
     config.require_writable_mode()
+    if path is None and config.use_sqlite_storage():
+        raise RuntimeError("SQLite refresh status is written by the atomic refresh command")
     status_path = Path(path or config.active_data_path("investments", "crypto_refresh_status.csv"))
     status_path.parent.mkdir(parents=True, exist_ok=True)
     normalized = data.copy(deep=True)
@@ -159,6 +195,8 @@ def write_crypto_refresh_status(data: pd.DataFrame, path: str | Path | None = No
 
 def write_crypto_balances(data: pd.DataFrame, path: str | Path | None = None) -> None:
     config.require_writable_mode()
+    if path is None and config.use_sqlite_storage():
+        raise RuntimeError("SQLite balances are written by the atomic refresh command")
     balance_path = Path(path or config.active_data_path("investments", "crypto_balances.csv"))
     normalized = data.copy(deep=True)
     for column in BALANCE_COLUMNS:
@@ -172,6 +210,17 @@ def write_crypto_balances(data: pd.DataFrame, path: str | Path | None = None) ->
 
 
 def read_crypto_transactions(path: str | Path | None = None) -> pd.DataFrame:
+    if path is None and config.use_sqlite_storage():
+        from src.data.sqlite_store import connect_database
+
+        with connect_database(config.active_database_path()) as connection:
+            rows = connection.execute("""SELECT t.occurred_on AS date,
+                w.account_label AS account, w.chain, w.asset_code AS asset, w.address,
+                t.chain_tx_id AS tx_id, t.operation, t.quantity_text AS quantity,
+                t.fee_text AS fee, t.counterparty, t.source, t.comment
+                FROM crypto_transactions t JOIN crypto_wallets w ON w.id = t.wallet_id
+                ORDER BY t.occurred_on, t.id""").fetchall()
+        return pd.DataFrame([dict(row) for row in rows], columns=TRANSACTION_COLUMNS).fillna("")
     transactions_path = Path(path or config.active_data_path("investments", "crypto_transactions.csv"))
     if not transactions_path.exists():
         return pd.DataFrame(columns=TRANSACTION_COLUMNS)
@@ -184,6 +233,8 @@ def read_crypto_transactions(path: str | Path | None = None) -> pd.DataFrame:
 
 def write_crypto_transactions(data: pd.DataFrame, path: str | Path | None = None) -> None:
     config.require_writable_mode()
+    if path is None and config.use_sqlite_storage():
+        raise RuntimeError("SQLite network transactions are written by the atomic refresh command")
     transactions_path = Path(path or config.active_data_path("investments", "crypto_transactions.csv"))
     normalized = data.copy(deep=True)
     for column in TRANSACTION_COLUMNS:
@@ -226,6 +277,8 @@ def refresh_crypto_balances(
     balances_path: str | Path | None = None,
     timeout: int = 20,
 ) -> pd.DataFrame:
+    if wallets_path is None and balances_path is None and config.use_sqlite_storage():
+        return _refresh_crypto_balances_sqlite(timeout)
     wallets = read_crypto_wallets(wallets_path)
     existing = read_crypto_balances(balances_path)
     balance_key_columns = ["account", "chain", "asset", "address"]
@@ -234,7 +287,7 @@ def refresh_crypto_balances(
         tuple(row[column] for column in balance_key_columns): row
         for _, row in existing.iterrows()
     }
-    fetched_at = datetime.now().isoformat(timespec="seconds")
+    fetched_at = datetime.now().isoformat(timespec="microseconds")
     rows = []
     errors = []
     statuses = []
@@ -297,6 +350,8 @@ def refresh_crypto_transactions(
     transactions_path: str | Path | None = None,
     timeout: int = 20,
 ) -> pd.DataFrame:
+    if wallets_path is None and transactions_path is None and config.use_sqlite_storage():
+        return _refresh_crypto_transactions_sqlite(timeout)
     wallets = read_crypto_wallets(wallets_path)
     issues = validate_crypto_wallets(wallets)
     if issues:
@@ -318,6 +373,90 @@ def refresh_crypto_transactions(
         transactions = transactions.sort_values(["date", "chain", "asset"], kind="mergesort")
         write_crypto_transactions(transactions, transactions_path)
     return transactions
+
+
+def _refresh_crypto_balances_sqlite(timeout: int) -> pd.DataFrame:
+    from src.data.sqlite_store import record_crypto_refresh, upsert_crypto_wallet
+
+    wallets = read_crypto_wallets()
+    fetched_at = datetime.now().isoformat(timespec="microseconds")
+    errors = []
+    statuses = []
+    for index, wallet in wallets.iterrows():
+        if _is_disabled(wallet):
+            continue
+        row_number = int(index) + 2
+        issues = _validate_wallet_row(wallet.to_dict(), row_number)
+        wallet_id = upsert_crypto_wallet(
+            config.active_database_path(), account_label=wallet["account"],
+            chain=wallet["chain"], asset_code=wallet["asset"], address=wallet["address"],
+            token_contract=wallet.get("token_contract", ""), label=wallet.get("label", ""),
+            enabled=True)
+        operation_key = f"crypto-balance:{fetched_at}:{wallet_id}"
+        if issues:
+            message = "; ".join(issue.message for issue in issues)
+            record_crypto_refresh(
+                config.active_database_path(), wallet_id=wallet_id, fetched_at=fetched_at,
+                status="error", operation_key=operation_key, source="validation", message=message)
+            errors.append(f"row {row_number}: {message}")
+            continue
+        try:
+            balance = _fetch_wallet_balance(wallet, timeout=timeout)
+            source = _provider_name(wallet)
+            record_crypto_refresh(
+                config.active_database_path(), wallet_id=wallet_id, fetched_at=fetched_at,
+                status="ok", operation_key=operation_key, source=source, balance=str(balance),
+                message=f"balance={balance}")
+            statuses.append(f"row {row_number}: {wallet['chain']}/{wallet['asset']} ok, balance={balance}")
+        except Exception as exc:
+            message = f"{wallet['chain']}/{wallet['asset']} balance refresh failed: {exc}"
+            record_crypto_refresh(
+                config.active_database_path(), wallet_id=wallet_id, fetched_at=fetched_at,
+                status="error", operation_key=operation_key, source=_provider_name(wallet),
+                message=message)
+            errors.append(f"row {row_number}: {message}")
+    balances = read_crypto_balances()
+    balances.attrs["errors"] = errors
+    balances.attrs["statuses"] = statuses
+    clear_valuation_caches()
+    return balances
+
+
+def _refresh_crypto_transactions_sqlite(timeout: int) -> pd.DataFrame:
+    from src.data.sqlite_store import record_crypto_refresh, upsert_crypto_wallet
+
+    wallets = read_crypto_wallets()
+    issues = validate_crypto_wallets(wallets)
+    if issues:
+        raise ValueError("\n".join(str(issue) for issue in issues))
+    fetched_at = datetime.now().isoformat(timespec="microseconds")
+    for _, wallet in wallets.iterrows():
+        if _is_disabled(wallet):
+            continue
+        wallet_id = upsert_crypto_wallet(
+            config.active_database_path(), account_label=wallet["account"],
+            chain=wallet["chain"], asset_code=wallet["asset"], address=wallet["address"],
+            token_contract=wallet.get("token_contract", ""), label=wallet.get("label", ""),
+            enabled=True)
+        operation_key = f"crypto-transactions:{fetched_at}:{wallet_id}"
+        try:
+            rows = _fetch_wallet_transactions(wallet, timeout=timeout)
+            transactions = [{
+                "occurred_on": row["date"], "chain_tx_id": row["tx_id"],
+                "operation": row["operation"], "quantity": row.get("quantity"),
+                "fee": row.get("fee"), "counterparty": row.get("counterparty", ""),
+                "comment": row.get("comment", ""),
+            } for row in rows]
+            record_crypto_refresh(
+                config.active_database_path(), wallet_id=wallet_id, fetched_at=fetched_at,
+                status="ok", operation_key=operation_key, source=_provider_name(wallet),
+                transactions=transactions, message=f"transactions={len(transactions)}")
+        except Exception as exc:
+            record_crypto_refresh(
+                config.active_database_path(), wallet_id=wallet_id, fetched_at=fetched_at,
+                status="error", operation_key=operation_key, source=_provider_name(wallet),
+                message=f"transaction refresh failed: {exc}")
+    return read_crypto_transactions()
 
 
 def refresh_crypto_price_cache(

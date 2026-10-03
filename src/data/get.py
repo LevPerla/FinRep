@@ -9,6 +9,7 @@ from src.data.staging import TRANSACTION_BOUNDARY_RE, sanitize_transaction_comme
 
 TRANSACTION_COLUMNS = ['Дата', 'Категория', 'Валюта', 'Значение', 'Комментарий', 'Год', 'Квартал', 'Месяц']
 ASSET_COLUMNS = ['Счет', 'Валюта', 'Значение', 'Год', 'Квартал', 'Месяц']
+INCOME_CATEGORY_COLUMNS = ['Категория', 'Класс', 'Порядок']
 
 
 def _empty_frame(columns):
@@ -42,7 +43,97 @@ def _parse_transaction_value(value):
 
 
 def get_transactions():
+    if config.use_sqlite_storage():
+        return _get_transactions_sqlite_cached(str(config.active_database_path())).copy(deep=True)
     return _get_transactions_cached(str(config.active_data_path("transactions_info"))).copy(deep=True)
+
+
+def get_income_categories():
+    """Return income category metadata used by analytics in the active backend."""
+    if config.use_sqlite_storage():
+        return _get_income_categories_sqlite_cached(
+            str(config.active_database_path())).copy(deep=True)
+    return pd.DataFrame([
+        ("Зарплата", "active", 10),
+        ("Проценты", "passive", 20),
+        ("Инвест доход", "passive", 30),
+        ("Прочие доходы", "active", 40),
+        (config.UNCLASSIFIED_INCOME_LABEL, "unclassified", 90),
+    ], columns=INCOME_CATEGORY_COLUMNS)
+
+
+@lru_cache(maxsize=1)
+def _get_income_categories_sqlite_cached(database_path: str):
+    from src.data.sqlite_store import connect_database
+
+    with connect_database(database_path) as connection:
+        rows = connection.execute("""SELECT name_ru, income_class, sort_order
+            FROM categories WHERE direction = 'income'
+            ORDER BY sort_order, id""").fetchall()
+    return pd.DataFrame(
+        [(row[0], row[1], row[2]) for row in rows],
+        columns=INCOME_CATEGORY_COLUMNS,
+    )
+
+
+@lru_cache(maxsize=1)
+def _get_transactions_sqlite_cached(database_path: str):
+    from src.data.sqlite_store import connect_database
+
+    with connect_database(database_path) as connection:
+        rows = connection.execute("""SELECT v.occurred_on, v.category_name_ru,
+            v.currency_code, v.amount_minor, v.comment, c.minor_unit,
+            'cash' AS row_kind, '' AS event_kind, '' AS side
+            FROM v_cash_transactions v JOIN currencies c ON c.code = v.currency_code
+            UNION ALL
+            SELECT e.occurred_on, '', e.currency_code, e.amount_minor, e.comment,
+            c.minor_unit, 'debt', e.event_kind, e.side
+            FROM debt_cash_events e JOIN currencies c ON c.code = e.currency_code
+            UNION ALL
+            SELECT e.occurred_on, 'Инвестиции', e.currency_code,
+            CASE e.flow_kind WHEN 'withdrawal' THEN -e.amount_minor ELSE e.amount_minor END,
+            e.comment, c.minor_unit, 'investment', e.flow_kind, ''
+            FROM investment_cash_events e JOIN currencies c ON c.code = e.currency_code
+            ORDER BY occurred_on""").fetchall()
+        saved_periods = [row[0] for row in connection.execute("""SELECT period
+            FROM period_states WHERE dataset = 'cash_transactions' AND status = 'saved'
+            ORDER BY period""").fetchall()]
+    if not rows:
+        data = pd.DataFrame(columns=[
+            "occurred_on", "category_name_ru", "currency_code", "amount_minor",
+            "comment", "minor_unit", "row_kind", "event_kind", "side"])
+    else:
+        data = pd.DataFrame([dict(row) for row in rows])
+    represented_periods = set(pd.to_datetime(data["occurred_on"]).dt.to_period("M").astype(str))
+    empty_periods = [period for period in saved_periods if period not in represented_periods]
+    if empty_periods:
+        data = pd.concat([data, pd.DataFrame([{
+            "occurred_on": pd.Period(period, freq="M").end_time.normalize().date().isoformat(),
+            "category_name_ru": config.UNCLASSIFIED_INCOME_LABEL,
+            "currency_code": "RUB", "amount_minor": 0,
+            "comment": "", "minor_unit": 2, "row_kind": "cash",
+            "event_kind": "", "side": "",
+        } for period in empty_periods])], ignore_index=True)
+    if data.empty:
+        return _empty_frame(TRANSACTION_COLUMNS)
+    data["Дата"] = pd.to_datetime(data.pop("occurred_on"))
+    debt_categories = {
+        ("issue", "receivable"): "Дебиторская задолженность",
+        ("repayment", "receivable"): "Погашение деб. зад.",
+        ("issue", "liability"): "Кредиторская задолженность",
+        ("repayment", "liability"): "Погашение кред. зад.",
+    }
+    data["Категория"] = data.apply(
+        lambda row: debt_categories[(row["event_kind"], row["side"])]
+        if row["row_kind"] == "debt" else row["category_name_ru"], axis=1)
+    data["Валюта"] = data.pop("currency_code")
+    data["Значение"] = data.apply(
+        lambda row: float(row["amount_minor"] / (10 ** row["minor_unit"])), axis=1)
+    data["Комментарий"] = data.pop("comment").replace("", np.nan)
+    data["Год"] = data["Дата"].dt.year.astype(str)
+    data["Квартал"] = data["Дата"].dt.quarter.astype(str)
+    data["Месяц"] = data["Дата"].dt.month.astype(str)
+    return data[TRANSACTION_COLUMNS]
 
 
 @lru_cache(maxsize=1)
@@ -89,7 +180,31 @@ def _get_transactions_cached(transactions_root: str):
 
 
 def get_assets():
+    if config.use_sqlite_storage():
+        return _get_assets_sqlite_cached(str(config.active_database_path())).copy(deep=True)
     return _get_assets_cached(str(config.active_data_path("assets_info"))).copy(deep=True)
+
+
+@lru_cache(maxsize=1)
+def _get_assets_sqlite_cached(database_path: str):
+    from src.data.sqlite_store import connect_database
+
+    with connect_database(database_path) as connection:
+        rows = connection.execute("""SELECT v.period, v.account_name, v.currency_code,
+            v.amount_minor, c.minor_unit FROM v_asset_snapshots v
+            JOIN currencies c ON c.code = v.currency_code ORDER BY v.period, v.id""").fetchall()
+    if not rows:
+        return _empty_frame(ASSET_COLUMNS)
+    data = pd.DataFrame([dict(row) for row in rows])
+    periods = pd.PeriodIndex(data.pop("period"), freq="M")
+    data["Счет"] = data.pop("account_name")
+    data["Валюта"] = data.pop("currency_code")
+    data["Значение"] = data.apply(
+        lambda row: float(row["amount_minor"] / (10 ** row["minor_unit"])), axis=1)
+    data["Год"] = periods.year.astype(str)
+    data["Квартал"] = periods.quarter.astype(str)
+    data["Месяц"] = periods.month.astype(str)
+    return data[ASSET_COLUMNS]
 
 
 @lru_cache(maxsize=1)
@@ -136,7 +251,41 @@ def _get_assets_cached(assets_root: str):
 
 
 def get_investments():
+    if config.use_sqlite_storage():
+        return _get_investments_sqlite_cached(str(config.active_database_path())).copy(deep=True)
     return _get_investments_cached(str(config.active_data_path("investments", "investments.csv"))).copy(deep=True)
+
+
+@lru_cache(maxsize=1)
+def _get_investments_sqlite_cached(database_path: str):
+    from src.data.sqlite_store import connect_database
+
+    with connect_database(database_path) as connection:
+        rows = connection.execute("""SELECT t.occurred_on, t.operation, i.asset_type,
+            i.ticker, t.quantity_text, t.unit_price_text, t.price_currency_code,
+            t.fee_minor, c.minor_unit, t.account_label, t.comment
+            FROM investment_trades t JOIN instruments i ON i.id = t.instrument_id
+            JOIN currencies c ON c.code = t.price_currency_code
+            ORDER BY t.occurred_on, t.id""").fetchall()
+    if not rows:
+        return pd.DataFrame(columns=[
+            "Тип_транзакции", "Актив", "Тикер", "Количество", "Дата", "Цена", "Валюта"])
+    data = pd.DataFrame([dict(row) for row in rows])
+    result = pd.DataFrame({
+        "Тип_транзакции": data["operation"].map({"buy": "Покупка", "sell": "Продажа"}),
+        "Актив": data["asset_type"].map(
+            {"stocks": "Акции", "funds": "Фонды", "crypto": "Крипто"}),
+        "Тикер": data["ticker"],
+        "Количество": pd.to_numeric(data["quantity_text"]),
+        "Дата": pd.to_datetime(data["occurred_on"]),
+        "Цена": pd.to_numeric(data["unit_price_text"]),
+        "Валюта": data["price_currency_code"],
+        "Комиссия": data.apply(
+            lambda row: float(row["fee_minor"] / (10 ** row["minor_unit"])), axis=1),
+        "Счет": data["account_label"],
+        "Комментарий": data["comment"],
+    })
+    return result
 
 
 @lru_cache(maxsize=1)
@@ -152,6 +301,10 @@ def clear_data_cache():
     _get_transactions_cached.cache_clear()
     _get_assets_cached.cache_clear()
     _get_investments_cached.cache_clear()
+    _get_transactions_sqlite_cached.cache_clear()
+    _get_assets_sqlite_cached.cache_clear()
+    _get_investments_sqlite_cached.cache_clear()
+    _get_income_categories_sqlite_cached.cache_clear()
 
 if __name__ == '__main__':
     tmp_df = get_transactions()

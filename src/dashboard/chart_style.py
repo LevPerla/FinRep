@@ -15,8 +15,16 @@ EXPENSE_CATEGORY_COLORS = dict(zip((
 INCOME_SOURCE_COLORS = {
     "salary": "#7899BC",
     "deposit_interest": "#83AD91",
+    "investment_income": "#A38DB9",
+    "other_income": "#B7AD75",
     "unknown": "#8794A5",
-    "savings": "#B7AD75",
+}
+INCOME_CATEGORY_COLORS = {
+    "Зарплата": INCOME_SOURCE_COLORS["salary"],
+    "Проценты": INCOME_SOURCE_COLORS["deposit_interest"],
+    "Инвест доход": INCOME_SOURCE_COLORS["investment_income"],
+    "Прочие доходы": INCOME_SOURCE_COLORS["other_income"],
+    "Доход без категории": INCOME_SOURCE_COLORS["unknown"],
 }
 
 
@@ -24,4 +32,11 @@ def expense_category_color(category: str) -> str:
     key = str(category).replace("ё", "е")
     if key in EXPENSE_CATEGORY_COLORS:
         return EXPENSE_CATEGORY_COLORS[key]
+    return CATEGORY_PALETTE[int.from_bytes(sha256(key.encode("utf-8")).digest()[:2], "big") % len(CATEGORY_PALETTE)]
+
+
+def income_category_color(category: str) -> str:
+    key = str(category).replace("ё", "е")
+    if key in INCOME_CATEGORY_COLORS:
+        return INCOME_CATEGORY_COLORS[key]
     return CATEGORY_PALETTE[int.from_bytes(sha256(key.encode("utf-8")).digest()[:2], "big") % len(CATEGORY_PALETTE)]

@@ -78,6 +78,19 @@ def test_atomic_copy_preserves_old_target_on_replace_failure(tmp_path, monkeypat
     assert _temporary_files(target) == []
 
 
+def test_sqlite_mode_blocks_csv_source_writes_but_allows_external_exports(tmp_path, monkeypatch):
+    data_root = tmp_path / "data"
+    export_root = tmp_path / "exports"
+    monkeypatch.setattr(config, "DATA_PATH", str(data_root))
+    monkeypatch.setenv("FINREP_STORAGE_BACKEND", "sqlite")
+    with pytest.raises(RuntimeError, match="disabled in SQLite mode"):
+        csv_storage.atomic_write_csv(
+            pd.DataFrame({"value": ["blocked"]}), data_root / "facts.csv", index=False)
+    csv_storage.atomic_write_csv(
+        pd.DataFrame({"value": ["allowed"]}), export_root / "report.csv", index=False)
+    assert (export_root / "report.csv").read_text(encoding="utf-8") == "value\nallowed\n"
+
+
 def test_staging_writer_uses_atomic_replace(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "DATA_PATH", str(tmp_path))
     target = tmp_path / "staging" / "transaction_drafts.csv"

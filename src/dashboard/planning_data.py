@@ -89,6 +89,20 @@ def _build_planning_dashboard_data(
 
 
 def _load_goals() -> pd.DataFrame:
+    if config.use_sqlite_storage():
+        from src.data.sqlite_store import annual_goals
+
+        records = []
+        for row in annual_goals(config.active_database_path()):
+            records.append({
+                "year": str(row["year"]),
+                "currency": row["currency_code"],
+                "target_capital": row["target_capital"],
+                "target_monthly_income": row["target_monthly_income"],
+                "target_monthly_expense": row["target_monthly_expense"],
+                "notes": row["notes"],
+            })
+        return pd.DataFrame(records, columns=GOALS_COLUMNS)
     goals_path = config.active_data_path("plans", "goals.csv")
     if not goals_path.exists():
         return pd.DataFrame(columns=GOALS_COLUMNS)
@@ -128,6 +142,22 @@ def save_goal_targets(year: str, currency: str, rows: list[dict]) -> None:
     goals = goals[GOALS_COLUMNS].copy(deep=True)
     goals["year"] = goals["year"].astype(str)
     goals["currency"] = goals["currency"].astype(str).str.upper()
+    if config.use_sqlite_storage():
+        from src.data.sqlite_store import upsert_annual_goal
+
+        saved = goals.loc[row_index]
+        upsert_annual_goal(
+            config.active_database_path(),
+            year=int(year),
+            currency=currency,
+            target_capital=None if pd.isna(saved["target_capital"]) else saved["target_capital"],
+            target_monthly_income=(None if pd.isna(saved["target_monthly_income"])
+                                   else saved["target_monthly_income"]),
+            target_monthly_expense=(None if pd.isna(saved["target_monthly_expense"])
+                                    else saved["target_monthly_expense"]),
+            notes=str(saved["notes"] or ""),
+        )
+        return
     goals_path = config.active_data_path("plans", "goals.csv")
     goals_path.parent.mkdir(parents=True, exist_ok=True)
     atomic_write_csv(goals, goals_path, sep=";", index=False, encoding="utf-8-sig")

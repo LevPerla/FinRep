@@ -739,6 +739,21 @@ def _format_fx_source(legs: list[dict]) -> str:
 
 
 def _read_cache() -> pd.DataFrame:
+    if config.use_sqlite_storage():
+        from src.data.sqlite_store import fx_rates
+
+        cache_key = f"sqlite:{config.active_database_path()}"
+        if cache_key not in _FX_CACHE_DF:
+            rows = fx_rates(config.active_database_path())
+            cache = pd.DataFrame(rows)
+            if cache.empty:
+                cache = pd.DataFrame(columns=FX_CACHE_COLUMNS)
+            else:
+                cache = cache.rename(columns={"usd_rate": "usd_rate"})
+                cache["date"] = pd.to_datetime(cache["date"], errors="coerce")
+                cache = cache[FX_CACHE_COLUMNS]
+            _FX_CACHE_DF[cache_key] = cache.reset_index(drop=True)
+        return _FX_CACHE_DF[cache_key].copy()
     cache_path = config.active_data_path("rates", "fx_rates.csv")
     cache_key = str(cache_path)
     if cache_key in _FX_CACHE_DF:
@@ -783,6 +798,17 @@ def _append_cache_rows(currency: str, rates: pd.Series, source: str):
         return
 
     now = datetime.now().isoformat(timespec='seconds')
+    if config.use_sqlite_storage():
+        from src.data.sqlite_store import save_fx_rate
+
+        for sequence, (rate_date, value) in enumerate(rates.items()):
+            save_fx_rate(
+                config.active_database_path(), rate_date=pd.Timestamp(rate_date).date().isoformat(),
+                currency=currency, usd_rate=str(value), source=source,
+                fetched_at=now, sequence=sequence)
+        _FX_CACHE_DF.pop(f"sqlite:{config.active_database_path()}", None)
+        clear_valuation_caches()
+        return
     new_rows = pd.DataFrame({
         'date': rates.index,
         'currency': currency.upper(),
@@ -800,6 +826,8 @@ def _append_cache_rows(currency: str, rates: pd.Series, source: str):
 
 
 def _ensure_cache_file():
+    if config.use_sqlite_storage():
+        return
     cache_path = config.active_data_path("rates", "fx_rates.csv")
     if not cache_path.exists():
         if config.is_test_mode():

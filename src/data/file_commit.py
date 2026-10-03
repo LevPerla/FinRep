@@ -10,6 +10,8 @@ from stat import S_IMODE
 from tempfile import mkstemp
 from typing import Any
 
+from src import config
+
 
 class FileCommitRecoveryError(RuntimeError):
     pass
@@ -23,6 +25,7 @@ def commit_file_images(
     receipt: dict[str, Any] | None = None,
 ) -> None:
     journal = Path(journal_path)
+    _require_legacy_file_commit_allowed(journal, images, receipt_path)
     recover_file_commit(journal)
     entries = []
     for path, content in images.items():
@@ -187,3 +190,16 @@ def _is_digest(value: object) -> bool:
     return isinstance(value, str) and len(value) == 64 and all(
         character in "0123456789abcdef" for character in value
     )
+
+
+def _require_legacy_file_commit_allowed(journal: Path, images: dict,
+                                        receipt_path: str | Path | None) -> None:
+    if not config.use_sqlite_storage():
+        return
+    data_root = Path(config.DATA_PATH).resolve()
+    paths = [journal, *(Path(path) for path in images)]
+    if receipt_path is not None:
+        paths.append(Path(receipt_path))
+    if any(path.resolve() == data_root or path.resolve().is_relative_to(data_root)
+           for path in paths):
+        raise RuntimeError("legacy source-of-truth file commits are disabled in SQLite mode")

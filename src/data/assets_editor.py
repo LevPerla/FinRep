@@ -20,6 +20,17 @@ def asset_snapshot_path(year: str, month: str, assets_root: str | Path | None = 
 
 
 def ensure_asset_snapshot(year: str, month: str, assets_root: str | Path | None = None) -> dict:
+    if assets_root is None and config.use_sqlite_storage():
+        from src.data.sqlite_store import replace_asset_snapshot_month, saved_asset_months
+
+        period = f"{int(year):04d}-{int(month):02d}"
+        database = config.active_database_path()
+        if period in saved_asset_months(database):
+            return {"path": str(database), "created": False, "template_path": None}
+        template = read_asset_snapshot(year, month, assets_root)
+        replace_asset_snapshot_month(
+            database, period=period, rows=template.to_dict("records"))
+        return {"path": str(database), "created": True, "template_path": None}
     target_path = asset_snapshot_path(year, month, assets_root)
     if target_path.exists():
         return {"path": str(target_path), "created": False, "template_path": None}
@@ -57,6 +68,20 @@ def previous_asset_snapshot_path(year: str, month: str, assets_root: str | Path 
 
 
 def read_asset_snapshot(year: str, month: str, assets_root: str | Path | None = None) -> pd.DataFrame:
+    if assets_root is None and config.use_sqlite_storage():
+        from src.data.sqlite_store import asset_snapshots
+
+        requested = f"{int(year):04d}-{int(month):02d}"
+        rows = asset_snapshots(config.active_database_path())
+        periods = sorted({row["period"] for row in rows if row["period"] <= requested})
+        if not periods:
+            return pd.DataFrame(columns=ASSET_EDITOR_COLUMNS)
+        selected = requested if requested in periods else periods[-1]
+        return pd.DataFrame([
+            {"account": row["account_name"], "amount": row["amount"],
+             "currency": row["currency_code"]}
+            for row in rows if row["period"] == selected
+        ], columns=ASSET_EDITOR_COLUMNS)
     target_path = asset_snapshot_path(year, month, assets_root)
     path = target_path
     if not path.exists():
@@ -85,6 +110,18 @@ def read_asset_snapshot(year: str, month: str, assets_root: str | Path | None = 
 
 def write_asset_snapshot(rows: list[dict], year: str, month: str, assets_root: str | Path | None = None) -> dict:
     config.require_writable_mode()
+    if assets_root is None and config.use_sqlite_storage():
+        from src.data.sqlite_store import replace_asset_snapshot_month
+
+        normalized = _normalize_asset_rows(pd.DataFrame(rows))
+        result = replace_asset_snapshot_month(
+            config.active_database_path(),
+            period=f"{int(year):04d}-{int(month):02d}",
+            rows=normalized.to_dict("records"),
+        )
+        return {"path": str(config.active_database_path()), "backup_path": None,
+                "rows": result["rows"], "created": result["inserted"] > 0,
+                "template_path": None}
     target_path = asset_snapshot_path(year, month, assets_root)
     data = _normalize_asset_rows(pd.DataFrame(rows))
     target_existed = target_path.exists()

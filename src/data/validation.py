@@ -39,6 +39,11 @@ def validate_all_data(raise_on_error: bool = True) -> list[ValidationIssue]:
     """
     Validate source CSV files before reports are generated.
     """
+    if config.use_sqlite_storage():
+        issues = validate_sqlite_database()
+        if issues and raise_on_error:
+            raise DataValidationError(issues)
+        return issues
     issues = []
     issues.extend(validate_transactions())
     issues.extend(validate_assets())
@@ -50,6 +55,34 @@ def validate_all_data(raise_on_error: bool = True) -> list[ValidationIssue]:
     if issues and raise_on_error:
         raise DataValidationError(issues)
 
+    return issues
+
+
+def validate_sqlite_database() -> list[ValidationIssue]:
+    from src.data.sqlite_store import SCHEMA_VERSION, connect_database
+
+    path = config.active_database_path()
+    if not path.exists():
+        return [ValidationIssue(path, "SQLite database does not exist")]
+    issues = []
+    try:
+        with connect_database(path) as connection:
+            version = connection.execute("PRAGMA user_version").fetchone()[0]
+            if version != SCHEMA_VERSION:
+                issues.append(ValidationIssue(
+                    path, f"unsupported schema version {version}; expected {SCHEMA_VERSION}"))
+            integrity = connection.execute("PRAGMA integrity_check").fetchone()[0]
+            if integrity != "ok":
+                issues.append(ValidationIssue(path, f"integrity_check failed: {integrity}"))
+            for row in connection.execute("PRAGMA foreign_key_check").fetchall():
+                issues.append(ValidationIssue(
+                    path, f"foreign key violation in {row[0]} row {row[1]}"))
+            metadata = connection.execute(
+                "SELECT data_mode FROM app_metadata WHERE id = 1").fetchone()
+            if metadata is None:
+                issues.append(ValidationIssue(path, "app metadata is missing"))
+    except Exception as exc:
+        return [ValidationIssue(path, f"cannot read SQLite database: {exc}")]
     return issues
 
 

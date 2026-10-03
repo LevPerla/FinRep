@@ -1,6 +1,8 @@
 import pandas as pd
+import pytest
 
 from src import config
+from src.data import get_finance
 from src.data.get import clear_data_cache, get_assets, get_transactions
 from src.model.create_tables import clear_table_cache, get_balance_by_month
 
@@ -58,6 +60,20 @@ def test_sample_cashflow_reconciles_with_assets(monkeypatch):
     assert revaluation.iloc[1:].gt(0).sum() >= 6
     assert revaluation.iloc[1:].lt(0).sum() >= 4
     assert revaluation.iloc[1:].abs().between(4_000, 30_000).all()
+
+
+@pytest.mark.parametrize("currency", config.UNIQUE_TICKERS)
+def test_sample_report_supports_every_display_currency(monkeypatch, currency):
+    monkeypatch.setattr(config, "DATA_PATH", str(config.PROJECT_PATH / "sample_data"))
+    monkeypatch.setenv("FINREP_STORAGE_BACKEND", "csv")
+    clear_data_cache()
+    clear_table_cache()
+    get_finance._FX_CACHE_DF.clear()
+
+    monthly = get_balance_by_month(currency)
+
+    assert monthly.index.strftime("%Y-%m").tolist() == EXPECTED_PERIODS
+    assert monthly["Капитал"].notna().all()
 
 
 def test_sample_data_stays_lightweight():

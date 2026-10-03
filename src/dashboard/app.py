@@ -1261,7 +1261,14 @@ def register_callbacks(app: Dash) -> None:
                 message += (f" Accepted from statement: {import_result['accepted_rows']}; skipped: {import_result['skipped_rows']}." if normalize_locale(locale) == "en" else f" Принято из выписки: {import_result['accepted_rows']}; пропущено: {import_result['skipped_rows']}.")
                 if import_result.get("replaced_pending_rows"):
                     message += (f" Pending replaced: {import_result['replaced_pending_rows']}." if normalize_locale(locale) == "en" else f" Заменено pending: {import_result['replaced_pending_rows']}.")
-            message += " The monthly CSV has not changed yet." if normalize_locale(locale) == "en" else " Месячный CSV ещё не изменён."
+            if config.use_sqlite_storage():
+                message += (" The database has not changed yet."
+                            if normalize_locale(locale) == "en"
+                            else " База данных ещё не изменена.")
+            else:
+                message += (" The monthly CSV has not changed yet."
+                            if normalize_locale(locale) == "en"
+                            else " Месячный CSV ещё не изменён.")
             return (
                 _dataframe_records(preview),
                 _localized_input_column_defs(_simple_column_defs(preview), locale),
@@ -2938,7 +2945,7 @@ def _income_report_layout(datasets: dict[str, DashboardDataset], theme: str, loc
                 color="warning", id="income-missing-months",
             ))
         children.append(html.P(
-            report_text("Источник определяется по комментарию; нераспознанный доход остаётся в отдельной группе.", locale),
+            report_text("Старый доход определяется по комментарию; нераспознанный доход остаётся в отдельной группе.", locale),
             className="small", style={"color": "var(--finrep-muted)"},
         ))
         children.append(_graph_section(datasets["income_sources_monthly"], theme=theme, locale=locale))

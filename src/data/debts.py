@@ -57,6 +57,8 @@ class DebtValidationIssue:
 
 
 def ensure_debt_files(debts_path: str | Path | None = None, payments_path: str | Path | None = None) -> None:
+    if debts_path is None and payments_path is None and config.use_sqlite_storage():
+        return
     debt_path = _debt_path(debts_path)
     payment_path = _payment_path(payments_path)
     if config.is_test_mode():
@@ -74,6 +76,23 @@ def ensure_debt_files(debts_path: str | Path | None = None, payments_path: str |
 
 
 def read_debts(path: str | Path | None = None) -> pd.DataFrame:
+    if path is None and config.use_sqlite_storage():
+        from src.data.sqlite_store import connect_database
+
+        with connect_database(config.active_database_path()) as connection:
+            rows = connection.execute("""SELECT d.*, pc.minor_unit AS principal_minor_unit,
+                cc.minor_unit AS cash_minor_unit FROM debts d
+                JOIN currencies pc ON pc.code = d.principal_currency_code
+                JOIN currencies cc ON cc.code = d.cash_currency_code ORDER BY d.opened_on, d.id""").fetchall()
+        return _normalize_debts(pd.DataFrame([{
+            "debt_id": row["id"], "type": row["kind"], "counterparty": row["counterparty"],
+            "opened_date": row["opened_on"],
+            "principal_amount": Decimal(row["principal_amount_minor"]).scaleb(-row["principal_minor_unit"]),
+            "principal_currency": row["principal_currency_code"],
+            "cash_amount": Decimal(row["cash_amount_minor"]).scaleb(-row["cash_minor_unit"]),
+            "cash_currency": row["cash_currency_code"], "comment": row["comment"],
+            "status": row["status"],
+        } for row in rows], columns=DEBT_COLUMNS))
     if config.is_test_mode():
         return _read_debts_unlocked(path)
     with staging.transaction_drafts_commit_lock():
@@ -81,6 +100,23 @@ def read_debts(path: str | Path | None = None) -> pd.DataFrame:
 
 
 def read_debt_payments(path: str | Path | None = None) -> pd.DataFrame:
+    if path is None and config.use_sqlite_storage():
+        from src.data.sqlite_store import connect_database
+
+        with connect_database(config.active_database_path()) as connection:
+            rows = connection.execute("""SELECT p.*, d.principal_currency_code,
+                pc.minor_unit AS principal_minor_unit, cc.minor_unit AS cash_minor_unit
+                FROM debt_payments p JOIN debts d ON d.id = p.debt_id
+                JOIN currencies pc ON pc.code = d.principal_currency_code
+                JOIN currencies cc ON cc.code = p.cash_currency_code
+                ORDER BY p.occurred_on, p.id""").fetchall()
+        return _normalize_payments(pd.DataFrame([{
+            "payment_id": row["id"], "debt_id": row["debt_id"], "date": row["occurred_on"],
+            "amount": Decimal(row["principal_amount_minor"]).scaleb(-row["principal_minor_unit"]),
+            "cash_amount": Decimal(row["cash_amount_minor"]).scaleb(-row["cash_minor_unit"]),
+            "cash_currency": row["cash_currency_code"], "comment": row["comment"],
+            "status": row["status"],
+        } for row in rows], columns=PAYMENT_COLUMNS))
     if config.is_test_mode():
         return _read_debt_payments_unlocked(path)
     with staging.transaction_drafts_commit_lock():
@@ -105,6 +141,8 @@ def _read_debt_payments_unlocked(path: str | Path | None = None) -> pd.DataFrame
 
 def write_debts(data: pd.DataFrame, path: str | Path | None = None) -> None:
     config.require_writable_mode()
+    if path is None and config.use_sqlite_storage():
+        raise RuntimeError("SQLite debts must be changed through debt commands")
     normalized = _normalize_debts(data)
     _raise_if_issues(validate_debt_rows(normalized, read_debt_payments()))
     debt_path = _debt_path(path)
@@ -120,6 +158,8 @@ def write_debts(data: pd.DataFrame, path: str | Path | None = None) -> None:
 
 def write_debt_payments(data: pd.DataFrame, path: str | Path | None = None) -> None:
     config.require_writable_mode()
+    if path is None and config.use_sqlite_storage():
+        raise RuntimeError("SQLite debt payments must be changed through payment commands")
     normalized = _normalize_payments(data)
     _raise_if_issues(validate_debt_rows(read_debts(), normalized))
     payment_path = _payment_path(path)
@@ -147,6 +187,20 @@ def create_debt(
 ) -> dict:
     config.require_writable_mode()
     operation_id = str(operation_id or uuid4().hex)
+    if config.use_sqlite_storage():
+        from src.data.sqlite_store import create_debt_record
+
+        effective_cash_amount = principal_amount if cash_amount in {None, ""} else cash_amount
+        effective_cash_currency = principal_currency if not cash_currency else cash_currency
+        if (_to_positive_money(effective_cash_amount, "cash_amount") !=
+                _to_positive_money(principal_amount, "principal_amount") or
+                str(effective_cash_currency).upper() != str(principal_currency).upper()):
+            raise ValueError("Новый долг и его денежное движение должны быть в одной валюте и сумме.")
+        return create_debt_record(
+            config.active_database_path(), kind=debt_type, counterparty=counterparty,
+            opened_on=opened_date, principal_amount=principal_amount,
+            currency=principal_currency, operation_key=operation_id, comment=comment,
+            create_draft=create_draft)
     with staging.transaction_drafts_commit_lock() as draft_path:
         completed = _completed_debt_create(operation_id, draft_path)
         if completed is not None:
@@ -220,6 +274,24 @@ def create_debt_payment(
 ) -> dict:
     config.require_writable_mode()
     operation_id = str(operation_id or uuid4().hex)
+    if config.use_sqlite_storage():
+        from src.data.sqlite_store import record_debt_payment
+
+        debts = read_debts()
+        matches = debts[debts["debt_id"].eq(str(debt_id))]
+        if matches.empty:
+            raise KeyError(f"debt not found: {debt_id}")
+        debt = matches.iloc[0]
+        effective_cash_amount = amount if cash_amount in {None, ""} else cash_amount
+        effective_cash_currency = debt["principal_currency"] if not cash_currency else cash_currency
+        if (_to_positive_money(effective_cash_amount, "cash_amount") !=
+                _to_positive_money(amount, "amount") or
+                str(effective_cash_currency).upper() != str(debt["principal_currency"]).upper()):
+            raise ValueError("Погашение выполняется только в валюте долга без конвертации.")
+        return record_debt_payment(
+            config.active_database_path(), debt_id=debt_id, occurred_on=date,
+            amount=amount, operation_key=operation_id, comment=comment,
+            create_draft=create_draft)
     with staging.transaction_drafts_commit_lock() as draft_path:
         completed = _completed_debt_payment(operation_id, draft_path)
         if completed is not None:
@@ -314,6 +386,13 @@ def create_debt_payment_from_cash(
     debt = debt_rows.iloc[0]
     cash_amount_value = _to_positive_money(cash_amount, "cash_amount")
     cash_currency = str(cash_currency).upper()
+    if config.use_sqlite_storage():
+        if cash_currency != str(debt["principal_currency"]):
+            raise ValueError("Погашение выполняется в валюте долга.")
+        return create_debt_payment(
+            debt_id=debt_id, date=date, amount=cash_amount_value,
+            cash_amount=cash_amount_value, cash_currency=cash_currency,
+            comment=comment, create_draft=create_draft, operation_id=operation_id)
     debt_amount = _cash_to_debt_amount(
         cash_amount_value,
         cash_currency,
@@ -356,6 +435,9 @@ def active_debt_balances(debt_type: str, currency: str | None = None) -> pd.Data
 
 def migrate_legacy_debts(create_files_only_if_missing: bool = True) -> dict:
     config.require_writable_mode()
+    if config.use_sqlite_storage():
+        return {"created_debts": 0, "created_payments": 0,
+                "skipped": "legacy debt migration is already part of SQLite cutover"}
     if create_files_only_if_missing and _existing_debt_rows_count() > 0:
         return {"created_debts": 0, "created_payments": 0, "skipped": "debt files already contain rows"}
 
@@ -416,6 +498,8 @@ def migrate_legacy_debts(create_files_only_if_missing: bool = True) -> dict:
 
 
 def validate_debt_files() -> list[DebtValidationIssue]:
+    if config.use_sqlite_storage():
+        return []
     if not _debt_path().exists() and not _payment_path().exists():
         return []
     debts = _read_raw_csv(_debt_path(), DEBT_COLUMNS)
