@@ -6,7 +6,7 @@ import pandas as pd
 import plotly.graph_objects as go
 
 from src import config, utils
-from src.data.get import get_assets, get_transactions
+from src.data.get import get_assets, get_income_categories, get_transactions
 from src.data.exchange_rates_info import get_exchange_rates_info
 from src.data.get_finance import fx_network_mode, get_fx_rates, require_fx_rate
 from src.data.proccess import convert_transaction
@@ -59,6 +59,7 @@ class DashboardDataset:
 def clear_main_dashboard_cache() -> None:
     _asset_currency_allocation_data_cached.cache_clear()
     _asset_liquidity_allocation_data_cached.cache_clear()
+    _capital_components_data_cached.cache_clear()
 
 
 def build_main_dashboard_data(
@@ -99,6 +100,9 @@ def _build_main_dashboard_data(
     capital = balance[capital_columns].reset_index()
     inflation_rate = _inflation_rate_data()
     real_asset_capital = _real_asset_capital_data(balance, currency, cpi_base_period)
+    capital_change_after_flows = _capital_change_after_flows_data(
+        balance, real_asset_capital)
+    capital_components = _capital_components_data(currency)
     fx_revaluation = _fx_revaluation_data(balance)
     asset_currency_allocation = _asset_currency_allocation_data(currency)
     asset_liquidity_allocation = _asset_liquidity_allocation_data(currency)
@@ -164,6 +168,20 @@ def _build_main_dashboard_data(
             title="Покупательная способность активов",
             dataframe=real_asset_capital,
             figure=_real_asset_capital_figure(real_asset_capital, currency),
+        ),
+        "capital_change_after_flows": DashboardDataset(
+            id="capital_change_after_flows",
+            title="Изменение капитала после внешних потоков",
+            dataframe=capital_change_after_flows,
+            figure=_capital_change_after_flows_figure(
+                capital_change_after_flows, currency),
+        ),
+        "capital_components": DashboardDataset(
+            id="capital_components",
+            title="Состав капитала",
+            dataframe=capital_components,
+            display_dataframe=_format_capital_components(
+                capital_components, currency),
         ),
         "fx_revaluation": DashboardDataset(
             id="fx_revaluation",
@@ -660,7 +678,204 @@ def _real_asset_capital_data(
     data.attrs["latest_cpi_period"] = latest_cpi_period
     data.attrs["stale"] = stale
     data.attrs["currency"] = currency
+    data.attrs["deflators"] = {
+        period: base_index / index_value
+        for period, index_value in indexes.items()
+    }
     return data
+
+
+def _capital_change_after_flows_data(
+    balance: pd.DataFrame,
+    real_asset_capital: pd.DataFrame,
+) -> pd.DataFrame:
+    columns = [
+        "Дата",
+        "Внешний поток",
+        "Номинальное изменение после потоков",
+        "Реальное изменение после потоков",
+    ]
+    if "Капитал по активам" not in balance.columns:
+        result = pd.DataFrame(columns=columns)
+        result.attrs["status"] = "unavailable"
+        return result
+
+    passive_categories = get_income_categories()
+    passive_names = passive_categories.loc[
+        passive_categories["Класс"].eq("passive"), "Категория"
+    ].tolist()
+    passive_income = pd.Series(0.0, index=balance.index)
+    for category in passive_names:
+        if category in balance.columns:
+            passive_income = passive_income.add(
+                pd.to_numeric(balance[category], errors="coerce").fillna(0.0),
+                fill_value=0.0,
+            )
+
+    capital = pd.to_numeric(balance["Капитал по активам"], errors="coerce")
+    cash_balance = pd.to_numeric(
+        balance.get("Баланс", pd.Series(0.0, index=balance.index)), errors="coerce"
+    ).fillna(0.0)
+    external_flow = cash_balance - passive_income
+    result = pd.DataFrame({
+        "Дата": pd.to_datetime(balance.index),
+        "Внешний поток": external_flow.to_numpy(),
+        "Номинальное изменение после потоков": (
+            capital.diff() - external_flow).to_numpy(),
+    })
+
+    real_status = real_asset_capital.attrs.get("status", "unavailable")
+    deflators = real_asset_capital.attrs.get("deflators", {})
+    if real_status in {"ready", "stale"} and deflators:
+        periods = result["Дата"].dt.to_period("M").astype(str)
+        factors = pd.Series(
+            [float(deflators.get(period, float("nan"))) for period in periods],
+            index=result.index,
+        )
+        real_by_date = real_asset_capital.set_index("Дата")["Реальная стоимость"]
+        real_capital = result["Дата"].map(real_by_date)
+        result["Реальное изменение после потоков"] = (
+            real_capital.diff() - external_flow.reset_index(drop=True) * factors
+        )
+    else:
+        result["Реальное изменение после потоков"] = float("nan")
+
+    result = result[capital.notna().to_numpy()].reset_index(drop=True)
+    result.attrs["status"] = real_status
+    result.attrs["base_period"] = real_asset_capital.attrs.get("base_period", "")
+    return result[columns]
+
+
+def _capital_change_after_flows_figure(
+    data: pd.DataFrame,
+    currency: str,
+) -> go.Figure:
+    fig = go.Figure()
+    if data.empty:
+        _apply_dashboard_chart_layout(fig, "", range_slider=True)
+        return fig
+    x_dates = _month_start_dates(data)
+    traces = (
+        ("Номинальное изменение после потоков", "#6F8FB8"),
+        ("Реальное изменение после потоков", "#B08A6C"),
+    )
+    for column, color in traces:
+        values = pd.to_numeric(data[column], errors="coerce")
+        if not values.notna().any():
+            continue
+        fig.add_trace(go.Bar(
+            x=x_dates,
+            y=values,
+            name=column,
+            marker_color=color,
+            hovertemplate=f"{column}<br>%{{x|%Y-%m}}<br>%{{y:,.0f}}<extra></extra>",
+        ))
+    _apply_dashboard_chart_layout(fig, "", range_slider=True)
+    fig.update_layout(barmode="group", yaxis_title=config.UNIQUE_TICKERS[currency])
+    fig.add_hline(y=0, line_dash="dot", line_color="rgba(120,120,120,0.7)")
+    return fig
+
+
+def _capital_components_data(currency: str) -> pd.DataFrame:
+    columns = [
+        "Счет",
+        "Тип актива",
+        "Ликвидность",
+        "Источник оценки",
+        "Период оценки",
+        "Валюта",
+        "Сумма",
+        "В валюте отчёта",
+        "Актуальность",
+    ]
+    if not config.use_sqlite_storage():
+        return pd.DataFrame(columns=columns)
+    return _capital_components_data_cached(
+        str(config.active_database_path()), str(currency).upper()).copy(deep=True)
+
+
+@lru_cache(maxsize=None)
+def _capital_components_data_cached(
+    database_path: str,
+    currency: str,
+) -> pd.DataFrame:
+    from src.data.asset_freshness import evaluate_asset_freshness, freshness_label
+    from src.data.sqlite_store import asset_accounts, connect_database
+
+    columns = [
+        "Счет",
+        "Тип актива",
+        "Ликвидность",
+        "Источник оценки",
+        "Период оценки",
+        "Валюта",
+        "Сумма",
+        "В валюте отчёта",
+        "Актуальность",
+    ]
+    with connect_database(database_path) as connection:
+        rows = connection.execute("""WITH ranked AS (
+            SELECT v.*, c.minor_unit,
+              COALESCE(t.name_ru, 'Не классифицировано') AS asset_type_name,
+              COALESCE(l.name_ru, 'Не задана') AS liquidity_name,
+              ROW_NUMBER() OVER (
+                PARTITION BY v.account_id, v.currency_code
+                ORDER BY v.period DESC, v.id DESC
+              ) AS rank
+            FROM v_asset_snapshots v
+            JOIN currencies c ON c.code = v.currency_code
+            LEFT JOIN asset_types t ON t.id = v.asset_type_id
+            LEFT JOIN liquidity_classes l ON l.id = v.liquidity_class_id
+            WHERE v.include_in_capital = 1
+        )
+        SELECT * FROM ranked WHERE rank = 1
+        ORDER BY account_name, currency_code""").fetchall()
+    if not rows:
+        return pd.DataFrame(columns=columns)
+
+    raw = pd.DataFrame([dict(row) for row in rows])
+    report_period = pd.Period(raw["period"].max(), freq="M")
+    raw["Дата"] = report_period.to_timestamp(how="end").normalize()
+    raw["Год"] = report_period.year
+    raw["Месяц"] = report_period.month
+    raw["Дата FX"] = asset_valuation_dates(raw)
+    raw["Валюта"] = raw["currency_code"].astype(str).str.upper()
+    raw["Значение"] = raw.apply(
+        lambda row: float(row["amount_minor"]) / (10 ** int(row["minor_unit"])),
+        axis=1,
+    )
+    raw["В валюте отчёта"] = _convert_asset_allocation_values(raw, currency)
+
+    freshness = evaluate_asset_freshness(asset_accounts(database_path))
+    freshness_by_id = {row["id"]: freshness_label(row) for row in freshness["accounts"]}
+    result = pd.DataFrame({
+        "Счет": raw["account_name"],
+        "Тип актива": raw["asset_type_name"],
+        "Ликвидность": raw["liquidity_name"],
+        "Источник оценки": "Месячный снимок",
+        "Период оценки": raw["period"],
+        "Валюта": raw["Валюта"],
+        "Сумма": raw["Значение"],
+        "В валюте отчёта": raw["В валюте отчёта"],
+        "Актуальность": raw["account_id"].map(freshness_by_id).fillna("Дата оценки неизвестна"),
+    })
+    result.attrs["report_period"] = str(report_period)
+    result.attrs["currency"] = currency
+    result.attrs["total"] = float(result["В валюте отчёта"].sum())
+    return result[columns]
+
+
+def _format_capital_components(data: pd.DataFrame, currency: str) -> pd.DataFrame:
+    display = data.copy(deep=True)
+    if display.empty:
+        return display
+    display["Сумма"] = [
+        _format_money_value(value, row_currency)
+        for value, row_currency in zip(display["Сумма"], display["Валюта"])
+    ]
+    display["В валюте отчёта"] = display["В валюте отчёта"].map(
+        lambda value: _format_money_value(value, currency))
+    return display
 
 
 def _inflation_rate_data() -> pd.DataFrame:

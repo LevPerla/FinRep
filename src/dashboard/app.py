@@ -1888,9 +1888,18 @@ def _main_report_layout(
         _graph_section(datasets["delta"], theme=theme, locale=locale),
         _graph_section(datasets["savings_rate"], theme=theme, locale=locale),
         _graph_section(datasets["capital"], height="640px", theme=theme, locale=locale),
+        _grid_section(
+            datasets["capital_components"],
+            height=f"{min(560, max(220, 76 + len(datasets['capital_components'].dataframe) * 42))}px",
+            theme=theme,
+            locale=locale,
+        ),
         _graph_section(datasets["inflation_rate"], height="520px", theme=theme, locale=locale),
         _real_asset_capital_section(
             datasets["real_asset_capital"], currency=currency,
+            height="520px", theme=theme, locale=locale),
+        _capital_change_after_flows_section(
+            datasets["capital_change_after_flows"],
             height="520px", theme=theme, locale=locale),
         _graph_section(datasets["fx_revaluation"], height="420px", theme=theme, locale=locale),
         _graph_section(datasets["asset_currency_allocation"], height="520px", theme=theme, locale=locale),
@@ -3935,6 +3944,27 @@ def _real_asset_capital_section(
             className="finrep-chart-filter-row",
         ),
     )
+    return section
+
+
+def _capital_change_after_flows_section(
+    dataset: DashboardDataset,
+    *,
+    height: str = "520px",
+    theme: str | None = None,
+    locale: str = DEFAULT_LOCALE,
+):
+    section = _graph_section(dataset, height=height, theme=theme, locale=locale)
+    if dataset.dataframe.empty:
+        return section
+    section.children.insert(1, html.P(
+        report_text(
+            "Внешний поток включает активные доходы, расходы и движения по долгам. Проценты и инвестиционный результат остаются в изменении капитала; первый месяц не рассчитывается без начальной оценки.",
+            locale,
+        ),
+        className="small",
+        style={"color": "var(--finrep-muted)"},
+    ))
     return section
 
 

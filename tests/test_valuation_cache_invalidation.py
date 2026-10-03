@@ -62,7 +62,7 @@ def test_fx_write_invalidates_cached_financial_tables(valuation_data):
     assert get_balance_by_month("RUB").iloc[0]["Расход"] == 5000
 
 
-def test_price_write_invalidates_cached_investment_value(valuation_data):
+def test_price_write_does_not_change_explicit_snapshot_capital(valuation_data):
     root = valuation_data
     asset_path = root / "assets_info" / "2026" / "2026_09.csv"
     asset_path.parent.mkdir(parents=True)
@@ -92,13 +92,13 @@ def test_price_write_invalidates_cached_investment_value(valuation_data):
     )
     investments.write_price_cache(initial_prices)
     clear_data_cache()
-    assert get_asset_capital_by_month("RUB").iloc[0]["Капитал по активам"] == 120
+    assert get_asset_capital_by_month("RUB").iloc[0]["Капитал по активам"] == 100
 
     updated_prices = initial_prices.copy()
     updated_prices.loc[0, "price"] = 30
     investments.write_price_cache(updated_prices)
 
-    assert get_asset_capital_by_month("RUB").iloc[0]["Капитал по активам"] == 130
+    assert get_asset_capital_by_month("RUB").iloc[0]["Капитал по активам"] == 100
 
 
 def test_crypto_balance_write_invalidates_cached_investment_value(

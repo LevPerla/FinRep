@@ -43,7 +43,6 @@ def test_asset_capital_uses_today_for_current_month_fx_but_keeps_month_end_index
     assets = _assets(("2026", "09"))
     requested_dates = []
     monkeypatch.setattr(create_tables, "get_assets", lambda: assets)
-    monkeypatch.setattr(create_tables, "current_investment_value", lambda *_: 0)
     monkeypatch.setattr(
         create_tables,
         "_current_asset_valuation_date",
@@ -101,7 +100,6 @@ def test_carried_foreign_balance_uses_each_report_month_fx(monkeypatch):
     ])
     requested_dates = []
     monkeypatch.setattr(create_tables, "get_assets", lambda: assets)
-    monkeypatch.setattr(create_tables, "current_investment_value", lambda *_: 0)
     monkeypatch.setattr(
         create_tables, "_current_asset_valuation_date", lambda: pd.Timestamp("2026-03-31"))
 
