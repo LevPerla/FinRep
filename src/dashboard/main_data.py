@@ -97,7 +97,7 @@ def _build_main_dashboard_data(
         if column in balance.columns
     ]
     capital = balance[capital_columns].reset_index()
-    inflation_rate = _inflation_rate_data(currency)
+    inflation_rate = _inflation_rate_data()
     real_asset_capital = _real_asset_capital_data(balance, currency, cpi_base_period)
     fx_revaluation = _fx_revaluation_data(balance)
     asset_currency_allocation = _asset_currency_allocation_data(currency)
@@ -663,50 +663,62 @@ def _real_asset_capital_data(
     return data
 
 
-def _inflation_rate_data(currency: str) -> pd.DataFrame:
-    columns = ["Дата", "Инфляция год к году, %", "Индекс CPI"]
+def _inflation_rate_data() -> pd.DataFrame:
+    columns = ["Дата", *config.UNIQUE_TICKERS]
     if not config.use_sqlite_storage():
         return pd.DataFrame(columns=columns)
 
     from src.data.inflation import effective_cpi_indexes
 
-    indexes = effective_cpi_indexes(config.active_database_path(), currency)
-    if not indexes:
+    indexes_by_currency = {
+        currency: effective_cpi_indexes(config.active_database_path(), currency)
+        for currency in config.UNIQUE_TICKERS
+    }
+    observed_periods = [
+        period for indexes in indexes_by_currency.values() for period in indexes
+    ]
+    if not observed_periods:
         return pd.DataFrame(columns=columns)
-    periods = pd.period_range(min(indexes), max(indexes), freq="M")
+    periods = pd.period_range(min(observed_periods), max(observed_periods), freq="M")
     rows = []
     for period in periods:
         period_key = str(period)
         previous_key = str(period - 12)
-        current = indexes.get(period_key)
-        previous = indexes.get(previous_key)
-        rate = (
-            float((current / previous - Decimal("1")) * Decimal("100"))
-            if current is not None and previous is not None else float("nan")
-        )
-        rows.append({
-            "Дата": period.to_timestamp(),
-            "Инфляция год к году, %": rate,
-            "Индекс CPI": float(current) if current is not None else float("nan"),
-        })
+        row = {"Дата": period.to_timestamp()}
+        for currency, indexes in indexes_by_currency.items():
+            current = indexes.get(period_key)
+            previous = indexes.get(previous_key)
+            row[currency] = (
+                float((current / previous - Decimal("1")) * Decimal("100"))
+                if current is not None and previous is not None else float("nan")
+            )
+        rows.append(row)
     return pd.DataFrame(rows, columns=columns)
 
 
 def _inflation_rate_figure(data: pd.DataFrame) -> go.Figure:
-    values = pd.to_numeric(
-        data.get("Инфляция год к году, %", pd.Series(dtype=float)), errors="coerce")
-    visible = data.loc[values.first_valid_index():values.last_valid_index()] \
-        if values.notna().any() else data
-    fig = go.Figure(go.Scatter(
-        x=visible.get("Дата", []),
-        y=visible.get("Инфляция год к году, %", []),
-        mode="lines+markers",
-        name="Инфляция год к году",
-        line=dict(color="#BB88A4", width=2),
-        connectgaps=False,
-        showlegend=True,
-        hovertemplate="%{x|%Y-%m}<br>%{y:.2f}%<extra></extra>",
-    ))
+    fig = go.Figure()
+    currency_columns = [column for column in config.UNIQUE_TICKERS if column in data]
+    values = data[currency_columns].apply(pd.to_numeric, errors="coerce") \
+        if currency_columns else pd.DataFrame(index=data.index)
+    valid_rows = values.notna().any(axis=1)
+    visible = data.loc[valid_rows.idxmax():valid_rows[::-1].idxmax()] \
+        if valid_rows.any() else data
+    for index, currency in enumerate(currency_columns):
+        series = pd.to_numeric(visible[currency], errors="coerce")
+        if not series.notna().any():
+            continue
+        fig.add_trace(go.Scatter(
+            x=visible.get("Дата", []),
+            y=series,
+            mode="lines+markers",
+            name=currency,
+            line=dict(color=ASSET_ALLOCATION_COLORS[index], width=2),
+            connectgaps=False,
+            showlegend=True,
+            hovertemplate=(
+                f"{currency}<br>%{{x|%Y-%m}}<br>%{{y:.2f}}%<extra></extra>"),
+        ))
     _apply_dashboard_chart_layout(fig, "", range_slider=True)
     fig.update_layout(showlegend=True)
     fig.update_yaxes(title="Инфляция, %", ticksuffix="%", rangemode="normal")

@@ -18,10 +18,10 @@ from src.dashboard.main_data import (
 from src.data.sqlite_store import initialize_database, save_cpi_observations
 
 
-def _seed_cpi(database, observations):
+def _seed_cpi(database, observations, currency="RUB"):
     save_cpi_observations(
         database,
-        currency="RUB",
+        currency=currency,
         observations=observations,
         source_version="test-release",
         payload_sha256="a" * 64,
@@ -65,16 +65,22 @@ def test_inflation_chart_uses_year_over_year_rate_and_keeps_missing_months(
         {"period": "2026-01", "index_value": "110"},
         {"period": "2026-03", "index_value": "150"},
     ])
+    _seed_cpi(database, [
+        {"period": "2025-01", "index_value": "200"},
+        {"period": "2026-01", "index_value": "210"},
+    ], currency="USD")
     monkeypatch.setattr(config, "active_database_path", lambda: database)
     monkeypatch.setattr(config, "use_sqlite_storage", lambda: True)
 
-    data = _inflation_rate_data("RUB").set_index("Дата")
-    assert data.loc["2026-01-01", "Инфляция год к году, %"] == pytest.approx(10)
-    assert pd.isna(data.loc["2026-02-01", "Инфляция год к году, %"])
-    assert data.loc["2026-03-01", "Инфляция год к году, %"] == pytest.approx(20)
+    data = _inflation_rate_data().set_index("Дата")
+    assert data.loc["2026-01-01", "RUB"] == pytest.approx(10)
+    assert data.loc["2026-01-01", "USD"] == pytest.approx(5)
+    assert pd.isna(data.loc["2026-02-01", "RUB"])
+    assert data.loc["2026-03-01", "RUB"] == pytest.approx(20)
 
     figure = _inflation_rate_figure(data.reset_index())
     assert figure.data[0].connectgaps is False
+    assert {trace.name for trace in figure.data} == {"RUB", "USD"}
     assert list(figure.data[0].x)[0] == pd.Timestamp("2026-01-01")
     assert figure.layout.xaxis.rangeslider.visible is True
     assert figure.layout.yaxis.ticksuffix == "%"
