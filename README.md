@@ -5,7 +5,7 @@
 >
 > Select **«Открыть demo без пароля»** to enter the read-only TEST MODE. The demo uses only fictional `sample_data/` and never exposes private financial data. The first load can take up to a minute while the free Render service wakes up.
 
-FinRep is a local-first personal finance dashboard and report generator. It reads manually maintained CSV files, builds Plotly/Dash views, and writes reports to your own machine. It is not a hosted service and it does not upload your transactions.
+FinRep is a local-first personal finance dashboard and report generator. LIVE mode stores data in SQLite, builds Plotly/Dash views, and writes reports to your own machine. It is not a hosted service and it does not upload your transactions.
 
 Русская версия кратко: FinRep хранит транзакции, активы и отчеты локально. Публичный репозиторий содержит только вымышленные `sample_data/`, чтобы можно было сразу увидеть интерфейс без приватных CSV.
 
@@ -58,7 +58,7 @@ Run the legacy Plotly HTML reports with demo data:
 FINREP_DATA_DIR=sample_data FINREP_REPORTS_DIR=reports uv run python main.py
 ```
 
-For private use, keep your real CSV files under local `data/` or point `FINREP_DATA_DIR` to another private directory. The default local paths are:
+For private use, the default LIVE database is `data/finrep.sqlite3`. A fresh installation creates it automatically. If legacy working CSV files are present, migrate them once before starting LIVE mode; the app will not hide them behind an empty database. The default local paths are:
 
 ```text
 data/
@@ -71,12 +71,11 @@ Both are git-ignored.
 
 FinRep is designed around local files:
 
-- source transactions live in `data/transactions_info/`;
-- asset snapshots live in `data/assets_info/`;
-- investment data lives in `data/investments/`;
+- LIVE data lives in `data/finrep.sqlite3` by default;
+- legacy CSV files remain migration input or an immutable archive after cutover;
 - generated HTML/PDF/XLSX outputs live in `reports/`.
 
-The app reads and writes those local paths only. Network access is used only when you explicitly refresh market/FX/crypto provider data. Normal dashboard tab changes use cached CSV data.
+The app reads and writes those local paths only. Network access is used only when you explicitly refresh market/FX/crypto provider data. Normal dashboard tab changes use local SQLite data.
 
 Before publishing a fork or public repository, run the checklist in `AGENTS_MD/OPEN_SOURCE_CHECKLIST.md`.
 
@@ -139,11 +138,13 @@ Run the local Dash app:
 uv run python -m src.dashboard.app
 ```
 
-Useful environment switches:
+SQLite is the default LIVE backend. To select another database file explicitly:
 
 ```bash
-uv run python -m src.dashboard.app
+FINREP_SQLITE_PATH=/absolute/path/finrep.sqlite3 uv run python -m src.dashboard.app
 ```
+
+`FINREP_STORAGE_BACKEND=csv` remains available only as an explicit legacy compatibility mode.
 
 The dashboard reads only `FINREP_DASH_PASSWORD` and `FINREP_DASH_SECRET_KEY` from the local `.env`; exported shell variables take precedence.
 

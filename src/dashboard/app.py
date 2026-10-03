@@ -13,7 +13,7 @@ import dash_ag_grid as dag
 import dash_bootstrap_components as dbc
 import pandas as pd
 from dash.exceptions import PreventUpdate
-from flask import request
+from flask import request, session
 
 from src import config
 from src.data.get import clear_data_cache, get_transactions
@@ -46,6 +46,7 @@ from src.data.staging import (
     read_monthly_transaction_csv,
     read_transaction_drafts,
 )
+from src.data.sqlite_bootstrap import ensure_default_live_database
 from src.dashboard.expense_data import build_expense_dashboard_data
 from src.dashboard.income_data import build_income_dashboard_data
 from src.dashboard.export import ExportBusyError, export_dashboard_page
@@ -179,10 +180,19 @@ def create_app() -> Dash:
     )
     app.server.config["MAX_CONTENT_LENGTH"] = MAX_BANK_PDF_REQUEST_BYTES
     configure_auth(app.server)
+    live_enabled = app.server.config["FINREP_LIVE_AUTH_ENABLED"]
+    if live_enabled:
+        ensure_default_live_database()
     app.index_string = _app_index_string()
     app.server.add_url_rule("/healthz", "healthz", _healthcheck)
     app.layout = create_layout
-    app.validation_layout = _callback_validation_layout(create_layout())
+    if live_enabled:
+        app.validation_layout = _callback_validation_layout(create_layout())
+    else:
+        with app.server.test_request_context("/"):
+            session["authenticated"] = True
+            session["data_mode"] = "test"
+            app.validation_layout = _callback_validation_layout(create_layout())
     register_callbacks(app)
     return app
 
