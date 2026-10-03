@@ -82,7 +82,7 @@ def test_local_dash_request_and_fixed_stylesheet_policy():
     page.fetch.assert_not_called()
 
 
-@pytest.mark.parametrize('section,expected_tab', [('overview','main'), ('expenses','expenses'), ('income','income')])
+@pytest.mark.parametrize('section,expected_tab', [('overview','main'), ('expenses','expenses'), ('income','income'), ('statistics','statistics')])
 def test_callback_has_no_client_url_and_ignores_host(monkeypatch, tmp_path, section, expected_tab):
     from src.dashboard.app import create_app
     import importlib
@@ -111,6 +111,18 @@ def test_callback_has_no_client_url_and_ignores_host(monkeypatch, tmp_path, sect
     assert render.call_args.args == ('RUB',expected_tab,'png')
     assert render.call_args.kwargs['locale'] == 'ru'
     assert 'evil.test' not in str(render.call_args)
+
+
+def test_statistics_export_url_uses_main_report_section():
+    url = urlsplit(export.build_dashboard_url('RUB', 'statistics', '2026', '10'))
+
+    assert parse_qs(url.query) == {
+        'currency': ['RUB'],
+        'tab': ['main'],
+        'section': ['statistics'],
+        'year': ['2026'],
+        'month': ['10'],
+    }
 
 
 def test_local_entrypoint_uses_same_port_as_export(monkeypatch):
