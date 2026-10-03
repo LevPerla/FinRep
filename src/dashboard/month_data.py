@@ -6,10 +6,8 @@ from src.dashboard.main_data import DashboardDataset, _apply_dashboard_chart_lay
 from src.dashboard.year_data import _format_cost_distribution
 from src.data.exchange_rates_info import get_exchange_rates_info
 from src.data.get import get_transactions
-from src.data.assets_editor import asset_snapshot_path
 from src.data.get_finance import fx_network_mode
 from src.data.proccess import convert_transaction
-from src.data.staging import monthly_transaction_csv_path
 from src.model.create_tables import (
     get_act_liabilities,
     get_act_receivables,
@@ -40,7 +38,7 @@ def _build_month_dashboard_data(
     if currency not in config.UNIQUE_TICKERS:
         raise ValueError(f"currency must be one of {tuple(config.UNIQUE_TICKERS)}")
 
-    if not monthly_transaction_csv_path(year, month).exists():
+    if not _has_saved_period(year, month, "cash_transactions"):
         return {
             "month_empty": DashboardDataset(
                 id="month_empty",
@@ -232,9 +230,29 @@ def _prepare_assets(data: pd.DataFrame) -> pd.DataFrame:
 
 
 def _asset_snapshot_display(data: pd.DataFrame, year: str, month: str) -> pd.DataFrame:
-    if not asset_snapshot_path(year, month).exists():
+    if not _has_saved_period(year, month, "asset_snapshots"):
         return pd.DataFrame({"Статус": ["Нет снимка активов за выбранный месяц."]})
     return utils.fill_if_empty(data.copy(deep=True))
+
+
+def _has_saved_period(year: str, month: str, dataset: str) -> bool:
+    period = f"{int(year):04d}-{int(month):02d}"
+    if config.use_sqlite_storage():
+        from src.data.sqlite_store import saved_asset_months, saved_months
+
+        periods = (
+            saved_months(config.active_database_path())
+            if dataset == "cash_transactions"
+            else saved_asset_months(config.active_database_path())
+        )
+        return period in periods
+    if dataset == "cash_transactions":
+        from src.data.staging import monthly_transaction_csv_path
+
+        return monthly_transaction_csv_path(year, month).exists()
+    from src.data.assets_editor import asset_snapshot_path
+
+    return asset_snapshot_path(year, month).exists()
 
 
 def _to_number(value) -> float:

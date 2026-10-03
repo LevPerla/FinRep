@@ -315,6 +315,31 @@ def test_sqlite_reader_preserves_saved_month_without_transactions(tmp_path, monk
     assert transactions.iloc[0]["Значение"] == 0
 
 
+def test_sqlite_month_dashboard_does_not_require_legacy_csv_files(tmp_path, monkeypatch):
+    from src.dashboard.month_data import build_month_dashboard_data
+    from src.data.sqlite_store import save_asset_month
+
+    database = tmp_path / "target.sqlite3"
+    initialize_database(database)
+    save_month(database, "2026-09")
+    save_asset_month(database, "2026-09")
+    monkeypatch.setenv("FINREP_STORAGE_BACKEND", "sqlite")
+    monkeypatch.setenv("FINREP_SQLITE_PATH", str(database))
+    monkeypatch.setattr(config, "DEBUG", True)
+    clear_data_cache()
+    clear_table_cache()
+    try:
+        datasets = build_month_dashboard_data(
+            "2026", "09", "RUB", fx_network_enabled=False)
+    finally:
+        clear_data_cache()
+        clear_table_cache()
+
+    assert "month_empty" not in datasets
+    assert "month_transactions" in datasets
+    assert "month_assets" in datasets
+
+
 def test_sqlite_income_dashboard_uses_extensible_category_registry(tmp_path, monkeypatch):
     database = tmp_path / "target.sqlite3"
     initialize_database(database)
