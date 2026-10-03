@@ -73,7 +73,10 @@ def run_cutover_preflight(
         },
         "migration": asdict(summary),
         "reconciliation": {
-            "checks": [asdict(check) for check in report.checks],
+            "checks": [
+                {"name": check.name, "passed": check.passed}
+                for check in report.checks
+            ],
             "passed": report.passed,
             "blocking_review_items": report.blocking_review_items,
             "ready_for_cutover": report.ready_for_cutover,
