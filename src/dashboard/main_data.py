@@ -52,6 +52,7 @@ class DashboardDataset:
 
 def clear_main_dashboard_cache() -> None:
     _asset_currency_allocation_data_cached.cache_clear()
+    _asset_liquidity_allocation_data_cached.cache_clear()
 
 
 def build_main_dashboard_data(
@@ -88,6 +89,7 @@ def _build_main_dashboard_data(
     capital = balance[capital_columns].reset_index()
     fx_revaluation = _fx_revaluation_data(balance)
     asset_currency_allocation = _asset_currency_allocation_data(currency)
+    asset_liquidity_allocation = _asset_liquidity_allocation_data(currency)
     fx_info = get_exchange_rates_info(currency)
     fx_changes = _fx_changes_data(balance, currency)
 
@@ -150,6 +152,12 @@ def _build_main_dashboard_data(
             title="Валютная структура активов",
             dataframe=asset_currency_allocation,
             figure=_asset_currency_allocation_figure(asset_currency_allocation),
+        ),
+        "asset_liquidity_allocation": DashboardDataset(
+            id="asset_liquidity_allocation",
+            title="Ликвидность активов",
+            dataframe=asset_liquidity_allocation,
+            figure=_asset_liquidity_allocation_figure(asset_liquidity_allocation),
         ),
         "fx_changes": DashboardDataset(
             id="fx_changes",
@@ -687,6 +695,78 @@ def _asset_currency_allocation_figure(data: pd.DataFrame) -> go.Figure:
         )
 
     _apply_dashboard_chart_layout(fig, "Динамика аллокации активов по валютам", range_slider=True)
+    fig.update_layout(barmode="stack", yaxis=dict(range=[0, 100], ticksuffix="%"))
+    return fig
+
+
+def _asset_liquidity_allocation_data(currency: str) -> pd.DataFrame:
+    if not config.use_sqlite_storage():
+        return pd.DataFrame(columns=["Дата"])
+    return _asset_liquidity_allocation_data_cached(
+        str(config.active_database_path()), str(currency).upper()).copy(deep=True)
+
+
+@lru_cache(maxsize=None)
+def _asset_liquidity_allocation_data_cached(
+        database_path: str, currency: str) -> pd.DataFrame:
+    from src.data.sqlite_store import connect_database
+
+    with connect_database(database_path) as connection:
+        rows = connection.execute("""SELECT v.period, v.currency_code,
+            v.amount_minor, c.minor_unit, v.liquidity_class_id
+            FROM v_asset_snapshots v
+            JOIN currencies c ON c.code = v.currency_code
+            WHERE v.include_in_capital = 1
+            ORDER BY v.period, v.account_id""").fetchall()
+    if not rows:
+        return pd.DataFrame(columns=["Дата"])
+
+    assets = pd.DataFrame([dict(row) for row in rows])
+    periods = pd.PeriodIndex(assets["period"], freq="M")
+    assets["Дата"] = periods.to_timestamp(how="end").normalize()
+    assets["Год"] = periods.year
+    assets["Месяц"] = periods.month
+    assets["Дата оценки"] = asset_valuation_dates(assets)
+    assets["Валюта"] = assets["currency_code"].astype(str).str.upper()
+    assets["Значение"] = assets.apply(
+        lambda row: float(row["amount_minor"]) / (10 ** int(row["minor_unit"])), axis=1)
+    assets["Группа"] = assets["liquidity_class_id"].fillna("Не задана")
+    assets["value_in_target"] = _convert_asset_allocation_values(assets, currency)
+
+    values = assets.pivot_table(
+        index="Дата", columns="Группа", values="value_in_target", aggfunc="sum")
+    if values.empty:
+        return pd.DataFrame(columns=["Дата"])
+    column_order = [
+        column for column in ["A1", "A2", "A3", "A4", "Не задана"]
+        if column in values.columns
+    ]
+    values = values.reindex(columns=column_order).sort_index()
+    totals = values.sum(axis=1)
+    allocation = values.div(totals.where(totals.ne(0)), axis=0).mul(100).fillna(0.0)
+    return allocation.reset_index().round(2)
+
+
+def _asset_liquidity_allocation_figure(data: pd.DataFrame) -> go.Figure:
+    fig = go.Figure()
+    title = "Динамика распределения активов по ликвидности"
+    if data.empty or "Дата" not in data.columns:
+        _apply_dashboard_chart_layout(fig, title, range_slider=True)
+        return fig
+
+    x_dates = pd.to_datetime(data["Дата"])
+    for index, liquidity_class in enumerate(
+            column for column in data.columns if column != "Дата"):
+        fig.add_trace(go.Bar(
+            x=x_dates,
+            y=data[liquidity_class],
+            name=liquidity_class,
+            marker_color=ASSET_ALLOCATION_COLORS[index % len(ASSET_ALLOCATION_COLORS)],
+            marker_line=dict(color="rgba(220, 220, 220, 0.35)", width=0.7),
+            hovertemplate=(
+                f"{liquidity_class}<br>%{{x|%Y-%m}}<br>%{{y:,.2f}}%<extra></extra>"),
+        ))
+    _apply_dashboard_chart_layout(fig, title, range_slider=True)
     fig.update_layout(barmode="stack", yaxis=dict(range=[0, 100], ticksuffix="%"))
     return fig
 

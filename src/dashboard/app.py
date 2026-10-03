@@ -84,6 +84,7 @@ DEFAULT_YEAR = datetime.now().strftime("%Y")
 DEFAULT_MONTH = datetime.now().strftime("%m")
 DEFAULT_FX_NETWORK_ENABLED = False
 UNCLASSIFIED_ASSET_TYPE_VALUE = "__unclassified__"
+AUTOMATIC_LIQUIDITY_VALUE = "__automatic__"
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 ASSETS_FOLDER = PROJECT_ROOT / "assets"
 logger = logging.getLogger(__name__)
@@ -1663,6 +1664,10 @@ def register_callbacks(app: Dash) -> None:
                             None if row.get("asset_type_id") == UNCLASSIFIED_ASSET_TYPE_VALUE
                             else row.get("asset_type_id") or None
                         ),
+                        "liquidity_class_override_id": (
+                            None if row.get("liquidity_choice") == AUTOMATIC_LIQUIDITY_VALUE
+                            else row.get("liquidity_choice") or None
+                        ),
                         "include_in_capital": row.get("Включать в капитал"),
                     }
                     for row in (rows or [])
@@ -1765,6 +1770,7 @@ def _main_report_layout(
         _graph_section(datasets["capital"], height="640px", theme=theme, locale=locale),
         _graph_section(datasets["fx_revaluation"], height="420px", theme=theme, locale=locale),
         _graph_section(datasets["asset_currency_allocation"], height="520px", theme=theme, locale=locale),
+        _graph_section(datasets["asset_liquidity_allocation"], height="520px", theme=theme, locale=locale),
         _graph_section(datasets["fx_changes"], theme=theme, locale=locale),
     ]
     metrics = datasets["cockpit_metrics"].dataframe
@@ -2853,10 +2859,10 @@ def _assets_input_layout(year: str, month: str, theme: str | None, load_records:
                                     dbc.Button(report_text("Удалить выбранные", locale), id="assets-delete-row-button", color="danger", outline=True, size="sm", disabled=read_only),
                                     dbc.Button(report_text("Применить", locale), id="assets-apply-button", color="primary", outline=True, size="sm", disabled=read_only),
                                 ],
-                                className="d-flex flex-wrap gap-2",
+                                className="d-flex flex-wrap gap-2 finrep-assets-actions",
                             ),
                         ],
-                        className="d-flex justify-content-between align-items-center mb-3",
+                        className="d-flex justify-content-between align-items-center mb-3 finrep-assets-header",
                     ),
                     dbc.Alert(
                         id="assets-input-message",
@@ -2907,7 +2913,7 @@ def _assets_input_layout(year: str, month: str, theme: str | None, load_records:
                                 disabled=classification_read_only,
                             ),
                         ],
-                        className="d-flex flex-wrap justify-content-between align-items-start gap-3 mb-3",
+                        className="d-flex flex-wrap justify-content-between align-items-start gap-3 mb-3 finrep-asset-classification-header",
                     ),
                     dbc.Alert(
                         id="asset-classification-message",
@@ -2956,6 +2962,11 @@ def _asset_classification_rows(locale: str = DEFAULT_LOCALE) -> list[dict]:
             "account_id": row["id"],
             "Счет": row["name"],
             "asset_type_id": row["asset_type_id"] or UNCLASSIFIED_ASSET_TYPE_VALUE,
+            "liquidity_choice": (
+                row["liquidity_class_override_id"] or AUTOMATIC_LIQUIDITY_VALUE
+            ),
+            "liquidity_class_id": row["liquidity_class_id"] or "",
+            "liquidity_source": row["liquidity_source"],
             "Включать в капитал": bool(row["include_in_capital"]),
             "Снимков": row["snapshot_count"],
             "Первый снимок": row["first_period"] or "",
@@ -2974,27 +2985,32 @@ def _asset_classification_status(rows: list[dict], locale: str = DEFAULT_LOCALE)
         for row in rows
     )
     excluded = sum(not row.get("Включать в капитал", True) for row in rows)
+    liquidity_unclassified = sum(not row.get("liquidity_class_id") for row in rows)
     if normalize_locale(locale) == "en":
         message = (
             f"Accounts: {total}. Unclassified: {unclassified}. "
+            f"Liquidity unassigned: {liquidity_unclassified}. "
             f"Excluded from capital: {excluded}."
         )
     else:
         message = (
             f"Счетов: {total}. Не классифицировано: {unclassified}. "
+            f"Ликвидность не задана: {liquidity_unclassified}. "
             f"Исключено из капитала: {excluded}."
         )
-    return message, "warning" if unclassified else "success"
+    return message, "warning" if unclassified or liquidity_unclassified else "success"
 
 
 def _asset_classification_column_defs(
         locale: str = DEFAULT_LOCALE, *, editable: bool = True) -> list[dict]:
     if config.use_sqlite_storage():
-        from src.data.sqlite_store import asset_types
+        from src.data.sqlite_store import asset_types, liquidity_classes
 
         types = asset_types(config.active_database_path())
+        liquidity = liquidity_classes(config.active_database_path())
     else:
         types = []
+        liquidity = []
     type_labels = {
         UNCLASSIFIED_ASSET_TYPE_VALUE: report_text("Не классифицировано", locale),
         **{
@@ -3002,9 +3018,19 @@ def _asset_classification_column_defs(
             for row in types
         },
     }
+    liquidity_ids = [row["id"] for row in liquidity]
+    unassigned_label = report_text("Не задана", locale)
+    suggested_label = report_text("предложено", locale)
+    manual_label = report_text("вручную", locale)
+    liquidity_formatter = (
+        "params.value === '" + AUTOMATIC_LIQUIDITY_VALUE + "' "
+        f"? (params.data.liquidity_class_id ? params.data.liquidity_class_id + ' · {suggested_label}' "
+        f": '{unassigned_label}') : params.value + ' · {manual_label}'"
+    )
     columns = [
         {"field": "account_id", "hide": True},
-        {"field": "Счет", "headerName": "Счет", "flex": 1, "minWidth": 220},
+        {"field": "Счет", "headerName": "Счет", "flex": 1, "minWidth": 90,
+         "tooltipField": "Счет"},
         {
             "field": "asset_type_id",
             "headerName": "Тип актива",
@@ -3014,15 +3040,31 @@ def _asset_classification_column_defs(
             "valueFormatter": {
                 "function": f"({json.dumps(type_labels, ensure_ascii=False)})[params.value] || params.value"
             },
-            "minWidth": 190,
+            "width": 95,
+            "minWidth": 90,
         },
         {
+            "field": "liquidity_choice",
+            "headerName": "Ликвидность",
+            "editable": editable,
+            "cellEditor": "agSelectCellEditor",
+            "cellEditorParams": {
+                "values": [AUTOMATIC_LIQUIDITY_VALUE, *liquidity_ids],
+            },
+            "valueFormatter": {"function": liquidity_formatter},
+            "width": 112,
+            "minWidth": 105,
+        },
+        {"field": "liquidity_class_id", "hide": True},
+        {"field": "liquidity_source", "hide": True},
+        {
             "field": "Включать в капитал",
-            "headerName": "Включать в капитал",
+            "headerName": "Капитал",
             "editable": editable,
             "cellRenderer": "agCheckboxCellRenderer",
             "cellEditor": "agCheckboxCellEditor",
-            "width": 180,
+            "width": 64,
+            "minWidth": 60,
         },
         {"field": "Снимков", "headerName": "Снимков", "width": 110},
         {"field": "Первый снимок", "headerName": "Первый снимок", "width": 140},
@@ -3419,9 +3461,9 @@ def _debt_transaction_draft_column_defs() -> list[dict]:
 def _asset_input_column_defs() -> list[dict]:
     currencies = list(config.UNIQUE_TICKERS)
     return [
-        {"field": "account", "headerName": "Счет", "editable": True, "flex": 1, "minWidth": 260},
-        {"field": "amount", "headerName": "Сумма", "editable": True, "width": 170},
-        {"field": "currency", "headerName": "Валюта", "editable": True, "cellEditor": "agSelectCellEditor", "cellEditorParams": {"values": currencies}, "width": 120},
+        {"field": "account", "headerName": "Счет", "editable": True, "flex": 1, "minWidth": 132},
+        {"field": "amount", "headerName": "Сумма", "editable": True, "width": 125, "minWidth": 112},
+        {"field": "currency", "headerName": "Валюта", "editable": True, "cellEditor": "agSelectCellEditor", "cellEditorParams": {"values": currencies}, "width": 78, "minWidth": 72},
         {"field": "amount_sort", "hide": True, "sort": "desc", "sortIndex": 0},
     ]
 

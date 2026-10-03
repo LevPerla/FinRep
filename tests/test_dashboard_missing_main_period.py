@@ -80,6 +80,7 @@ def test_missing_selected_month_keeps_main_layout_and_shows_notice():
         "capital",
         "fx_revaluation",
         "asset_currency_allocation",
+        "asset_liquidity_allocation",
         "fx_changes",
         "top_purchases",
     ):
@@ -101,4 +102,3 @@ def test_missing_selected_month_keeps_main_layout_and_shows_notice():
     assert notice is not None
     assert "2026-03" in str(notice.children)
     assert _find_component(layout, "main-metrics-primary") is not None
-

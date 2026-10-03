@@ -31,6 +31,7 @@ from src.data.sqlite_store import (
     create_debt_record,
     fx_rates,
     initialize_database,
+    liquidity_classes,
     link_transaction_source,
     publish_cash_drafts,
     publish_domain_drafts,
@@ -110,15 +111,22 @@ def test_asset_account_classification_preserves_history_and_controls_capital(tmp
         "cash_account", "deposit", "bond", "equity", "fund", "crypto",
         "real_estate", "other",
     }
+    assert [row["id"] for row in liquidity_classes(database)] == ["A1", "A2", "A3", "A4"]
+    assert asset_accounts(database)[0]["liquidity_class_id"] == "A1"
+    assert asset_accounts(database)[0]["liquidity_source"] == "suggested"
     assert len(_get_assets_sqlite_cached(str(database))) == 1
 
     set_asset_account_classification(
         database, "cash-1", asset_type_id="deposit", include_in_capital=False,
+        liquidity_class_override_id="A2",
         reason="Счёт исключён из согласованного капитала")
     _get_assets_sqlite_cached.cache_clear()
 
     account = asset_accounts(database)[0]
     assert account["asset_type_id"] == "deposit"
+    assert account["liquidity_class_override_id"] == "A2"
+    assert account["liquidity_class_id"] == "A2"
+    assert account["liquidity_source"] == "manual"
     assert account["include_in_capital"] == 0
     assert [row["id"] for row in asset_snapshots(database)] == ["snapshot-1"]
     assert _get_assets_sqlite_cached(str(database)).empty
@@ -127,6 +135,13 @@ def test_asset_account_classification_preserves_history_and_controls_capital(tmp
             "SELECT entity_type, action FROM audit_events ORDER BY id DESC LIMIT 1"
         ).fetchone()
     assert tuple(event) == ("asset_account", "classification_changed")
+
+    set_asset_account_classification(
+        database, "cash-1", asset_type_id="real_estate", include_in_capital=True,
+        liquidity_class_override_id="A2", reason="Тип уточнён")
+    account = asset_accounts(database)[0]
+    assert account["liquidity_class_id"] == "A2"
+    assert account["liquidity_source"] == "manual"
 
 
 def test_asset_account_classification_batch_is_atomic_and_skips_unchanged_rows(tmp_path):

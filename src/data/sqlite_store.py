@@ -15,7 +15,7 @@ from src import config
 from src.data.money import parse_money_amount
 
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 _DIRECTIONS = {"income", "expense"}
 _DATASETS = {"cash_transactions", "asset_snapshots"}
 _ASSET_TYPES = (
@@ -27,6 +27,17 @@ _ASSET_TYPES = (
     ("crypto", "Крипто", "Crypto", 60),
     ("real_estate", "Недвижимость", "Real estate", 70),
     ("other", "Другое", "Other", 80),
+)
+_LIQUIDITY_CLASSES = (
+    ("A1", "Наиболее ликвидные активы", "Most liquid assets", "До 1–3 дней", "Up to 1–3 days", 10),
+    ("A2", "Быстрореализуемые активы", "Quickly realizable assets", "До 12 месяцев", "Up to 12 months", 20),
+    ("A3", "Медленно реализуемые активы", "Slowly realizable assets", "Свыше 12 месяцев", "Over 12 months", 30),
+    ("A4", "Труднореализуемые активы", "Hard-to-realize assets", "Обычно не менее 12 месяцев", "Usually at least 12 months", 40),
+)
+_ASSET_TYPE_LIQUIDITY_DEFAULTS = (
+    ("cash_account", "A1"),
+    ("deposit", "A1"),
+    ("real_estate", "A4"),
 )
 _SYSTEM_CATEGORIES = (
     ("income.salary", None, "income", "Зарплата", 1, "active", 10),
@@ -70,6 +81,19 @@ _TABLES = (
         name_en TEXT NOT NULL CHECK (trim(name_en) <> ''),
         active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0, 1)),
         sort_order INTEGER NOT NULL DEFAULT 0
+    ) STRICT""",
+    """CREATE TABLE liquidity_classes (
+        id TEXT PRIMARY KEY CHECK (id IN ('A1', 'A2', 'A3', 'A4')),
+        name_ru TEXT NOT NULL CHECK (trim(name_ru) <> ''),
+        name_en TEXT NOT NULL CHECK (trim(name_en) <> ''),
+        horizon_ru TEXT NOT NULL CHECK (trim(horizon_ru) <> ''),
+        horizon_en TEXT NOT NULL CHECK (trim(horizon_en) <> ''),
+        active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0, 1)),
+        sort_order INTEGER NOT NULL DEFAULT 0
+    ) STRICT""",
+    """CREATE TABLE asset_type_liquidity_defaults (
+        asset_type_id TEXT PRIMARY KEY REFERENCES asset_types(id) ON DELETE CASCADE,
+        liquidity_class_id TEXT NOT NULL REFERENCES liquidity_classes(id) ON DELETE RESTRICT
     ) STRICT""",
     """CREATE TABLE categories (
         id TEXT PRIMARY KEY, parent_id TEXT REFERENCES categories(id) ON DELETE RESTRICT,
@@ -116,6 +140,7 @@ _TABLES = (
         active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0, 1)),
         created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
         asset_type_id TEXT REFERENCES asset_types(id) ON DELETE RESTRICT,
+        liquidity_class_override_id TEXT REFERENCES liquidity_classes(id) ON DELETE RESTRICT,
         include_in_capital INTEGER NOT NULL DEFAULT 1 CHECK (include_in_capital IN (0, 1))
     ) STRICT""",
     """CREATE TABLE asset_snapshots (
@@ -412,9 +437,14 @@ _VIEWS = (
     GROUP BY period, currency_code, flow_direction, category_id, category_name_ru""",
     """CREATE VIEW v_asset_snapshots AS
     SELECT s.id, s.period, s.account_id, a.name AS account_name,
-      a.asset_type_id, a.include_in_capital,
+      a.asset_type_id, a.liquidity_class_override_id,
+      COALESCE(a.liquidity_class_override_id, d.liquidity_class_id) AS liquidity_class_id,
+      CASE WHEN a.liquidity_class_override_id IS NOT NULL THEN 'manual'
+        WHEN d.liquidity_class_id IS NOT NULL THEN 'suggested' ELSE 'unclassified' END AS liquidity_source,
+      a.include_in_capital,
       s.currency_code, s.amount_minor, s.row_version
-    FROM asset_snapshots s JOIN asset_accounts a ON a.id = s.account_id""",
+    FROM asset_snapshots s JOIN asset_accounts a ON a.id = s.account_id
+    LEFT JOIN asset_type_liquidity_defaults d ON d.asset_type_id = a.asset_type_id""",
     """CREATE VIEW v_effective_fx_rates AS
     SELECT id, rate_date, currency_code, usd_per_unit_text, source, fetched_at, sequence
     FROM (SELECT f.*, ROW_NUMBER() OVER (PARTITION BY rate_date, currency_code
@@ -465,7 +495,55 @@ def _migrate_v7_to_v8(connection: sqlite3.Connection) -> None:
     now = _utc_now()
     connection.execute(
         "INSERT INTO schema_migrations VALUES (?, ?, ?, ?)",
-        (SCHEMA_VERSION, "asset_classification", _schema_checksum(), now),
+        (8, "asset_classification", hashlib.sha256(b"asset_classification_v8").hexdigest(), now),
+    )
+    connection.execute("PRAGMA user_version = 8")
+
+
+def _migrate_v8_to_v9(connection: sqlite3.Connection) -> None:
+    account_columns = {
+        row["name"] for row in connection.execute("PRAGMA table_info(asset_accounts)")
+    }
+    expected_columns = {
+        "id", "name", "active", "created_at", "updated_at", "asset_type_id",
+        "include_in_capital",
+    }
+    if account_columns != expected_columns:
+        raise ValueError("SQLite v8 asset_accounts schema does not match the migration contract")
+
+    connection.execute("""CREATE TABLE liquidity_classes (
+        id TEXT PRIMARY KEY CHECK (id IN ('A1', 'A2', 'A3', 'A4')),
+        name_ru TEXT NOT NULL CHECK (trim(name_ru) <> ''),
+        name_en TEXT NOT NULL CHECK (trim(name_en) <> ''),
+        horizon_ru TEXT NOT NULL CHECK (trim(horizon_ru) <> ''),
+        horizon_en TEXT NOT NULL CHECK (trim(horizon_en) <> ''),
+        active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0, 1)),
+        sort_order INTEGER NOT NULL DEFAULT 0
+    ) STRICT""")
+    connection.execute("""CREATE TABLE asset_type_liquidity_defaults (
+        asset_type_id TEXT PRIMARY KEY REFERENCES asset_types(id) ON DELETE CASCADE,
+        liquidity_class_id TEXT NOT NULL REFERENCES liquidity_classes(id) ON DELETE RESTRICT
+    ) STRICT""")
+    connection.executemany(
+        """INSERT INTO liquidity_classes
+          (id, name_ru, name_en, horizon_ru, horizon_en, sort_order)
+          VALUES (?, ?, ?, ?, ?, ?)""",
+        _LIQUIDITY_CLASSES,
+    )
+    connection.executemany(
+        "INSERT INTO asset_type_liquidity_defaults VALUES (?, ?)",
+        _ASSET_TYPE_LIQUIDITY_DEFAULTS,
+    )
+    connection.execute("DROP VIEW v_asset_snapshots")
+    connection.execute(
+        "ALTER TABLE asset_accounts ADD COLUMN liquidity_class_override_id TEXT "
+        "REFERENCES liquidity_classes(id) ON DELETE RESTRICT"
+    )
+    connection.execute(_VIEWS[3])
+    now = _utc_now()
+    connection.execute(
+        "INSERT INTO schema_migrations VALUES (?, ?, ?, ?)",
+        (SCHEMA_VERSION, "asset_liquidity", _schema_checksum(), now),
     )
     connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
 
@@ -510,6 +588,10 @@ def initialize_database(path: str | Path, *, data_mode: str = "synthetic") -> No
             return
         if version == 7:
             _migrate_v7_to_v8(connection)
+            _migrate_v8_to_v9(connection)
+            return
+        if version == 8:
+            _migrate_v8_to_v9(connection)
             return
         has_tables = connection.execute(
             "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' LIMIT 1"
@@ -529,6 +611,16 @@ def initialize_database(path: str | Path, *, data_mode: str = "synthetic") -> No
         connection.executemany(
             "INSERT INTO asset_types (id, name_ru, name_en, sort_order) VALUES (?, ?, ?, ?)",
             _ASSET_TYPES,
+        )
+        connection.executemany(
+            """INSERT INTO liquidity_classes
+              (id, name_ru, name_en, horizon_ru, horizon_en, sort_order)
+              VALUES (?, ?, ?, ?, ?, ?)""",
+            _LIQUIDITY_CLASSES,
+        )
+        connection.executemany(
+            "INSERT INTO asset_type_liquidity_defaults VALUES (?, ?)",
+            _ASSET_TYPE_LIQUIDITY_DEFAULTS,
         )
         connection.executemany("INSERT INTO currencies VALUES (?, 2)", [(code,) for code in sorted(config.UNIQUE_TICKERS)])
         connection.execute("INSERT INTO schema_migrations VALUES (?, ?, ?, ?)",
@@ -1429,16 +1521,32 @@ def asset_types(path: str | Path, *, include_inactive: bool = False) -> list[dic
         return [dict(row) for row in connection.execute(query).fetchall()]
 
 
+def liquidity_classes(path: str | Path, *, include_inactive: bool = False) -> list[dict]:
+    query = "SELECT * FROM liquidity_classes"
+    if not include_inactive:
+        query += " WHERE active = 1"
+    query += " ORDER BY sort_order, id"
+    with connect_database(path) as connection:
+        return [dict(row) for row in connection.execute(query).fetchall()]
+
+
 def asset_accounts(path: str | Path) -> list[dict]:
     with connect_database(path) as connection:
         rows = connection.execute("""SELECT a.id, a.name, a.active, a.asset_type_id,
             t.name_ru AS asset_type_name_ru, t.name_en AS asset_type_name_en,
+            a.liquidity_class_override_id,
+            COALESCE(a.liquidity_class_override_id, d.liquidity_class_id) AS liquidity_class_id,
+            CASE WHEN a.liquidity_class_override_id IS NOT NULL THEN 'manual'
+              WHEN d.liquidity_class_id IS NOT NULL THEN 'suggested'
+              ELSE 'unclassified' END AS liquidity_source,
             a.include_in_capital, a.created_at, a.updated_at,
             COUNT(s.id) AS snapshot_count, MIN(s.period) AS first_period,
             MAX(s.period) AS last_period
             FROM asset_accounts a LEFT JOIN asset_types t ON t.id = a.asset_type_id
+            LEFT JOIN asset_type_liquidity_defaults d ON d.asset_type_id = a.asset_type_id
             LEFT JOIN asset_snapshots s ON s.account_id = a.id
             GROUP BY a.id, a.name, a.active, a.asset_type_id, t.name_ru, t.name_en,
+              a.liquidity_class_override_id, d.liquidity_class_id,
               a.include_in_capital, a.created_at, a.updated_at
             ORDER BY a.name, a.id""").fetchall()
     return [dict(row) for row in rows]
@@ -1447,12 +1555,14 @@ def asset_accounts(path: str | Path) -> list[dict]:
 def set_asset_account_classification(path: str | Path, account_id: str, *,
                                      asset_type_id: str | None,
                                      include_in_capital: bool,
-                                     reason: str) -> None:
+                                     reason: str,
+                                     liquidity_class_override_id: str | None = None) -> None:
     set_asset_account_classifications(
         path,
         [{
             "account_id": account_id,
             "asset_type_id": asset_type_id,
+            "liquidity_class_override_id": liquidity_class_override_id,
             "include_in_capital": include_in_capital,
         }],
         reason=reason,
@@ -1468,6 +1578,8 @@ def set_asset_account_classifications(path: str | Path, rows: list[dict], *,
     for row in rows:
         account_id = str(row.get("account_id", "")).strip()
         asset_type_id = str(row.get("asset_type_id") or "").strip() or None
+        liquidity_override = str(
+            row.get("liquidity_class_override_id") or "").strip() or None
         include_in_capital = row.get("include_in_capital")
         if not account_id:
             raise ValueError("asset account ID is required")
@@ -1476,7 +1588,7 @@ def set_asset_account_classifications(path: str | Path, rows: list[dict], *,
         if not isinstance(include_in_capital, bool):
             raise ValueError("include_in_capital must be boolean")
         seen.add(account_id)
-        normalized.append((account_id, asset_type_id, include_in_capital))
+        normalized.append((account_id, asset_type_id, liquidity_override, include_in_capital))
 
     updated = 0
     with connect_database(path, writable=True) as connection:
@@ -1484,8 +1596,12 @@ def set_asset_account_classifications(path: str | Path, rows: list[dict], *,
             row["id"] for row in connection.execute(
                 "SELECT id FROM asset_types WHERE active = 1").fetchall()
         }
+        active_liquidity_classes = {
+            row["id"] for row in connection.execute(
+                "SELECT id FROM liquidity_classes WHERE active = 1").fetchall()
+        }
         current = {}
-        for account_id, asset_type_id, _include in normalized:
+        for account_id, asset_type_id, liquidity_override, _include in normalized:
             account = connection.execute(
                 "SELECT * FROM asset_accounts WHERE id = ?", (account_id,)
             ).fetchone()
@@ -1493,19 +1609,24 @@ def set_asset_account_classifications(path: str | Path, rows: list[dict], *,
                 raise ValueError("unknown asset account")
             if asset_type_id is not None and asset_type_id not in active_types:
                 raise ValueError("asset type must be active")
+            if (liquidity_override is not None
+                    and liquidity_override not in active_liquidity_classes):
+                raise ValueError("liquidity class must be active")
             current[account_id] = account
 
         now = _utc_now()
-        for account_id, asset_type_id, include_in_capital in normalized:
+        for account_id, asset_type_id, liquidity_override, include_in_capital in normalized:
             before = current[account_id]
             included = int(include_in_capital)
-            if (before["asset_type_id"], before["include_in_capital"]) == (
-                    asset_type_id, included):
+            if (before["asset_type_id"], before["liquidity_class_override_id"],
+                    before["include_in_capital"]) == (
+                    asset_type_id, liquidity_override, included):
                 continue
             connection.execute(
-                """UPDATE asset_accounts SET asset_type_id = ?, include_in_capital = ?,
+                """UPDATE asset_accounts SET asset_type_id = ?,
+                  liquidity_class_override_id = ?, include_in_capital = ?,
                   updated_at = ? WHERE id = ?""",
-                (asset_type_id, included, now, account_id),
+                (asset_type_id, liquidity_override, included, now, account_id),
             )
             after = connection.execute(
                 "SELECT * FROM asset_accounts WHERE id = ?", (account_id,)

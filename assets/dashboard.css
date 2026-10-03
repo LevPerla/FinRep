@@ -1198,6 +1198,43 @@ body {
     min-width: 760px;
   }
 
+  #assets-input-grid.finrep-ag-grid,
+  #asset-classification-grid.finrep-ag-grid {
+    min-width: 100%;
+  }
+
+  .finrep-assets-header {
+    flex-direction: column;
+    align-items: flex-start !important;
+    gap: 12px;
+  }
+
+  .finrep-assets-header > h2 {
+    width: 100%;
+  }
+
+  .finrep-assets-actions {
+    display: grid !important;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    width: 100%;
+    gap: 8px !important;
+  }
+
+  .finrep-assets-actions .btn {
+    width: 100%;
+    min-height: 42px;
+  }
+
+  .finrep-asset-classification-header {
+    flex-direction: column;
+    align-items: stretch !important;
+  }
+
+  .finrep-asset-classification-header .btn {
+    width: 100%;
+    min-height: 42px;
+  }
+
   .finrep-grid-scroll .ag-cell,
   .finrep-grid-scroll .ag-header-cell-label {
     white-space: nowrap;

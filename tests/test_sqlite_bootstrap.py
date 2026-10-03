@@ -31,7 +31,10 @@ def _create_v7_database(path: Path) -> None:
     with sqlite3.connect(path) as connection:
         connection.execute("PRAGMA foreign_keys = ON")
         for statement in sqlite_store._TABLES:
-            if statement.startswith("CREATE TABLE asset_types"):
+            if statement.startswith((
+                    "CREATE TABLE asset_types",
+                    "CREATE TABLE liquidity_classes",
+                    "CREATE TABLE asset_type_liquidity_defaults")):
                 continue
             connection.execute(
                 old_accounts if statement.startswith("CREATE TABLE asset_accounts")
@@ -54,6 +57,14 @@ def _create_v7_database(path: Path) -> None:
             (id, account_id, period, currency_code, amount_minor, created_at, updated_at)
             VALUES ('snapshot-1', 'account-1', '2026-09', 'RUB', 12345, 'now', 'now')""")
         connection.execute("PRAGMA user_version = 7")
+
+
+def _create_v8_database(path: Path) -> None:
+    _create_v7_database(path)
+    with sqlite3.connect(path) as connection:
+        connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA foreign_keys = ON")
+        sqlite_store._migrate_v7_to_v8(connection)
 
 
 def test_sqlite_is_the_default_backend(monkeypatch):
@@ -131,10 +142,34 @@ def test_v7_database_is_backed_up_and_upgraded_without_guessing_asset_types(
         ).fetchone() == (None, 1)
         assert connection.execute("SELECT COUNT(*) FROM asset_snapshots").fetchone()[0] == 1
         assert connection.execute("SELECT COUNT(*) FROM asset_types").fetchone()[0] == 8
+        assert connection.execute("SELECT COUNT(*) FROM liquidity_classes").fetchone()[0] == 4
         assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
     with sqlite3.connect(backup) as connection:
         assert connection.execute("PRAGMA user_version").fetchone()[0] == 7
         assert connection.execute("SELECT COUNT(*) FROM asset_snapshots").fetchone()[0] == 1
+
+
+def test_v8_database_is_backed_up_and_upgraded_with_liquidity_defaults(
+        monkeypatch, tmp_path):
+    database = _use_default_sqlite(monkeypatch, tmp_path / "data")
+    _create_v8_database(database)
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "UPDATE asset_accounts SET asset_type_id = 'cash_account' WHERE id = 'account-1'")
+
+    assert ensure_default_live_database() == "upgraded"
+    backup = database.with_name(f"{database.stem}.pre-v{SCHEMA_VERSION}{database.suffix}")
+
+    with sqlite3.connect(database) as connection:
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
+        assert connection.execute(
+            "SELECT liquidity_class_override_id FROM asset_accounts").fetchone()[0] is None
+        assert connection.execute(
+            "SELECT liquidity_class_id, liquidity_source FROM v_asset_snapshots"
+        ).fetchone() == ("A1", "suggested")
+        assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
+    with sqlite3.connect(backup) as connection:
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 8
 
 
 def test_concurrent_first_start_publishes_one_database(monkeypatch, tmp_path):

@@ -48,6 +48,9 @@ def test_assets_input_shows_account_classification_with_history_context(tmp_path
         "account_id": "account-1",
         "Счет": "Основной счёт",
         "asset_type_id": "__unclassified__",
+        "liquidity_choice": "__automatic__",
+        "liquidity_class_id": "",
+        "liquidity_source": "unclassified",
         "Включать в капитал": True,
         "Снимков": 1,
         "Первый снимок": "2026-09",
@@ -58,7 +61,12 @@ def test_assets_input_shows_account_classification_with_history_context(tmp_path
     assert type_column["editable"] is True
     assert type_column["cellEditorParams"]["values"][0] == "__unclassified__"
     assert "deposit" in type_column["cellEditorParams"]["values"]
+    liquidity_column = next(
+        column for column in grid.columnDefs if column["field"] == "liquidity_choice")
+    assert liquidity_column["cellEditorParams"]["values"] == [
+        "__automatic__", "A1", "A2", "A3", "A4"]
     assert "Не классифицировано: 1" in message.children
+    assert "Ликвидность не задана: 1" in message.children
     assert snapshot_grid.style["height"] == "220px"
     assert grid.style["height"] == "220px"
 
@@ -90,6 +98,9 @@ def test_asset_classification_callback_saves_all_rows_and_refreshes_capital(
             "account_id": "account-1",
             "Счет": "Основной счёт",
             "asset_type_id": "deposit",
+            "liquidity_choice": "A2",
+            "liquidity_class_id": "",
+            "liquidity_source": "unclassified",
             "Включать в капитал": False,
             "Снимков": 0,
             "Первый снимок": "",
@@ -119,4 +130,7 @@ def test_asset_classification_callback_saves_all_rows_and_refreshes_capital(
     assert "Обновлено счетов: 1" in result["asset-classification-message"]["children"]
     account = asset_accounts(database)[0]
     assert account["asset_type_id"] == "deposit"
+    assert account["liquidity_class_override_id"] == "A2"
+    assert account["liquidity_class_id"] == "A2"
+    assert account["liquidity_source"] == "manual"
     assert account["include_in_capital"] == 0
