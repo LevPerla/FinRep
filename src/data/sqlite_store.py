@@ -1433,8 +1433,13 @@ def asset_accounts(path: str | Path) -> list[dict]:
     with connect_database(path) as connection:
         rows = connection.execute("""SELECT a.id, a.name, a.active, a.asset_type_id,
             t.name_ru AS asset_type_name_ru, t.name_en AS asset_type_name_en,
-            a.include_in_capital, a.created_at, a.updated_at
+            a.include_in_capital, a.created_at, a.updated_at,
+            COUNT(s.id) AS snapshot_count, MIN(s.period) AS first_period,
+            MAX(s.period) AS last_period
             FROM asset_accounts a LEFT JOIN asset_types t ON t.id = a.asset_type_id
+            LEFT JOIN asset_snapshots s ON s.account_id = a.id
+            GROUP BY a.id, a.name, a.active, a.asset_type_id, t.name_ru, t.name_en,
+              a.include_in_capital, a.created_at, a.updated_at
             ORDER BY a.name, a.id""").fetchall()
     return [dict(row) for row in rows]
 
@@ -1443,35 +1448,76 @@ def set_asset_account_classification(path: str | Path, account_id: str, *,
                                      asset_type_id: str | None,
                                      include_in_capital: bool,
                                      reason: str) -> None:
+    set_asset_account_classifications(
+        path,
+        [{
+            "account_id": account_id,
+            "asset_type_id": asset_type_id,
+            "include_in_capital": include_in_capital,
+        }],
+        reason=reason,
+    )
+
+
+def set_asset_account_classifications(path: str | Path, rows: list[dict], *,
+                                      reason: str) -> dict:
     if not reason.strip():
         raise ValueError("change reason is required")
+    normalized = []
+    seen = set()
+    for row in rows:
+        account_id = str(row.get("account_id", "")).strip()
+        asset_type_id = str(row.get("asset_type_id") or "").strip() or None
+        include_in_capital = row.get("include_in_capital")
+        if not account_id:
+            raise ValueError("asset account ID is required")
+        if account_id in seen:
+            raise ValueError("asset account classification contains a duplicate account")
+        if not isinstance(include_in_capital, bool):
+            raise ValueError("include_in_capital must be boolean")
+        seen.add(account_id)
+        normalized.append((account_id, asset_type_id, include_in_capital))
+
+    updated = 0
     with connect_database(path, writable=True) as connection:
-        before = connection.execute(
-            "SELECT * FROM asset_accounts WHERE id = ?", (account_id,)
-        ).fetchone()
-        if before is None:
-            raise ValueError("unknown asset account")
-        if asset_type_id is not None:
-            asset_type = connection.execute(
-                "SELECT active FROM asset_types WHERE id = ?", (asset_type_id,)
+        active_types = {
+            row["id"] for row in connection.execute(
+                "SELECT id FROM asset_types WHERE active = 1").fetchall()
+        }
+        current = {}
+        for account_id, asset_type_id, _include in normalized:
+            account = connection.execute(
+                "SELECT * FROM asset_accounts WHERE id = ?", (account_id,)
             ).fetchone()
-            if asset_type is None or not asset_type["active"]:
+            if account is None:
+                raise ValueError("unknown asset account")
+            if asset_type_id is not None and asset_type_id not in active_types:
                 raise ValueError("asset type must be active")
+            current[account_id] = account
+
         now = _utc_now()
-        connection.execute(
-            """UPDATE asset_accounts SET asset_type_id = ?, include_in_capital = ?,
-              updated_at = ? WHERE id = ?""",
-            (asset_type_id, int(bool(include_in_capital)), now, account_id),
-        )
-        after = connection.execute(
-            "SELECT * FROM asset_accounts WHERE id = ?", (account_id,)
-        ).fetchone()
-        connection.execute("""INSERT INTO audit_events
-            (entity_type, entity_id, action, before_json, after_json, reason, occurred_at)
-            VALUES ('asset_account', ?, 'classification_changed', ?, ?, ?, ?)""",
-            (account_id, json.dumps(dict(before), ensure_ascii=False, sort_keys=True),
-             json.dumps(dict(after), ensure_ascii=False, sort_keys=True),
-             reason.strip(), now))
+        for account_id, asset_type_id, include_in_capital in normalized:
+            before = current[account_id]
+            included = int(include_in_capital)
+            if (before["asset_type_id"], before["include_in_capital"]) == (
+                    asset_type_id, included):
+                continue
+            connection.execute(
+                """UPDATE asset_accounts SET asset_type_id = ?, include_in_capital = ?,
+                  updated_at = ? WHERE id = ?""",
+                (asset_type_id, included, now, account_id),
+            )
+            after = connection.execute(
+                "SELECT * FROM asset_accounts WHERE id = ?", (account_id,)
+            ).fetchone()
+            connection.execute("""INSERT INTO audit_events
+                (entity_type, entity_id, action, before_json, after_json, reason, occurred_at)
+                VALUES ('asset_account', ?, 'classification_changed', ?, ?, ?, ?)""",
+                (account_id, json.dumps(dict(before), ensure_ascii=False, sort_keys=True),
+                 json.dumps(dict(after), ensure_ascii=False, sort_keys=True),
+                 reason.strip(), now))
+            updated += 1
+    return {"submitted": len(normalized), "updated": updated}
 
 
 def add_asset_snapshot(path: str | Path, *, snapshot_id: str, account_id: str,

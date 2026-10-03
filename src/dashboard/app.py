@@ -83,6 +83,7 @@ DEFAULT_CURRENCY = "RUB"
 DEFAULT_YEAR = datetime.now().strftime("%Y")
 DEFAULT_MONTH = datetime.now().strftime("%m")
 DEFAULT_FX_NETWORK_ENABLED = False
+UNCLASSIFIED_ASSET_TYPE_VALUE = "__unclassified__"
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 ASSETS_FOLDER = PROJECT_ROOT / "assets"
 logger = logging.getLogger(__name__)
@@ -1635,6 +1636,53 @@ def register_callbacks(app: Dash) -> None:
         except Exception as exc:
             return row_data or [], report_text(str(exc), locale), "danger"
 
+    @app.callback(
+        Output("asset-classification-message", "children"),
+        Output("asset-classification-message", "color"),
+        Output("asset-classification-grid", "rowData"),
+        Input("asset-classification-save-button", "n_clicks", allow_optional=True),
+        State("asset-classification-grid", "rowData", allow_optional=True),
+        State("dashboard-locale", "data"),
+        prevent_initial_call=True,
+    )
+    def save_asset_classification(save_clicks, rows, locale):
+        if not save_clicks:
+            raise PreventUpdate
+        try:
+            config.require_writable_mode()
+            if not config.use_sqlite_storage():
+                raise ValueError("Классификация активов доступна в режиме SQLite.")
+            from src.data.sqlite_store import set_asset_account_classifications
+
+            result = set_asset_account_classifications(
+                config.active_database_path(),
+                [
+                    {
+                        "account_id": row.get("account_id"),
+                        "asset_type_id": (
+                            None if row.get("asset_type_id") == UNCLASSIFIED_ASSET_TYPE_VALUE
+                            else row.get("asset_type_id") or None
+                        ),
+                        "include_in_capital": row.get("Включать в капитал"),
+                    }
+                    for row in (rows or [])
+                ],
+                reason="asset classification updated from dashboard",
+            )
+            clear_data_cache()
+            clear_table_cache()
+            clear_main_dashboard_cache()
+            refreshed_rows = _asset_classification_rows(locale)
+            status, color = _asset_classification_status(refreshed_rows, locale)
+            saved = (
+                f"Updated accounts: {result['updated']}. "
+                if normalize_locale(locale) == "en"
+                else f"Обновлено счетов: {result['updated']}. "
+            )
+            return saved + status, color, refreshed_rows
+        except Exception as exc:
+            return report_text(str(exc), locale), "danger", no_update
+
 
 def _ag_grid_changed_column(change_event, column_name: str) -> bool:
     if not change_event:
@@ -2787,6 +2835,10 @@ def _debt_input_layout(currency: str, theme: str | None, include_create: bool = 
 def _assets_input_layout(year: str, month: str, theme: str | None, load_records: bool = True, read_only: bool = False, locale: str = DEFAULT_LOCALE):
     records = _asset_input_records(year, month) if load_records else []
     message, message_color = _asset_input_status(year, month, locale)
+    classification_rows = _asset_classification_rows(locale) if load_records else []
+    classification_message, classification_color = _asset_classification_status(
+        classification_rows, locale)
+    classification_read_only = read_only or not config.use_sqlite_storage()
     return html.Div(
         [
             html.Section(
@@ -2821,7 +2873,65 @@ def _assets_input_layout(year: str, month: str, theme: str | None, load_records:
                             defaultColDef=_ag_grid_default_col_def(editable=not read_only),
                             dashGridOptions={"pagination": False, "suppressFieldDotNotation": True, "rowSelection": "multiple", "stopEditingWhenCellsLoseFocus": True, "undoRedoCellEditing": True},
                             className=_ag_grid_class_name(theme),
-                            style=_ag_grid_style("920px"),
+                            style=_ag_grid_style(_asset_grid_height(len(records), maximum=920)),
+                        )
+                    ),
+                ],
+                style=_section_style(theme),
+            ),
+            html.Section(
+                [
+                    html.Div(
+                        [
+                            html.Div(
+                                [
+                                    html.H2(
+                                        report_text("Классификация активов", locale),
+                                        className="h5 mb-1",
+                                    ),
+                                    html.P(
+                                        report_text(
+                                            "Для брокерского счёта снимок содержит только свободные деньги; бумаги и криптоактивы учитываются отдельно.",
+                                            locale,
+                                        ),
+                                        className="small mb-0",
+                                        style={"color": "var(--finrep-muted)"},
+                                    ),
+                                ]
+                            ),
+                            dbc.Button(
+                                report_text("Сохранить классификацию", locale),
+                                id="asset-classification-save-button",
+                                color="primary",
+                                size="sm",
+                                disabled=classification_read_only,
+                            ),
+                        ],
+                        className="d-flex flex-wrap justify-content-between align-items-start gap-3 mb-3",
+                    ),
+                    dbc.Alert(
+                        id="asset-classification-message",
+                        children=classification_message,
+                        color=classification_color,
+                        is_open=True,
+                        className="mb-3 py-2",
+                    ),
+                    _ag_grid_scroll(
+                        dag.AgGrid(
+                            id="asset-classification-grid",
+                            rowData=classification_rows,
+                            columnDefs=_asset_classification_column_defs(
+                                locale, editable=not classification_read_only),
+                            defaultColDef=_ag_grid_default_col_def(),
+                            dashGridOptions={
+                                "pagination": False,
+                                "suppressFieldDotNotation": True,
+                                "stopEditingWhenCellsLoseFocus": True,
+                                "undoRedoCellEditing": True,
+                            },
+                            className=_ag_grid_class_name(theme),
+                            style=_ag_grid_style(
+                                _asset_grid_height(len(classification_rows), maximum=560)),
                         )
                     ),
                 ],
@@ -2830,6 +2940,95 @@ def _assets_input_layout(year: str, month: str, theme: str | None, load_records:
         ],
         className="d-grid gap-4 pt-3",
     )
+
+
+def _asset_grid_height(row_count: int, *, maximum: int) -> str:
+    return f"{min(maximum, max(220, 64 + row_count * 42))}px"
+
+
+def _asset_classification_rows(locale: str = DEFAULT_LOCALE) -> list[dict]:
+    if not config.use_sqlite_storage():
+        return []
+    from src.data.sqlite_store import asset_accounts
+
+    return [
+        {
+            "account_id": row["id"],
+            "Счет": row["name"],
+            "asset_type_id": row["asset_type_id"] or UNCLASSIFIED_ASSET_TYPE_VALUE,
+            "Включать в капитал": bool(row["include_in_capital"]),
+            "Снимков": row["snapshot_count"],
+            "Первый снимок": row["first_period"] or "",
+            "Последний снимок": row["last_period"] or "",
+        }
+        for row in asset_accounts(config.active_database_path())
+    ]
+
+
+def _asset_classification_status(rows: list[dict], locale: str = DEFAULT_LOCALE) -> tuple[str, str]:
+    if not config.use_sqlite_storage():
+        return report_text("Классификация активов доступна в режиме SQLite.", locale), "secondary"
+    total = len(rows)
+    unclassified = sum(
+        row.get("asset_type_id") in {None, "", UNCLASSIFIED_ASSET_TYPE_VALUE}
+        for row in rows
+    )
+    excluded = sum(not row.get("Включать в капитал", True) for row in rows)
+    if normalize_locale(locale) == "en":
+        message = (
+            f"Accounts: {total}. Unclassified: {unclassified}. "
+            f"Excluded from capital: {excluded}."
+        )
+    else:
+        message = (
+            f"Счетов: {total}. Не классифицировано: {unclassified}. "
+            f"Исключено из капитала: {excluded}."
+        )
+    return message, "warning" if unclassified else "success"
+
+
+def _asset_classification_column_defs(
+        locale: str = DEFAULT_LOCALE, *, editable: bool = True) -> list[dict]:
+    if config.use_sqlite_storage():
+        from src.data.sqlite_store import asset_types
+
+        types = asset_types(config.active_database_path())
+    else:
+        types = []
+    type_labels = {
+        UNCLASSIFIED_ASSET_TYPE_VALUE: report_text("Не классифицировано", locale),
+        **{
+            row["id"]: row["name_en"] if normalize_locale(locale) == "en" else row["name_ru"]
+            for row in types
+        },
+    }
+    columns = [
+        {"field": "account_id", "hide": True},
+        {"field": "Счет", "headerName": "Счет", "flex": 1, "minWidth": 220},
+        {
+            "field": "asset_type_id",
+            "headerName": "Тип актива",
+            "editable": editable,
+            "cellEditor": "agSelectCellEditor",
+            "cellEditorParams": {"values": list(type_labels)},
+            "valueFormatter": {
+                "function": f"({json.dumps(type_labels, ensure_ascii=False)})[params.value] || params.value"
+            },
+            "minWidth": 190,
+        },
+        {
+            "field": "Включать в капитал",
+            "headerName": "Включать в капитал",
+            "editable": editable,
+            "cellRenderer": "agCheckboxCellRenderer",
+            "cellEditor": "agCheckboxCellEditor",
+            "width": 180,
+        },
+        {"field": "Снимков", "headerName": "Снимков", "width": 110},
+        {"field": "Первый снимок", "headerName": "Первый снимок", "width": 140},
+        {"field": "Последний снимок", "headerName": "Последний снимок", "width": 150},
+    ]
+    return _localized_input_column_defs(columns, locale)
 
 def _dataframe_records(data: pd.DataFrame) -> list[dict]:
     if data.empty:

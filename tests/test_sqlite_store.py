@@ -48,6 +48,7 @@ from src.data.sqlite_store import (
     saved_asset_months,
     saved_months,
     set_asset_account_classification,
+    set_asset_account_classifications,
     set_category_active,
     transaction_drafts_snapshot,
     update_cash_drafts,
@@ -126,6 +127,54 @@ def test_asset_account_classification_preserves_history_and_controls_capital(tmp
             "SELECT entity_type, action FROM audit_events ORDER BY id DESC LIMIT 1"
         ).fetchone()
     assert tuple(event) == ("asset_account", "classification_changed")
+
+
+def test_asset_account_classification_batch_is_atomic_and_skips_unchanged_rows(tmp_path):
+    database = tmp_path / "synthetic.sqlite3"
+    initialize_database(database)
+    add_asset_account(database, "account-1", "Счёт 1")
+    add_asset_account(database, "account-2", "Счёт 2")
+
+    with pytest.raises(ValueError, match="unknown asset account"):
+        set_asset_account_classifications(
+            database,
+            [
+                {"account_id": "account-1", "asset_type_id": "deposit",
+                 "include_in_capital": True},
+                {"account_id": "missing", "asset_type_id": "other",
+                 "include_in_capital": False},
+            ],
+            reason="bulk edit",
+        )
+    assert {row["asset_type_id"] for row in asset_accounts(database)} == {None}
+
+    first = set_asset_account_classifications(
+        database,
+        [
+            {"account_id": "account-1", "asset_type_id": "deposit",
+             "include_in_capital": True},
+            {"account_id": "account-2", "asset_type_id": None,
+             "include_in_capital": False},
+        ],
+        reason="bulk edit",
+    )
+    second = set_asset_account_classifications(
+        database,
+        [
+            {"account_id": "account-1", "asset_type_id": "deposit",
+             "include_in_capital": True},
+            {"account_id": "account-2", "asset_type_id": None,
+             "include_in_capital": False},
+        ],
+        reason="bulk retry",
+    )
+
+    assert first == {"submitted": 2, "updated": 2}
+    assert second == {"submitted": 2, "updated": 0}
+    with connect_database(database) as connection:
+        assert connection.execute(
+            "SELECT COUNT(*) FROM audit_events WHERE entity_type = 'asset_account'"
+        ).fetchone()[0] == 2
 
 
 def test_user_category_lifecycle_preserves_historical_assignment(tmp_path):
