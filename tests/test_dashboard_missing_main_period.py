@@ -61,7 +61,15 @@ def test_missing_selected_month_does_not_reuse_latest_month_metrics():
 
 
 def test_missing_selected_month_keeps_main_layout_and_shows_notice():
-    raw_metrics = _cockpit_metrics(_balance(), "RUB", "2026", "03")
+    freshness = {
+        "has_warning": True,
+        "stale_count": 1,
+        "missing_count": 0,
+        "stale_accounts": ["Депозит"],
+        "missing_accounts": [],
+    }
+    raw_metrics = _cockpit_metrics(
+        _balance(), "RUB", "2026", "03", asset_freshness=freshness)
     display_metrics = _format_cockpit_metrics(raw_metrics, "RUB")
     datasets = {
         "cockpit_metrics": DashboardDataset(
@@ -101,4 +109,7 @@ def test_missing_selected_month_keeps_main_layout_and_shows_notice():
     notice = _find_component(layout, "main-missing-month-notice")
     assert notice is not None
     assert "2026-03" in str(notice.children)
+    freshness_notice = _find_component(layout, "main-asset-freshness-notice")
+    assert freshness_notice is not None
+    assert "Депозит" in str(freshness_notice.children)
     assert _find_component(layout, "main-metrics-primary") is not None

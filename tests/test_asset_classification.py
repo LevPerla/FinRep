@@ -1,3 +1,5 @@
+from datetime import date
+
 from src import config
 from src.data.get import clear_data_cache
 from src.data.sqlite_store import (
@@ -34,28 +36,32 @@ def test_assets_input_shows_account_classification_with_history_context(tmp_path
     database = tmp_path / "finrep.sqlite3"
     initialize_database(database)
     add_asset_account(database, "account-1", "Основной счёт")
+    current_period = date.today().strftime("%Y-%m")
     add_asset_snapshot(
         database, snapshot_id="snapshot-1", account_id="account-1",
-        period="2026-09", amount="100", currency="RUB")
+        period=current_period, amount="100", currency="RUB")
     _use_live_sqlite(monkeypatch, database)
 
-    layout = _assets_input_layout("2026", "09", "dark")
+    year, month = current_period.split("-")
+    layout = _assets_input_layout(year, month, "dark")
     grid = _component(layout, "asset-classification-grid")
     snapshot_grid = _component(layout, "assets-input-grid")
     message = _component(layout, "asset-classification-message")
 
-    assert grid.rowData == [{
-        "account_id": "account-1",
-        "Счет": "Основной счёт",
-        "asset_type_id": "__unclassified__",
-        "liquidity_choice": "__automatic__",
-        "liquidity_class_id": "",
-        "liquidity_source": "unclassified",
-        "Включать в капитал": True,
-        "Снимков": 1,
-        "Первый снимок": "2026-09",
-        "Последний снимок": "2026-09",
-    }]
+    assert len(grid.rowData) == 1
+    row = grid.rowData[0]
+    assert row["account_id"] == "account-1"
+    assert row["Счет"] == "Основной счёт"
+    assert row["asset_type_id"] == "__unclassified__"
+    assert row["liquidity_choice"] == "__automatic__"
+    assert row["liquidity_class_id"] == ""
+    assert row["liquidity_source"] == "unclassified"
+    assert row["Включать в капитал"] is True
+    assert row["freshness_status"] == "fresh"
+    assert row["Актуальность"].startswith("Актуально · ")
+    assert row["Снимков"] == 1
+    assert row["Первый снимок"] == current_period
+    assert row["Последний снимок"] == current_period
     type_column = next(
         column for column in grid.columnDefs if column["field"] == "asset_type_id")
     assert type_column["editable"] is True
@@ -67,6 +73,7 @@ def test_assets_input_shows_account_classification_with_history_context(tmp_path
         "__automatic__", "A1", "A2", "A3", "A4"]
     assert "Не классифицировано: 1" in message.children
     assert "Ликвидность не задана: 1" in message.children
+    assert "Устаревших оценок: 0" in message.children
     assert snapshot_grid.style["height"] == "220px"
     assert grid.style["height"] == "220px"
 

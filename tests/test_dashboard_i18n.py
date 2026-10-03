@@ -234,6 +234,14 @@ def test_report_text_handles_dynamic_copy_and_russian_fallback():
     assert report_text("Топ-15 самых больших покупок за 2026 год", "en") == "Top 15 largest purchases in 2026"
     assert report_text("2026-05: доход минус расход", "en") == "2026-05: income minus expenses"
     assert report_text("USD укрепляется на 10% к остальным валютам", "en") == "USD strengthens by 10% against other currencies"
+    assert report_text(
+        "Последний доступный снимок активов; данные на 2026-09; "
+        "устаревших оценок: 1, без даты: 0",
+        "en",
+    ) == (
+        "Latest available asset snapshot; data as of 2026-09; "
+        "stale valuations: 1, unknown date: 0"
+    )
     assert report_text("Нет курса EUR → RUB на 2026-09-30. Зависимый итог недоступен.", "en") == (
         "No EUR → RUB rate is available for 2026-09-30. The dependent total is unavailable."
     )

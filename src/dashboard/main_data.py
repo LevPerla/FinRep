@@ -9,7 +9,11 @@ from src.data.get import get_assets, get_transactions
 from src.data.exchange_rates_info import get_exchange_rates_info
 from src.data.get_finance import fx_network_mode, get_fx_rates, require_fx_rate
 from src.data.proccess import convert_transaction
-from src.model.create_tables import asset_valuation_dates, get_balance_by_month
+from src.model.create_tables import (
+    asset_valuation_dates,
+    carry_forward_asset_snapshots,
+    get_balance_by_month,
+)
 
 
 CHART_FONT_SIZE = 13
@@ -37,6 +41,7 @@ COCKPIT_STATUS_LABELS = {
     "watch": "Стоит проверить",
     "thin": "Низкий уровень",
     "review": "Требует сверки",
+    "stale": "Оценки устарели",
 }
 
 
@@ -76,7 +81,9 @@ def _build_main_dashboard_data(
 
     balance = get_balance_by_month(currency)
 
-    cockpit_metrics = _cockpit_metrics(balance, currency, year, month)
+    asset_freshness = _current_asset_freshness()
+    cockpit_metrics = _cockpit_metrics(
+        balance, currency, year, month, asset_freshness=asset_freshness)
     yearly_stats = _create_yearly_stats(balance)
     income_expense = balance[["Доход", "Расход"]].reset_index()
     delta = balance[["Дельта"]].reset_index()
@@ -173,6 +180,7 @@ def _cockpit_metrics(
     currency: str,
     year: str | None,
     month: str | None,
+    asset_freshness: dict | None = None,
 ) -> pd.DataFrame:
     columns = ["ID", "Показатель", "Значение", "Статус", "Детали", "Тип"]
     if balance.empty:
@@ -194,6 +202,16 @@ def _cockpit_metrics(
         capital_label = "Капитал по денежному потоку"
         capital_detail = "Накопленный денежный поток за доступную историю"
         runway_label = "Финансовый запас по денежному потоку"
+
+    freshness_warning = bool(
+        capital_source == "assets" and asset_freshness
+        and asset_freshness.get("has_warning"))
+    freshness_detail = ""
+    if freshness_warning:
+        freshness_detail = (
+            f"; устаревших оценок: {asset_freshness['stale_count']}, "
+            f"без даты: {asset_freshness['missing_count']}"
+        )
 
     income = _row_number(selected_row, "Доход") if selected_period_available else pd.NA
     expense = _row_number(selected_row, "Расход") if selected_period_available else pd.NA
@@ -238,8 +256,8 @@ def _cockpit_metrics(
             "capital",
             capital_label,
             current_capital,
-            capital_source,
-            f"{capital_detail}{latest_period_suffix}",
+            "stale" if freshness_warning else capital_source,
+            f"{capital_detail}{latest_period_suffix}{freshness_detail}",
             "money",
         ),
         (
@@ -279,7 +297,8 @@ def _cockpit_metrics(
             runway_label,
             runway_months,
             _runway_status(runway_months),
-            f"{capital_label} / средний расход за последние 12 месяцев{latest_period_suffix}",
+            f"{capital_label} / средний расход за последние 12 месяцев"
+            f"{latest_period_suffix}{freshness_detail}",
             "months",
         ),
         (
@@ -303,7 +322,17 @@ def _cockpit_metrics(
     result.attrs["selected_period"] = period_label
     result.attrs["selected_period_available"] = selected_period_available
     result.attrs["latest_period"] = str(latest_period)
+    result.attrs["asset_freshness"] = asset_freshness
     return result
+
+
+def _current_asset_freshness() -> dict | None:
+    if not config.use_sqlite_storage():
+        return None
+    from src.data.asset_freshness import evaluate_asset_freshness
+    from src.data.sqlite_store import asset_accounts
+
+    return evaluate_asset_freshness(asset_accounts(config.active_database_path()))
 
 
 def _selected_balance_row(
@@ -635,6 +664,7 @@ def _asset_currency_allocation_data_cached(data_root: str, currency: str) -> pd.
     assets["Дата оценки"] = asset_valuation_dates(assets)
     assets["Значение"] = pd.to_numeric(assets["Значение"], errors="coerce").fillna(0.0)
     assets["Валюта"] = assets["Валюта"].astype(str).str.upper()
+    assets = carry_forward_asset_snapshots(assets)
     assets["value_in_target"] = _convert_asset_allocation_values(assets, currency)
 
     values = (
@@ -653,7 +683,11 @@ def _asset_currency_allocation_data_cached(data_root: str, currency: str) -> pd.
 
 def _convert_asset_allocation_values(assets: pd.DataFrame, currency: str) -> pd.Series:
     values = assets["Значение"].copy()
-    valuation_column = "Дата оценки" if "Дата оценки" in assets.columns else "Дата"
+    valuation_column = (
+        "Дата FX" if "Дата FX" in assets.columns
+        else "Дата оценки" if "Дата оценки" in assets.columns
+        else "Дата"
+    )
     for (from_currency, snapshot_date), index in assets.groupby(["Валюта", valuation_column]).groups.items():
         from_currency = str(from_currency).upper()
         if from_currency == currency:
@@ -712,7 +746,7 @@ def _asset_liquidity_allocation_data_cached(
     from src.data.sqlite_store import connect_database
 
     with connect_database(database_path) as connection:
-        rows = connection.execute("""SELECT v.period, v.currency_code,
+        rows = connection.execute("""SELECT v.period, v.account_id, v.currency_code,
             v.amount_minor, c.minor_unit, v.liquidity_class_id
             FROM v_asset_snapshots v
             JOIN currencies c ON c.code = v.currency_code
@@ -731,6 +765,7 @@ def _asset_liquidity_allocation_data_cached(
     assets["Значение"] = assets.apply(
         lambda row: float(row["amount_minor"]) / (10 ** int(row["minor_unit"])), axis=1)
     assets["Группа"] = assets["liquidity_class_id"].fillna("Не задана")
+    assets = carry_forward_asset_snapshots(assets, account_column="account_id")
     assets["value_in_target"] = _convert_asset_allocation_values(assets, currency)
 
     values = assets.pivot_table(

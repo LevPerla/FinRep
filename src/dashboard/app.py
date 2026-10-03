@@ -1774,9 +1774,14 @@ def _main_report_layout(
         _graph_section(datasets["fx_changes"], theme=theme, locale=locale),
     ]
     metrics = datasets["cockpit_metrics"].dataframe
+    notices = []
     if metrics.attrs.get("selected_period_available") is False:
-        sections.insert(0, _main_missing_month_notice(str(metrics.attrs["selected_period"]), locale=locale))
-    return html.Div(sections, className="d-grid gap-4")
+        notices.append(_main_missing_month_notice(
+            str(metrics.attrs["selected_period"]), locale=locale))
+    freshness = metrics.attrs.get("asset_freshness")
+    if freshness and freshness.get("has_warning"):
+        notices.append(_main_asset_freshness_notice(freshness, locale=locale))
+    return html.Div([*notices, *sections], className="d-grid gap-4")
 
 
 def _statistics_report_layout(
@@ -1830,6 +1835,36 @@ def _main_missing_month_notice(period: str, locale: str = DEFAULT_LOCALE):
             ),
         ],
         id="main-missing-month-notice",
+        color="warning",
+        className="mb-0",
+    )
+
+
+def _main_asset_freshness_notice(freshness: dict, locale: str = DEFAULT_LOCALE):
+    stale_names = ", ".join(freshness.get("stale_accounts", []))
+    missing_names = ", ".join(freshness.get("missing_accounts", []))
+    if normalize_locale(locale) == "en":
+        parts = []
+        if stale_names:
+            parts.append(f"Stale valuations: {stale_names}.")
+        if missing_names:
+            parts.append(f"Unknown valuation date: {missing_names}.")
+        title = "Asset valuations need attention"
+        detail = " ".join(parts) + " Values remain included in capital."
+    else:
+        parts = []
+        if stale_names:
+            parts.append(f"Устаревшие оценки: {stale_names}.")
+        if missing_names:
+            parts.append(f"Дата оценки неизвестна: {missing_names}.")
+        title = "Оценки активов требуют внимания"
+        detail = " ".join(parts) + " Значения продолжают учитываться в капитале."
+    return dbc.Alert(
+        [
+            html.Div(title, className="fw-semibold"),
+            html.Div(detail, className="small mt-1"),
+        ],
+        id="main-asset-freshness-notice",
         color="warning",
         className="mb-0",
     )
@@ -2955,8 +2990,10 @@ def _asset_grid_height(row_count: int, *, maximum: int) -> str:
 def _asset_classification_rows(locale: str = DEFAULT_LOCALE) -> list[dict]:
     if not config.use_sqlite_storage():
         return []
+    from src.data.asset_freshness import evaluate_asset_freshness, freshness_label
     from src.data.sqlite_store import asset_accounts
 
+    freshness = evaluate_asset_freshness(asset_accounts(config.active_database_path()))
     return [
         {
             "account_id": row["id"],
@@ -2968,11 +3005,14 @@ def _asset_classification_rows(locale: str = DEFAULT_LOCALE) -> list[dict]:
             "liquidity_class_id": row["liquidity_class_id"] or "",
             "liquidity_source": row["liquidity_source"],
             "Включать в капитал": bool(row["include_in_capital"]),
+            "Актуальность": freshness_label(
+                row, locale=normalize_locale(locale)),
+            "freshness_status": row["freshness_status"],
             "Снимков": row["snapshot_count"],
             "Первый снимок": row["first_period"] or "",
             "Последний снимок": row["last_period"] or "",
         }
-        for row in asset_accounts(config.active_database_path())
+        for row in freshness["accounts"]
     ]
 
 
@@ -2986,19 +3026,32 @@ def _asset_classification_status(rows: list[dict], locale: str = DEFAULT_LOCALE)
     )
     excluded = sum(not row.get("Включать в капитал", True) for row in rows)
     liquidity_unclassified = sum(not row.get("liquidity_class_id") for row in rows)
+    stale = sum(
+        row.get("freshness_status") == "stale" and row.get("Включать в капитал", True)
+        for row in rows
+    )
+    missing_date = sum(
+        row.get("freshness_status") == "missing" and row.get("Включать в капитал", True)
+        for row in rows
+    )
     if normalize_locale(locale) == "en":
         message = (
             f"Accounts: {total}. Unclassified: {unclassified}. "
             f"Liquidity unassigned: {liquidity_unclassified}. "
+            f"Stale valuations: {stale}. Unknown valuation date: {missing_date}. "
             f"Excluded from capital: {excluded}."
         )
     else:
         message = (
             f"Счетов: {total}. Не классифицировано: {unclassified}. "
             f"Ликвидность не задана: {liquidity_unclassified}. "
+            f"Устаревших оценок: {stale}. Без даты оценки: {missing_date}. "
             f"Исключено из капитала: {excluded}."
         )
-    return message, "warning" if unclassified or liquidity_unclassified else "success"
+    return (
+        message,
+        "warning" if unclassified or liquidity_unclassified or stale or missing_date else "success",
+    )
 
 
 def _asset_classification_column_defs(
@@ -3066,6 +3119,14 @@ def _asset_classification_column_defs(
             "width": 64,
             "minWidth": 60,
         },
+        {
+            "field": "Актуальность",
+            "headerName": "Актуальность",
+            "editable": False,
+            "width": 210,
+            "minWidth": 180,
+        },
+        {"field": "freshness_status", "hide": True},
         {"field": "Снимков", "headerName": "Снимков", "width": 110},
         {"field": "Первый снимок", "headerName": "Первый снимок", "width": 140},
         {"field": "Последний снимок", "headerName": "Последний снимок", "width": 150},
