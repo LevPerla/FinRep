@@ -62,7 +62,7 @@ def _add_transaction(database, transaction_id, direction, category, amount="1.00
     )
 
 
-def test_v6_schema_is_strict_and_categories_match_contract(tmp_path):
+def test_v7_schema_is_strict_and_categories_match_contract(tmp_path):
     database = tmp_path / "synthetic.sqlite3"
     initialize_database(database)
     initialize_database(database)
@@ -143,6 +143,23 @@ def test_cash_draft_publish_is_atomic_and_idempotent(tmp_path):
         assert tuple(connection.execute("""SELECT bank_reference, bank_account_id
             FROM transaction_drafts WHERE id = ?""", (draft_id,)).fetchone()) == (
                 "bank-ref", "card-1")
+
+
+def test_new_cash_draft_requires_an_active_category(tmp_path):
+    database = tmp_path / "synthetic.sqlite3"
+    initialize_database(database)
+
+    with pytest.raises(ValueError, match="category direction mismatch"):
+        create_transaction_draft(
+            database,
+            occurred_on="2026-02-03",
+            flow_direction="income",
+            category_id="income.unknown",
+            amount="10",
+            currency="RUB",
+            origin_kind="manual",
+            origin_key="unknown-income",
+        )
 
 
 def test_pending_cash_draft_publish_rolls_back(tmp_path):

@@ -15,7 +15,7 @@ from src import config
 from src.data.money import parse_money_amount
 
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 _DIRECTIONS = {"income", "expense"}
 _DATASETS = {"cash_transactions", "asset_snapshots"}
 _SYSTEM_CATEGORIES = (
@@ -324,7 +324,7 @@ _INDEXES_AND_TRIGGERS = (
     """CREATE TRIGGER draft_category_insert BEFORE INSERT ON transaction_drafts
     WHEN NEW.draft_kind = 'cash' BEGIN
       SELECT CASE WHEN NOT EXISTS (SELECT 1 FROM categories c WHERE c.id = NEW.category_id
-        AND c.direction = NEW.flow_direction AND c.active = 1)
+        AND c.direction = NEW.flow_direction AND (c.active = 1 OR c.id = 'income.unknown'))
       THEN RAISE(ABORT, 'cash draft needs an active category with matching direction') END;
     END""",
     """CREATE TRIGGER draft_category_update BEFORE UPDATE OF category_id, flow_direction ON transaction_drafts
@@ -507,6 +507,16 @@ def _minor_units(connection: sqlite3.Connection, currency: str, value, *, allow_
     return result
 
 
+def _require_active_category(connection: sqlite3.Connection, category_id: str,
+                             direction: str) -> None:
+    category = connection.execute(
+        "SELECT direction FROM categories WHERE id = ? AND active = 1",
+        (category_id,),
+    ).fetchone()
+    if category is None or category["direction"] != direction:
+        raise ValueError("transaction category direction mismatch")
+
+
 def _decimal_text(value, name: str) -> str:
     normalized = str(value).strip().replace(" ", "").replace("\u00a0", "").replace(",", ".")
     try:
@@ -649,6 +659,7 @@ def create_transaction_draft(
     now = _utc_now()
     with connect_database(path, writable=True) as connection:
         amount_minor = _minor_units(connection, currency, amount, allow_zero=False)
+        _require_active_category(connection, category_id, flow_direction)
         values = (
             occurred_on, flow_direction, amount_minor, currency.upper(), category_id,
             comment, source_record_id, origin_kind.strip(), origin_key.strip(), bank_status,
@@ -730,6 +741,7 @@ def append_cash_drafts(path: str | Path, *, rows: list[dict],
                 raise ValueError("unsupported bank status")
             if status not in {"draft", "ready"}:
                 raise ValueError("a new draft must have draft or ready status")
+            _require_active_category(connection, category_id, flow_direction)
             values = (
                 occurred_on, flow_direction, amount_minor, currency, category_id,
                 str(row.get("comment", "")), row.get("source_record_id"), origin_kind,
@@ -915,12 +927,7 @@ def publish_transaction_draft_preview(
                 category_id = str(row.get("category_id", ""))
                 if direction not in _DIRECTIONS:
                     raise ValueError("flow direction must be income or expense")
-                category = connection.execute(
-                    "SELECT direction FROM categories WHERE id = ? AND active = 1",
-                    (category_id,),
-                ).fetchone()
-                if category is None or category["direction"] != direction:
-                    raise ValueError("transaction category direction mismatch")
+                _require_active_category(connection, category_id, direction)
                 connection.execute("""UPDATE transaction_drafts SET occurred_on = ?,
                     amount_minor = ?, currency_code = ?, comment = ?, bank_status = ?,
                     bank_reference = ?, bank_account_id = ?, status = ?, updated_at = ?,

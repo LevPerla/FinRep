@@ -2,9 +2,16 @@ from pathlib import Path
 import csv
 import sqlite3
 
+import pytest
+
 from src import config
 from src.data.sqlite_migration import build_manifest, migrate_core_csv
-from src.data.sqlite_store import connect_database
+from src.data.sqlite_store import (
+    connect_database,
+    publish_cash_drafts,
+    transaction_drafts_snapshot,
+    update_cash_drafts,
+)
 
 
 def test_manifest_is_deterministic_and_covers_every_csv(tmp_path):
@@ -62,6 +69,8 @@ def test_cash_drafts_preserve_direction_category_status_and_source_key(tmp_path)
          "debit", "", "", "", "ready"],
         ["2026-01-02", "Доход", "USD", "25", "Salary", "bank", "b1",
          "credit", "posted", "ref", "account", "exported"],
+        ["2026-01-03", "Доход", "EUR", "30", "Needs review", "manual", "m2",
+         "credit", "", "", "", "draft"],
     ]
     with path.open("w", encoding="utf-8", newline="") as stream:
         writer = csv.writer(stream, delimiter=";")
@@ -69,7 +78,7 @@ def test_cash_drafts_preserve_direction_category_status_and_source_key(tmp_path)
         writer.writerows(rows)
     target = tmp_path / "target.sqlite3"
     summary = migrate_core_csv(tmp_path, target, tmp_path / "migration.sqlite3")
-    assert summary.drafts_imported == 2
+    assert summary.drafts_imported == 3
     assert summary.pending_adapter_files == 0
     with connect_database(target) as connection:
         drafts = connection.execute("""SELECT flow_direction, amount_minor, currency_code,
@@ -78,7 +87,26 @@ def test_cash_drafts_preserve_direction_category_status_and_source_key(tmp_path)
     assert [tuple(row) for row in drafts] == [
         ("expense", 1234, "RUB", "expense.food", "manual", "m1", None, "ready"),
         ("income", 2500, "USD", "income.salary", "bank", "b1", "posted", "exported"),
+        ("income", 3000, "EUR", "income.unknown", "manual", "m2", None, "draft"),
     ]
+
+    snapshot, revision = transaction_drafts_snapshot(target)
+    unknown = next(row for row in snapshot if row["category_id"] == "income.unknown")
+    with pytest.raises(sqlite3.IntegrityError, match="active category"):
+        publish_cash_drafts(
+            target,
+            draft_ids=[unknown["id"]],
+            operation_key="publish-unclassified-income",
+        )
+
+    reviewed = {**unknown, "category_id": "income.other", "status": "ready"}
+    update_cash_drafts(target, rows=[reviewed], expected_revision=revision)
+    result = publish_cash_drafts(
+        target,
+        draft_ids=[unknown["id"]],
+        operation_key="publish-reviewed-income",
+    )
+    assert result["published_rows"] == 1
 
 
 def test_legacy_debt_exceptions_are_preserved_and_reported(tmp_path):
