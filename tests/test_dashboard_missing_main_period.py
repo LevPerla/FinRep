@@ -86,6 +86,7 @@ def test_missing_selected_month_keeps_main_layout_and_shows_notice():
         "delta",
         "savings_rate",
         "capital",
+        "inflation_rate",
         "real_asset_capital",
         "fx_revaluation",
         "asset_currency_allocation",

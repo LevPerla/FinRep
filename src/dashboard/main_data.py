@@ -97,6 +97,7 @@ def _build_main_dashboard_data(
         if column in balance.columns
     ]
     capital = balance[capital_columns].reset_index()
+    inflation_rate = _inflation_rate_data(currency)
     real_asset_capital = _real_asset_capital_data(balance, currency, cpi_base_period)
     fx_revaluation = _fx_revaluation_data(balance)
     asset_currency_allocation = _asset_currency_allocation_data(currency)
@@ -151,6 +152,12 @@ def _build_main_dashboard_data(
             title="Динамика капитала",
             dataframe=capital,
             figure=_capital_figure(capital, currency),
+        ),
+        "inflation_rate": DashboardDataset(
+            id="inflation_rate",
+            title="Официальная инфляция",
+            dataframe=inflation_rate,
+            figure=_inflation_rate_figure(inflation_rate),
         ),
         "real_asset_capital": DashboardDataset(
             id="real_asset_capital",
@@ -654,6 +661,56 @@ def _real_asset_capital_data(
     data.attrs["stale"] = stale
     data.attrs["currency"] = currency
     return data
+
+
+def _inflation_rate_data(currency: str) -> pd.DataFrame:
+    columns = ["Дата", "Инфляция год к году, %", "Индекс CPI"]
+    if not config.use_sqlite_storage():
+        return pd.DataFrame(columns=columns)
+
+    from src.data.inflation import effective_cpi_indexes
+
+    indexes = effective_cpi_indexes(config.active_database_path(), currency)
+    if not indexes:
+        return pd.DataFrame(columns=columns)
+    periods = pd.period_range(min(indexes), max(indexes), freq="M")
+    rows = []
+    for period in periods:
+        period_key = str(period)
+        previous_key = str(period - 12)
+        current = indexes.get(period_key)
+        previous = indexes.get(previous_key)
+        rate = (
+            float((current / previous - Decimal("1")) * Decimal("100"))
+            if current is not None and previous is not None else float("nan")
+        )
+        rows.append({
+            "Дата": period.to_timestamp(),
+            "Инфляция год к году, %": rate,
+            "Индекс CPI": float(current) if current is not None else float("nan"),
+        })
+    return pd.DataFrame(rows, columns=columns)
+
+
+def _inflation_rate_figure(data: pd.DataFrame) -> go.Figure:
+    values = pd.to_numeric(
+        data.get("Инфляция год к году, %", pd.Series(dtype=float)), errors="coerce")
+    visible = data.loc[values.first_valid_index():values.last_valid_index()] \
+        if values.notna().any() else data
+    fig = go.Figure(go.Scatter(
+        x=visible.get("Дата", []),
+        y=visible.get("Инфляция год к году, %", []),
+        mode="lines+markers",
+        name="Инфляция год к году",
+        line=dict(color="#BB88A4", width=2),
+        connectgaps=False,
+        showlegend=True,
+        hovertemplate="%{x|%Y-%m}<br>%{y:.2f}%<extra></extra>",
+    ))
+    _apply_dashboard_chart_layout(fig, "", range_slider=True)
+    fig.update_layout(showlegend=True)
+    fig.update_yaxes(title="Инфляция, %", ticksuffix="%", rangemode="normal")
+    return fig
 
 
 def _real_asset_capital_figure(data: pd.DataFrame, currency: str) -> go.Figure:

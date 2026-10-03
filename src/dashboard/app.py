@@ -1888,6 +1888,7 @@ def _main_report_layout(
         _graph_section(datasets["delta"], theme=theme, locale=locale),
         _graph_section(datasets["savings_rate"], theme=theme, locale=locale),
         _graph_section(datasets["capital"], height="640px", theme=theme, locale=locale),
+        _graph_section(datasets["inflation_rate"], height="520px", theme=theme, locale=locale),
         _real_asset_capital_section(
             datasets["real_asset_capital"], currency=currency,
             height="520px", theme=theme, locale=locale),

@@ -3,12 +3,18 @@ from decimal import Decimal
 
 import pandas as pd
 import plotly.graph_objects as go
+import pytest
 
 os.environ.setdefault("FINREP_DASH_PASSWORD", "test-password")
 os.environ.setdefault("FINREP_DASH_SECRET_KEY", "test-session-secret")
 
 from src import config
-from src.dashboard.main_data import DashboardDataset, _real_asset_capital_data
+from src.dashboard.main_data import (
+    DashboardDataset,
+    _inflation_rate_data,
+    _inflation_rate_figure,
+    _real_asset_capital_data,
+)
 from src.data.sqlite_store import initialize_database, save_cpi_observations
 
 
@@ -47,6 +53,31 @@ def test_real_asset_capital_uses_selected_base_month_and_leaves_gaps(
     assert result.loc[0, "Реальная стоимость"] == 6000000
     assert pd.isna(result.loc[1, "Реальная стоимость"])
     assert result.loc[2, "Реальная стоимость"] == 5500000
+
+
+def test_inflation_chart_uses_year_over_year_rate_and_keeps_missing_months(
+        tmp_path, monkeypatch):
+    database = tmp_path / "finrep.sqlite3"
+    initialize_database(database)
+    _seed_cpi(database, [
+        {"period": "2025-01", "index_value": "100"},
+        {"period": "2025-03", "index_value": "125"},
+        {"period": "2026-01", "index_value": "110"},
+        {"period": "2026-03", "index_value": "150"},
+    ])
+    monkeypatch.setattr(config, "active_database_path", lambda: database)
+    monkeypatch.setattr(config, "use_sqlite_storage", lambda: True)
+
+    data = _inflation_rate_data("RUB").set_index("Дата")
+    assert data.loc["2026-01-01", "Инфляция год к году, %"] == pytest.approx(10)
+    assert pd.isna(data.loc["2026-02-01", "Инфляция год к году, %"])
+    assert data.loc["2026-03-01", "Инфляция год к году, %"] == pytest.approx(20)
+
+    figure = _inflation_rate_figure(data.reset_index())
+    assert figure.data[0].connectgaps is False
+    assert list(figure.data[0].x)[0] == pd.Timestamp("2026-01-01")
+    assert figure.layout.xaxis.rangeslider.visible is True
+    assert figure.layout.yaxis.ticksuffix == "%"
 
 
 def _component(node, component_id):
