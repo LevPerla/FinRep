@@ -39,7 +39,7 @@ def test_import_amount_column_displays_bank_direction_as_sign():
 def test_category_clipboard_uses_native_events_without_permission_api(monkeypatch):
     monkeypatch.setattr(
         "src.dashboard.app._transaction_category_options",
-        lambda: [{"label": "Прочее", "value": "Прочее"}],
+        lambda *_: [{"label": "Прочее", "value": "Прочее"}],
     )
     layout = _transaction_input_layout("RUB", "2026", "09", "dark")
     grid = _component(layout, "kaspi-import-grid")

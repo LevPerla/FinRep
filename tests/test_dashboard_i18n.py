@@ -263,7 +263,7 @@ def test_localized_grid_headers_keep_raw_fields_for_callbacks_and_styles():
 def test_data_entry_layout_translates_copy_but_keeps_category_values(monkeypatch):
     monkeypatch.setattr(
         "src.dashboard.app._transaction_category_options",
-        lambda: [{"label": "Прочее", "value": "Прочее"}],
+        lambda *_: [{"label": "Прочее", "value": "Прочее"}],
     )
 
     layout = _transaction_input_layout("RUB", "2026", "09", "dark", locale="en")

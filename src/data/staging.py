@@ -1211,8 +1211,11 @@ def _sqlite_cash_draft_payload(row: pd.Series | dict) -> dict:
     with connect_database(config.active_database_path()) as connection:
         categories = connection.execute(
             "SELECT id, direction, name_ru FROM categories WHERE active = 1").fetchall()
+    by_id = {item["id"]: (item["id"], item["direction"]) for item in categories}
     by_name = {item["name_ru"]: (item["id"], item["direction"]) for item in categories}
-    if label == "Доход":
+    if label in by_id:
+        category_id, direction = by_id[label]
+    elif label == "Доход":
         reason = classify_income_comment(row.get("comment", ""))
         category_id = {"salary": "income.salary", "deposit_interest": "income.interest"}.get(
             reason, "income.other")

@@ -601,6 +601,130 @@ def add_category(path: str | Path, category_id: str, name_ru: str, *,
         )
 
 
+def categories(path: str | Path, *, include_internal: bool = False) -> list[dict]:
+    """Return the category registry with usage counts for the management UI."""
+    with connect_database(path) as connection:
+        rows = connection.execute(
+            """SELECT c.id, c.parent_id, c.direction, c.name_ru, c.name_en,
+                      c.active, c.income_class, c.sort_order,
+                      p.name_ru AS parent_name_ru,
+                      (SELECT COUNT(*) FROM cash_transactions t
+                       WHERE t.category_id = c.id) AS transaction_count,
+                      (SELECT COUNT(*) FROM transaction_drafts d
+                       WHERE d.category_id = c.id
+                         AND d.status IN ('draft', 'ready')) AS open_draft_count
+               FROM categories c
+               LEFT JOIN categories p ON p.id = c.parent_id
+               ORDER BY CASE c.direction WHEN 'income' THEN 0 ELSE 1 END,
+                        c.sort_order, c.name_ru, c.id"""
+        ).fetchall()
+    result = [dict(row) for row in rows]
+    if not include_internal:
+        result = [row for row in result if row["id"] != "income.unknown"]
+    return result
+
+
+def _ensure_unique_category_name(connection: sqlite3.Connection, *, direction: str,
+                                 name_ru: str, exclude_id: str | None = None) -> None:
+    del direction
+    normalized = name_ru.strip().casefold()
+    rows = connection.execute(
+        "SELECT id, name_ru FROM categories"
+    ).fetchall()
+    if any(row["id"] != exclude_id and row["name_ru"].strip().casefold() == normalized
+           for row in rows):
+        raise ValueError("category name already exists for this direction")
+
+
+def create_category(path: str | Path, name_ru: str, *, direction: str,
+                    income_class: str | None = None) -> str:
+    """Create a user-managed root category and return its stable opaque ID."""
+    name_ru = name_ru.strip()
+    if not name_ru:
+        raise ValueError("category name is required")
+    if direction not in _DIRECTIONS:
+        raise ValueError("category direction must be income or expense")
+    if (direction == "income" and income_class not in {"active", "passive"}) or (
+        direction == "expense" and income_class is not None):
+        raise ValueError("income class belongs only to income categories")
+    category_id = f"user.{direction}.{uuid4().hex}"
+    now = _utc_now()
+    with connect_database(path, writable=True) as connection:
+        _ensure_unique_category_name(
+            connection, direction=direction, name_ru=name_ru)
+        sort_order = connection.execute(
+            """SELECT COALESCE(MAX(sort_order), 0) + 10 FROM categories
+               WHERE direction = ? AND parent_id IS NULL""",
+            (direction,),
+        ).fetchone()[0]
+        connection.execute(
+            """INSERT INTO categories
+              (id, parent_id, direction, name_ru, income_class, sort_order,
+               created_at, updated_at)
+              VALUES (?, NULL, ?, ?, ?, ?, ?, ?)""",
+            (category_id, direction, name_ru, income_class, sort_order, now, now),
+        )
+    return category_id
+
+
+def rename_category(path: str | Path, category_id: str, name_ru: str) -> None:
+    """Rename a category without changing its ID or historical assignments."""
+    name_ru = name_ru.strip()
+    if not name_ru:
+        raise ValueError("category name is required")
+    with connect_database(path, writable=True) as connection:
+        category = connection.execute(
+            "SELECT direction FROM categories WHERE id = ?", (category_id,)
+        ).fetchone()
+        if category is None or category_id == "income.unknown":
+            raise ValueError("unknown category")
+        _ensure_unique_category_name(
+            connection, direction=category["direction"], name_ru=name_ru,
+            exclude_id=category_id)
+        connection.execute(
+            "UPDATE categories SET name_ru = ?, updated_at = ? WHERE id = ?",
+            (name_ru, _utc_now(), category_id),
+        )
+
+
+def set_category_active(path: str | Path, category_id: str, active: bool) -> None:
+    """Change availability for new records while preserving historical rows."""
+    if category_id in {"income.unknown", "income.other", "expense.other"}:
+        raise ValueError("this fallback category cannot change activity")
+    with connect_database(path, writable=True) as connection:
+        category = connection.execute(
+            "SELECT direction, name_ru, active FROM categories WHERE id = ?",
+            (category_id,),
+        ).fetchone()
+        if category is None:
+            raise ValueError("unknown category")
+        target = int(bool(active))
+        if category["active"] == target:
+            return
+        if not target:
+            open_drafts = connection.execute(
+                """SELECT COUNT(*) FROM transaction_drafts
+                   WHERE category_id = ? AND status IN ('draft', 'ready')""",
+                (category_id,),
+            ).fetchone()[0]
+            active_children = connection.execute(
+                "SELECT COUNT(*) FROM categories WHERE parent_id = ? AND active = 1",
+                (category_id,),
+            ).fetchone()[0]
+            if open_drafts:
+                raise ValueError("category is used by open transaction drafts")
+            if active_children:
+                raise ValueError("category has active subcategories")
+        else:
+            _ensure_unique_category_name(
+                connection, direction=category["direction"],
+                name_ru=category["name_ru"], exclude_id=category_id)
+        connection.execute(
+            "UPDATE categories SET active = ?, updated_at = ? WHERE id = ?",
+            (target, _utc_now(), category_id),
+        )
+
+
 def add_cash_transaction(path: str | Path, *, transaction_id: str, occurred_on: str,
                          flow_direction: str, category_id: str, amount, currency: str,
                          comment: str = "", classification_method: str | None = None) -> None:
