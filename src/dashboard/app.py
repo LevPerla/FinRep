@@ -2945,7 +2945,7 @@ def _income_report_layout(datasets: dict[str, DashboardDataset], theme: str, loc
                 color="warning", id="income-missing-months",
             ))
         children.append(html.P(
-            report_text("Источник определяется по комментарию; нераспознанный доход остаётся в отдельной группе.", locale),
+            report_text("Старый доход определяется по комментарию; нераспознанный доход остаётся в отдельной группе.", locale),
             className="small", style={"color": "var(--finrep-muted)"},
         ))
         children.append(_graph_section(datasets["income_sources_monthly"], theme=theme, locale=locale))

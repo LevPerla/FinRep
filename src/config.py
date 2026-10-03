@@ -48,7 +48,9 @@ FX_BASE_CURRENCY = 'USD'
 FX_PROVIDER_ORDER = ['yfinance', 'cbr']
 
 INCOME_CATEGORY_LABELS = ['Зарплата', 'Проценты', 'Инвест доход', 'Прочие доходы']
-NOT_COST_COLS = ['Доход', 'Сбережения', *INCOME_CATEGORY_LABELS, 'Инвестиции',
+UNCLASSIFIED_INCOME_LABEL = 'Доход без категории'
+NOT_COST_COLS = ['Доход', 'Сбережения', *INCOME_CATEGORY_LABELS,
+                 UNCLASSIFIED_INCOME_LABEL, 'Инвестиции',
                  'Дебиторская задолженность', 'Погашение деб. зад.',
                  'Кредиторская задолженность', 'Погашение кред. зад.']
 DEBUG = False

@@ -132,6 +132,7 @@ def _get_balance_by_month_cached(data_root: str, currency: str) -> pd.DataFrame:
         'Доход',
         'Сбережения',
         *config.INCOME_CATEGORY_LABELS,
+        config.UNCLASSIFIED_INCOME_LABEL,
     ]
     for column in [
         *income_columns,

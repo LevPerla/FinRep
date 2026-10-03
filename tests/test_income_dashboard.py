@@ -27,7 +27,7 @@ def source(monkeypatch):
     return install
 
 
-def test_sources_and_savings_reconcile_without_changing_history(source):
+def test_legacy_sources_reconcile_to_income_categories_without_changing_history(source):
     original = source([
         ("2025-01-03", "Доход", "RUB", 1000, "Зарплата"),
         ("2025-01-04", "Доход", "RUB", 50, "Проценты"),
@@ -42,15 +42,18 @@ def test_sources_and_savings_reconcile_without_changing_history(source):
     total = datasets["income_receipts_monthly"].dataframe.iloc[0]
 
     assert sources.to_dict() == {
-        "Зарплата": 990, "Проценты по депозиту": 50, "Источник не определён": 25,
+        "Зарплата": 990, "Проценты": 50, "Инвест доход": 0,
+        "Прочие доходы": 500, "Доход без категории": 25,
     }
-    assert total["Доход"] == 1065
-    assert total["Сбережения"] == 500
-    assert total["Всего поступлений"] == 1565
+    assert total["Активный доход"] == 1490
+    assert total["Пассивный доход"] == 50
+    assert total["Доход без категории"] == 25
+    assert total["Всего доходов"] == 1565
+    assert total["Доля пассивного дохода, %"] == pytest.approx(50 / 1565 * 100)
     pd.testing.assert_frame_equal(original, before)
 
 
-def test_monthly_allocation_includes_income_sources_and_savings(source):
+def test_monthly_allocation_includes_all_income_categories(source):
     source([
         ("2025-01-03", "Доход", "RUB", 100, "Зарплата"),
         ("2025-01-04", "Доход", "RUB", 50, "Проценты"),
@@ -61,15 +64,37 @@ def test_monthly_allocation_includes_income_sources_and_savings(source):
     allocation = datasets["income_allocation"]
     shares = allocation.dataframe.set_index("Источник")["Доля, %"].to_dict()
     assert shares == {
-        "Зарплата": 50, "Проценты по депозиту": 25,
-        "Источник не определён": 12.5, "Сбережения": 12.5,
+        "Зарплата": 50, "Проценты": 25, "Инвест доход": 0,
+        "Прочие доходы": 12.5, "Доход без категории": 12.5,
     }
     assert allocation.dataframe["Сумма"].sum() == 200
     assert sum(shares.values()) == 100
     assert allocation.figure.layout.xaxis.rangeslider.visible is True
     assert {trace.name: trace.marker.color for trace in allocation.figure.data} == {
         trace.name: trace.marker.color for trace in datasets["income_sources_monthly"].figure.data
-    } | {"Сбережения": income_data.INCOME_SOURCE_COLORS["savings"]}
+    }
+
+
+def test_normalized_sqlite_income_categories_and_classes(source):
+    source([
+        ("2025-01-03", "Зарплата", "RUB", 100, ""),
+        ("2025-01-04", "Проценты", "RUB", 20, ""),
+        ("2025-01-05", "Инвест доход", "RUB", 30, ""),
+        ("2025-01-06", "Прочие доходы", "RUB", 50, ""),
+        ("2025-01-07", "Доход без категории", "RUB", 10, ""),
+    ])
+    datasets = income_data.build_income_dashboard_data("RUB")
+    sources = datasets["income_sources_monthly"].dataframe.set_index("Источник")["Доход"]
+    totals = datasets["income_receipts_monthly"].dataframe.iloc[0]
+
+    assert sources.to_dict() == {
+        "Зарплата": 100, "Проценты": 20, "Инвест доход": 30,
+        "Прочие доходы": 50, "Доход без категории": 10,
+    }
+    assert totals["Активный доход"] == 150
+    assert totals["Пассивный доход"] == 50
+    assert totals["Всего доходов"] == 210
+    assert totals["Доля пассивного дохода, %"] == pytest.approx(50 / 210 * 100)
 
 
 def test_allocation_distinguishes_zero_missing_and_negative_corrections(source):
@@ -83,10 +108,10 @@ def test_allocation_distinguishes_zero_missing_and_negative_corrections(source):
     allocation = datasets["income_allocation"].dataframe
     shares = allocation.pivot(index="Дата", columns="Источник", values="Доля, %")
     assert shares.loc["2025-01-01", "Зарплата"] == 125
-    assert shares.loc["2025-01-01", "Проценты по депозиту"] == -25
+    assert shares.loc["2025-01-01", "Проценты"] == -25
     assert shares.loc["2025-02-01"].isna().all()
     assert shares.loc["2025-03-01"].isna().all()
-    assert shares.loc["2025-04-01", "Сбережения"] == 100
+    assert shares.loc["2025-04-01", "Прочие доходы"] == 100
     assert datasets["income_allocation"].dataframe.query("Дата == '2025-02-01'")["Сумма"].eq(0).all()
     assert datasets["income_allocation"].dataframe.query("Дата == '2025-03-01'")["Сумма"].isna().all()
     layout = _income_report_layout(datasets, "dark")
@@ -101,9 +126,12 @@ def test_missing_month_is_null_but_observed_month_without_receipts_is_zero(sourc
     ])
     datasets = income_data.build_income_dashboard_data("RUB")
     totals = datasets["income_receipts_monthly"].dataframe.set_index("Дата")
-    assert totals.loc["2014-02-01"].tolist() == [0, 0, 0]
+    assert totals.loc["2014-02-01", [
+        "Активный доход", "Пассивный доход", "Доход без категории", "Всего доходов",
+    ]].tolist() == [0, 0, 0, 0]
+    assert pd.isna(totals.loc["2014-02-01", "Доля пассивного дохода, %"])
     assert totals.loc["2014-03-01"].isna().all()
-    assert totals.loc["2014-04-01", "Всего поступлений"] == 30
+    assert totals.loc["2014-04-01", "Всего доходов"] == 30
     assert datasets["income_missing_months"].dataframe["Дата"].tolist() == [pd.Timestamp("2014-03-01")]
     assert _income_report_layout(datasets, "dark").children[2].id == "income-missing-months"
 
@@ -135,9 +163,9 @@ def test_historical_fx_is_per_operation_and_network_mode_is_scoped(source, monke
     previous = get_finance._FX_NETWORK_ENABLED.get()
     datasets = income_data.build_income_dashboard_data("RUB", network_enabled)
     totals = datasets["income_receipts_monthly"].dataframe
-    assert totals["Доход"].sum() == pytest.approx(160.02)
-    assert totals["Сбережения"].sum() == pytest.approx(180)
-    assert totals["Всего поступлений"].sum() == pytest.approx(340.02)
+    assert totals["Активный доход"].sum() == pytest.approx(260.01)
+    assert totals["Пассивный доход"].sum() == pytest.approx(80.01)
+    assert totals["Всего доходов"].sum() == pytest.approx(340.02)
     assert len(calls) == 1
     assert calls[0]["tickers"] == ["USDRUB=X"]
     assert get_finance._FX_NETWORK_ENABLED.get() is previous
@@ -158,12 +186,12 @@ def test_full_history_and_all_report_currencies(source, currency):
     dates = pd.date_range("2014-01-01", periods=144, freq="MS")
     source([(date, "Доход", currency, index + 1, "Зарплата") for index, date in enumerate(dates)])
     dataset = income_data.build_income_dashboard_data(currency)["income_sources_monthly"]
-    assert len(dataset.dataframe) == 144 * 3
+    assert len(dataset.dataframe) == 144 * 5
     assert dataset.dataframe["Доход"].sum() == 10440
     assert dataset.figure.layout.xaxis.rangeslider.visible is True
     assert dataset.figure.layout.yaxis.title.text == currency
     allocation = income_data.build_income_dashboard_data(currency)["income_allocation"]
-    assert len(allocation.dataframe) == 144 * 4
+    assert len(allocation.dataframe) == 144 * 5
     assert allocation.figure.layout.xaxis.rangeslider.visible is True
 
 
@@ -175,16 +203,16 @@ def test_income_export_and_localization_preserve_values(source):
     localized = localize_report_datasets(datasets, "en")
     assert localized["income_sources_monthly"].title == "Monthly income by source"
     assert [trace.name for trace in localized["income_sources_monthly"].figure.data] == [
-        "Salary", "Deposit interest", "Unknown source",
+        "Salary", "Interest", "Investment income", "Other income", "Unclassified income",
     ]
     pd.testing.assert_frame_equal(localized["income_sources_monthly"].dataframe, datasets["income_sources_monthly"].dataframe)
     exported = localize_export_dataframe(datasets["income_sources_monthly"].dataframe, "en")
     assert exported.loc[0, "Source"] == "Salary"
     assert exported.loc[0, "Income"] == 100
     allocation = localized["income_allocation"]
-    assert allocation.title == "Monthly income and savings allocation"
+    assert allocation.title == "Monthly income allocation"
     assert [trace.name for trace in allocation.figure.data] == [
-        "Salary", "Deposit interest", "Unknown source", "Savings",
+        "Salary", "Interest", "Investment income", "Other income", "Unclassified income",
     ]
     export_allocation = localize_export_dataframe(datasets["income_allocation"].dataframe, "en")
     assert export_allocation.loc[0, "Source"] == "Salary"

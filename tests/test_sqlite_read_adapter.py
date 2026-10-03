@@ -6,13 +6,16 @@ from src import config
 from src.data.get import clear_data_cache, get_assets, get_investments, get_transactions
 from src.data.sqlite_migration import migrate_core_csv
 from src.data.sqlite_store import (
+    add_category,
     add_cash_transaction,
     create_debt_record,
     initialize_database,
     publish_domain_drafts,
+    save_month,
 )
 from src.data.assets_editor import ensure_asset_snapshot, read_asset_snapshot, write_asset_snapshot
 from src.dashboard.planning_data import _load_goals, save_goal_targets
+from src.dashboard.income_data import build_income_dashboard_data
 from src.data.get_finance import _append_cache_rows, _read_cache
 from src.data.investments import read_investment_transactions, read_price_cache, write_price_cache
 from src.data.debts import create_debt, create_debt_payment_from_cash, read_debt_payments, read_debts
@@ -44,7 +47,8 @@ def test_sqlite_backend_feeds_existing_analytics_shapes(tmp_path, monkeypatch):
 
     assert list(transactions.columns) == [
         "Дата", "Категория", "Валюта", "Значение", "Комментарий", "Год", "Квартал", "Месяц"]
-    assert len(transactions) == summary.cash_imported + summary.domain_cash_events_imported
+    assert transactions.loc[transactions["Значение"].ne(0)].shape[0] == (
+        summary.cash_imported + summary.domain_cash_events_imported)
     assert set(transactions["Категория"]).issubset({
         "Зарплата", "Проценты", "Инвест доход", "Прочие доходы",
         "Быт и товары для дома", "На себя", "Одежда", "Пища", "Поездки",
@@ -59,6 +63,7 @@ def test_sqlite_backend_feeds_existing_analytics_shapes(tmp_path, monkeypatch):
     assert {"Тип_транзакции", "Актив", "Тикер", "Количество", "Дата", "Цена", "Валюта"}.issubset(
         investments.columns)
     assert set(config.INCOME_CATEGORY_LABELS).issubset(config.NOT_COST_COLS)
+    assert config.UNCLASSIFIED_INCOME_LABEL in config.NOT_COST_COLS
 
 
 def test_test_mode_never_switches_to_live_sqlite(tmp_path, monkeypatch):
@@ -290,6 +295,49 @@ def test_sqlite_balance_uses_new_income_categories_and_domain_cash_events(tmp_pa
     assert balance.iloc[0]["Расход"] == 30
     assert balance.iloc[0]["Дебиторская задолженность"] == 50
     assert balance.iloc[0]["Баланс"] == 40
+
+
+def test_sqlite_reader_preserves_saved_month_without_transactions(tmp_path, monkeypatch):
+    database = tmp_path / "target.sqlite3"
+    initialize_database(database)
+    save_month(database, "2026-09")
+    monkeypatch.setenv("FINREP_STORAGE_BACKEND", "sqlite")
+    monkeypatch.setenv("FINREP_SQLITE_PATH", str(database))
+    clear_data_cache()
+    try:
+        transactions = get_transactions()
+    finally:
+        clear_data_cache()
+
+    assert len(transactions) == 1
+    assert transactions.iloc[0]["Дата"] == pd.Timestamp("2026-09-30")
+    assert transactions.iloc[0]["Категория"] == config.UNCLASSIFIED_INCOME_LABEL
+    assert transactions.iloc[0]["Значение"] == 0
+
+
+def test_sqlite_income_dashboard_uses_extensible_category_registry(tmp_path, monkeypatch):
+    database = tmp_path / "target.sqlite3"
+    initialize_database(database)
+    add_category(
+        database, "income.rent", "Аренда", direction="income", income_class="passive")
+    add_cash_transaction(
+        database, transaction_id="rent", occurred_on="2026-09-15",
+        flow_direction="income", category_id="income.rent",
+        amount="75", currency="RUB")
+    monkeypatch.setenv("FINREP_STORAGE_BACKEND", "sqlite")
+    monkeypatch.setenv("FINREP_SQLITE_PATH", str(database))
+    monkeypatch.setattr(config, "DEBUG", True)
+    clear_data_cache()
+    try:
+        datasets = build_income_dashboard_data("RUB")
+    finally:
+        clear_data_cache()
+
+    sources = datasets["income_sources_monthly"].dataframe.set_index("Источник")["Доход"]
+    totals = datasets["income_receipts_monthly"].dataframe.iloc[0]
+    assert sources["Аренда"] == 75
+    assert totals["Пассивный доход"] == 75
+    assert totals["Доля пассивного дохода, %"] == 100
 
 
 def test_sqlite_cutover_smoke_restarts_after_preview_without_csv_readers(tmp_path, monkeypatch):
