@@ -21,8 +21,10 @@ from src.data.sqlite_store import (
     asset_snapshots,
     backup_database,
     cash_transactions,
+    categories,
     change_transaction_category,
     connect_database,
+    create_category,
     create_transaction_draft,
     create_debt_record,
     fx_rates,
@@ -36,12 +38,14 @@ from src.data.sqlite_store import (
     record_debt_payment,
     record_investment_trade,
     replace_asset_snapshot_month,
+    rename_category,
     register_source_record,
     save_asset_month,
     save_fx_rate,
     save_month,
     saved_asset_months,
     saved_months,
+    set_category_active,
     transaction_drafts_snapshot,
     update_cash_drafts,
     upsert_annual_goal,
@@ -85,6 +89,81 @@ def test_v7_schema_is_strict_and_categories_match_contract(tmp_path):
     assert names["income"] == {"Зарплата", "Проценты", "Инвест доход", "Прочие доходы"}
     assert len(names["expense"]) == 10
     assert strict and set(strict.values()) == {1}
+
+
+def test_user_category_lifecycle_preserves_historical_assignment(tmp_path):
+    database = tmp_path / "synthetic.sqlite3"
+    initialize_database(database)
+
+    category_id = create_category(
+        database, "Подработка", direction="income", income_class="active")
+    add_cash_transaction(
+        database,
+        transaction_id="income-1",
+        occurred_on="2026-01-02",
+        flow_direction="income",
+        category_id=category_id,
+        amount="100.00",
+        currency="RUB",
+    )
+    rename_category(database, category_id, "Фриланс")
+    set_category_active(database, category_id, False)
+
+    registry = {row["id"]: row for row in categories(database)}
+    assert registry[category_id]["name_ru"] == "Фриланс"
+    assert registry[category_id]["active"] == 0
+    assert registry[category_id]["transaction_count"] == 1
+    assert cash_transactions(database)[0]["category_name_ru"] == "Фриланс"
+    with pytest.raises(ValueError, match="active category"):
+        add_cash_transaction(
+            database,
+            transaction_id="income-2",
+            occurred_on="2026-01-03",
+            flow_direction="income",
+            category_id=category_id,
+            amount="10.00",
+            currency="RUB",
+        )
+
+    set_category_active(database, category_id, True)
+    assert {row["id"]: row for row in categories(database)}[category_id]["active"] == 1
+
+
+def test_category_management_rejects_ambiguous_names_and_unsafe_deactivation(tmp_path):
+    database = tmp_path / "synthetic.sqlite3"
+    initialize_database(database)
+
+    category_id = create_category(
+        database, "Подработка", direction="income", income_class="active")
+    with pytest.raises(ValueError, match="already exists"):
+        create_category(
+            database, " подработка ", direction="income", income_class="passive")
+    with pytest.raises(ValueError, match="already exists"):
+        create_category(database, "ПОДРАБОТКА", direction="expense")
+    with pytest.raises(ValueError, match="fallback"):
+        set_category_active(database, "income.other", False)
+
+    create_transaction_draft(
+        database,
+        occurred_on="2026-01-02",
+        flow_direction="income",
+        category_id=category_id,
+        amount="100.00",
+        currency="RUB",
+        origin_kind="manual",
+        origin_key="manual-1",
+    )
+    with pytest.raises(ValueError, match="open transaction drafts"):
+        set_category_active(database, category_id, False)
+
+
+def test_expense_category_does_not_accept_income_class(tmp_path):
+    database = tmp_path / "synthetic.sqlite3"
+    initialize_database(database)
+
+    with pytest.raises(ValueError, match="income class"):
+        create_category(
+            database, "Комиссии", direction="expense", income_class="passive")
 
 
 def test_cash_draft_publish_is_atomic_and_idempotent(tmp_path):

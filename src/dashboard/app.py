@@ -1177,6 +1177,134 @@ def register_callbacks(app: Dash) -> None:
             return report_text(str(exc), locale), "danger", no_update, no_update, next_add_request_id
 
     @app.callback(
+        Output("category-create-income-class", "disabled"),
+        Output("category-create-income-class", "value"),
+        Input("category-create-direction", "value"),
+    )
+    def sync_category_income_class(direction):
+        return (True, None) if direction == "expense" else (False, "active")
+
+    @app.callback(
+        Output("category-rename-name", "value"),
+        Input("category-registry-grid", "selectedRows"),
+        prevent_initial_call=True,
+    )
+    def select_category_for_rename(selected_rows):
+        if not selected_rows:
+            return ""
+        return str(selected_rows[0].get("Категория", ""))
+
+    @app.callback(
+        Output("category-registry-message", "children"),
+        Output("category-registry-message", "color"),
+        Output("category-registry-grid", "rowData"),
+        Output("category-registry-grid", "selectedRows"),
+        Output("category-create-name", "value"),
+        Output("transaction-input-category", "options"),
+        Output("transaction-input-category", "value"),
+        Output("kaspi-import-grid", "columnDefs", allow_duplicate=True),
+        Input("category-create-button", "n_clicks"),
+        Input("category-rename-button", "n_clicks"),
+        Input("category-toggle-button", "n_clicks"),
+        State("category-create-direction", "value"),
+        State("category-create-name", "value"),
+        State("category-create-income-class", "value"),
+        State("category-registry-grid", "selectedRows"),
+        State("category-rename-name", "value"),
+        State("transaction-input-category", "value"),
+        State("dashboard-locale", "data"),
+        prevent_initial_call=True,
+    )
+    def manage_categories(
+        create_clicks,
+        rename_clicks,
+        toggle_clicks,
+        direction,
+        create_name,
+        income_class,
+        selected_rows,
+        rename_name,
+        current_transaction_category,
+        locale,
+    ):
+        del create_clicks, rename_clicks, toggle_clicks
+        trigger = ctx.triggered_id
+        if trigger not in {
+            "category-create-button", "category-rename-button", "category-toggle-button"
+        }:
+            raise PreventUpdate
+        selected = selected_rows[0] if selected_rows else None
+        try:
+            config.require_writable_mode()
+            if not config.use_sqlite_storage():
+                raise ValueError("Управление категориями доступно в режиме SQLite.")
+            from src.data.sqlite_store import (
+                create_category,
+                rename_category,
+                set_category_active,
+            )
+
+            preferred_category = current_transaction_category
+            cleared_create_name = no_update
+            if trigger == "category-create-button":
+                create_category(
+                    config.active_database_path(),
+                    str(create_name or ""),
+                    direction=str(direction or ""),
+                    income_class=(str(income_class) if direction == "income" else None),
+                )
+                message = "Категория добавлена."
+                cleared_create_name = ""
+            elif trigger == "category-rename-button":
+                if selected is None:
+                    raise ValueError("Выбери категорию в таблице.")
+                rename_category(
+                    config.active_database_path(),
+                    str(selected.get("id", "")),
+                    str(rename_name or ""),
+                )
+                message = "Категория переименована; исторические назначения сохранены."
+            else:
+                if selected is None:
+                    raise ValueError("Выбери категорию в таблице.")
+                activate = not bool(selected.get("active"))
+                set_category_active(
+                    config.active_database_path(),
+                    str(selected.get("id", "")),
+                    activate,
+                )
+                message = "Категория активирована." if activate else "Категория деактивирована."
+
+            clear_data_cache()
+            options = _transaction_category_options(locale)
+            option_values = {option["value"] for option in options}
+            selected_value = (
+                preferred_category if preferred_category in option_values
+                else (options[0]["value"] if options else None)
+            )
+            return (
+                report_text(message, locale),
+                "success",
+                _category_registry_rows(locale),
+                [],
+                cleared_create_name,
+                options,
+                selected_value,
+                _localized_input_column_defs(_kaspi_import_column_defs(), locale),
+            )
+        except Exception as exc:
+            return (
+                report_text(str(exc), locale),
+                "danger",
+                no_update,
+                no_update,
+                no_update,
+                no_update,
+                no_update,
+                no_update,
+            )
+
+    @app.callback(
         Output("transaction-export-preview-grid", "rowData"),
         Output("transaction-export-preview-grid", "columnDefs"),
         Output("transaction-export-message", "children"),
@@ -2053,6 +2181,11 @@ def _input_report_layout(
                 tab_id="input-transactions",
             ),
             dbc.Tab(_assets_input_layout(year, month, theme, load_records=load_asset_records, read_only=read_only, locale=locale), label=report_text("Активы", locale), tab_id="input-assets"),
+            dbc.Tab(
+                _category_input_layout(theme, read_only=read_only, locale=locale),
+                label=report_text("Категории", locale),
+                tab_id="input-categories",
+            ),
         ],
         id="input-inner-tabs",
         active_tab="input-transactions",
@@ -2104,7 +2237,7 @@ def _transaction_input_layout(
     transaction_save_result: dict | None = None,
     locale: str = DEFAULT_LOCALE,
 ):
-    category_options = _transaction_category_options()
+    category_options = _transaction_category_options(locale)
     currency_options = [{"label": ticker, "value": ticker} for ticker in config.UNIQUE_TICKERS]
     month_value = f"{year}-{str(month).zfill(2)}"
     upload_limit_label = BANK_PDF_UPLOAD_LIMIT_LABEL
@@ -2270,6 +2403,206 @@ def _transaction_input_layout(
                             className=_ag_grid_class_name(theme),
                             style=_ag_grid_style("520px"),
                         )
+                    ),
+                ],
+                style=_section_style(theme),
+            ),
+        ],
+        className="d-grid gap-4 pt-3",
+    )
+
+
+def _category_registry_rows(locale: str = DEFAULT_LOCALE) -> list[dict]:
+    if not config.use_sqlite_storage():
+        return []
+    from src.data.sqlite_store import categories
+
+    direction_labels = {
+        "income": report_text("Доход", locale),
+        "expense": report_text("Расход", locale),
+    }
+    class_labels = {
+        "active": report_text("Активный", locale),
+        "passive": report_text("Пассивный", locale),
+        None: "",
+    }
+    return [
+        {
+            "id": row["id"],
+            "Категория": row["name_ru"],
+            "Направление": direction_labels[row["direction"]],
+            "Класс дохода": class_labels.get(row["income_class"], row["income_class"] or ""),
+            "Статус": report_text("Активна" if row["active"] else "Неактивна", locale),
+            "Операций": row["transaction_count"],
+            "Открытых черновиков": row["open_draft_count"],
+            "active": bool(row["active"]),
+        }
+        for row in categories(config.active_database_path())
+    ]
+
+
+def _category_registry_column_defs(locale: str = DEFAULT_LOCALE) -> list[dict]:
+    return _localized_input_column_defs(
+        [
+            {"field": "id", "hide": True},
+            {"field": "Категория", "headerName": "Категория", "flex": 1, "minWidth": 190},
+            {"field": "Направление", "headerName": "Направление", "width": 140},
+            {"field": "Класс дохода", "headerName": "Класс дохода", "width": 150},
+            {"field": "Статус", "headerName": "Статус", "width": 120},
+            {"field": "Операций", "headerName": "Операций", "width": 120},
+            {"field": "Открытых черновиков", "headerName": "Открытых черновиков", "width": 170},
+            {"field": "active", "hide": True},
+        ],
+        locale,
+    )
+
+
+def _category_input_layout(
+    theme: str | None,
+    *,
+    read_only: bool = False,
+    locale: str = DEFAULT_LOCALE,
+):
+    if not config.use_sqlite_storage():
+        return dbc.Alert(
+            report_text("Управление категориями доступно в режиме SQLite.", locale),
+            color="secondary",
+            className="mt-3",
+        )
+    return html.Div(
+        [
+            html.Section(
+                [
+                    html.H2(report_text("Новая категория", locale), className="h5 mb-3"),
+                    dbc.Row(
+                        [
+                            dbc.Col(
+                                [
+                                    dbc.Label(report_text("Направление", locale), className="small mb-1"),
+                                    dcc.Dropdown(
+                                        id="category-create-direction",
+                                        options=[
+                                            {"label": report_text("Доход", locale), "value": "income"},
+                                            {"label": report_text("Расход", locale), "value": "expense"},
+                                        ],
+                                        value="income",
+                                        clearable=False,
+                                        className="dash-dropdown",
+                                    ),
+                                ],
+                                xs=12,
+                                md=3,
+                            ),
+                            dbc.Col(
+                                [
+                                    dbc.Label(report_text("Название", locale), html_for="category-create-name", className="small mb-1"),
+                                    dbc.Input(id="category-create-name", type="text", className="finrep-native-input", style=_form_control_style(theme)),
+                                ],
+                                xs=12,
+                                md=4,
+                            ),
+                            dbc.Col(
+                                [
+                                    dbc.Label(report_text("Класс дохода", locale), className="small mb-1"),
+                                    dcc.Dropdown(
+                                        id="category-create-income-class",
+                                        options=[
+                                            {"label": report_text("Активный", locale), "value": "active"},
+                                            {"label": report_text("Пассивный", locale), "value": "passive"},
+                                        ],
+                                        value="active",
+                                        clearable=False,
+                                        className="dash-dropdown",
+                                    ),
+                                ],
+                                xs=12,
+                                md=3,
+                            ),
+                            dbc.Col(
+                                dbc.Button(
+                                    report_text("Добавить", locale),
+                                    id="category-create-button",
+                                    color="primary",
+                                    className="w-100",
+                                    disabled=read_only,
+                                ),
+                                xs=12,
+                                md=2,
+                                className="d-flex align-items-end",
+                            ),
+                        ],
+                        className="g-2",
+                    ),
+                ],
+                style=_section_style(theme),
+            ),
+            html.Section(
+                [
+                    html.H2(report_text("Справочник категорий", locale), className="h5 mb-2"),
+                    html.P(
+                        report_text("Выбери строку, чтобы переименовать категорию или изменить её доступность для новых операций. История сохраняет тот же ID.", locale),
+                        className="small opacity-75",
+                    ),
+                    dbc.Alert(
+                        id="category-registry-message",
+                        children=report_text("Изменения категорий применяются к новым операциям; суммы истории не переписываются.", locale),
+                        color="secondary",
+                        is_open=True,
+                        className="mb-3 py-2",
+                    ),
+                    _ag_grid_scroll(
+                        dag.AgGrid(
+                            id="category-registry-grid",
+                            rowData=_category_registry_rows(locale),
+                            columnDefs=_category_registry_column_defs(locale),
+                            defaultColDef=_ag_grid_default_col_def(editable=False),
+                            dashGridOptions={
+                                "pagination": False,
+                                "rowSelection": "single",
+                                "suppressFieldDotNotation": True,
+                            },
+                            className=_ag_grid_class_name(theme),
+                            style=_ag_grid_style("430px"),
+                        )
+                    ),
+                    dbc.Row(
+                        [
+                            dbc.Col(
+                                [
+                                    dbc.Label(report_text("Новое название выбранной категории", locale), html_for="category-rename-name", className="small mb-1"),
+                                    dbc.Input(id="category-rename-name", type="text", className="finrep-native-input", style=_form_control_style(theme)),
+                                ],
+                                xs=12,
+                                md=6,
+                            ),
+                            dbc.Col(
+                                dbc.Button(
+                                    report_text("Переименовать", locale),
+                                    id="category-rename-button",
+                                    color="secondary",
+                                    outline=True,
+                                    className="w-100",
+                                    disabled=read_only,
+                                ),
+                                xs=12,
+                                md=3,
+                                className="d-flex align-items-end",
+                            ),
+                            dbc.Col(
+                                dbc.Button(
+                                    report_text("Активировать / деактивировать", locale),
+                                    id="category-toggle-button",
+                                    color="warning",
+                                    outline=True,
+                                    className="w-100",
+                                    disabled=read_only,
+                                ),
+                                xs=12,
+                                md=3,
+                                className="d-flex align-items-end",
+                            ),
+                        ],
+                        className="g-2 mt-2",
                     ),
                 ],
                 style=_section_style(theme),
@@ -2477,7 +2810,25 @@ def _safe_upload_filename(filename: str | None) -> str:
     return " ".join(value.split()) or "PDF"
 
 
-def _transaction_category_options() -> list[dict]:
+def _transaction_category_options(locale: str = DEFAULT_LOCALE) -> list[dict]:
+    if config.use_sqlite_storage():
+        from src.data.sqlite_store import categories
+
+        rows = [
+            row for row in categories(config.active_database_path())
+            if row["active"] and row["parent_id"] is None
+        ]
+        direction_labels = {
+            "income": report_text("Доход", locale),
+            "expense": report_text("Расход", locale),
+        }
+        return [
+            {
+                "label": f"{direction_labels[row['direction']]} · {row['name_ru']}",
+                "value": row["id"],
+            }
+            for row in rows
+        ]
     try:
         categories = sorted(str(value) for value in get_transactions()["Категория"].dropna().unique())
     except Exception:
@@ -2828,7 +3179,15 @@ def _format_input_amount(value) -> str:
 
 
 def _kaspi_import_column_defs() -> list[dict]:
-    categories = [option["value"] for option in _transaction_category_options()]
+    if config.use_sqlite_storage():
+        from src.data.sqlite_store import categories as category_registry
+
+        categories = [
+            row["name_ru"] for row in category_registry(config.active_database_path())
+            if row["active"] and row["parent_id"] is None
+        ]
+    else:
+        categories = [option["value"] for option in _transaction_category_options()]
     category_class_rules = {
         "finrep-category-selected": (
             "params.api.__finrepCategorySelection && "
