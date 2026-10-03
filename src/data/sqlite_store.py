@@ -15,9 +15,19 @@ from src import config
 from src.data.money import parse_money_amount
 
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 _DIRECTIONS = {"income", "expense"}
 _DATASETS = {"cash_transactions", "asset_snapshots"}
+_ASSET_TYPES = (
+    ("cash_account", "Расчётный счёт", "Cash account", 10),
+    ("deposit", "Депозит", "Deposit", 20),
+    ("bond", "Облигации", "Bonds", 30),
+    ("equity", "Акции", "Equities", 40),
+    ("fund", "Фонд", "Fund", 50),
+    ("crypto", "Крипто", "Crypto", 60),
+    ("real_estate", "Недвижимость", "Real estate", 70),
+    ("other", "Другое", "Other", 80),
+)
 _SYSTEM_CATEGORIES = (
     ("income.salary", None, "income", "Зарплата", 1, "active", 10),
     ("income.interest", None, "income", "Проценты", 1, "passive", 20),
@@ -53,6 +63,13 @@ _TABLES = (
     """CREATE TABLE currencies (
         code TEXT PRIMARY KEY CHECK (length(code) BETWEEN 3 AND 8),
         minor_unit INTEGER NOT NULL CHECK (minor_unit BETWEEN 0 AND 6)
+    ) STRICT""",
+    """CREATE TABLE asset_types (
+        id TEXT PRIMARY KEY CHECK (trim(id) <> ''),
+        name_ru TEXT NOT NULL CHECK (trim(name_ru) <> ''),
+        name_en TEXT NOT NULL CHECK (trim(name_en) <> ''),
+        active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0, 1)),
+        sort_order INTEGER NOT NULL DEFAULT 0
     ) STRICT""",
     """CREATE TABLE categories (
         id TEXT PRIMARY KEY, parent_id TEXT REFERENCES categories(id) ON DELETE RESTRICT,
@@ -97,7 +114,9 @@ _TABLES = (
     """CREATE TABLE asset_accounts (
         id TEXT PRIMARY KEY, name TEXT NOT NULL CHECK (trim(name) <> ''),
         active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0, 1)),
-        created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+        created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+        asset_type_id TEXT REFERENCES asset_types(id) ON DELETE RESTRICT,
+        include_in_capital INTEGER NOT NULL DEFAULT 1 CHECK (include_in_capital IN (0, 1))
     ) STRICT""",
     """CREATE TABLE asset_snapshots (
         id TEXT PRIMARY KEY,
@@ -393,6 +412,7 @@ _VIEWS = (
     GROUP BY period, currency_code, flow_direction, category_id, category_name_ru""",
     """CREATE VIEW v_asset_snapshots AS
     SELECT s.id, s.period, s.account_id, a.name AS account_name,
+      a.asset_type_id, a.include_in_capital,
       s.currency_code, s.amount_minor, s.row_version
     FROM asset_snapshots s JOIN asset_accounts a ON a.id = s.account_id""",
     """CREATE VIEW v_effective_fx_rates AS
@@ -409,6 +429,45 @@ def _utc_now() -> str:
 
 def _schema_checksum() -> str:
     return hashlib.sha256("\n".join((*_TABLES, *_INDEXES_AND_TRIGGERS, *_VIEWS)).encode()).hexdigest()
+
+
+def _migrate_v7_to_v8(connection: sqlite3.Connection) -> None:
+    account_columns = {
+        row["name"] for row in connection.execute("PRAGMA table_info(asset_accounts)")
+    }
+    if account_columns != {"id", "name", "active", "created_at", "updated_at"}:
+        raise ValueError("SQLite v7 asset_accounts schema does not match the migration contract")
+
+    connection.execute("""CREATE TABLE asset_types (
+        id TEXT PRIMARY KEY CHECK (trim(id) <> ''),
+        name_ru TEXT NOT NULL CHECK (trim(name_ru) <> ''),
+        name_en TEXT NOT NULL CHECK (trim(name_en) <> ''),
+        active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0, 1)),
+        sort_order INTEGER NOT NULL DEFAULT 0
+    ) STRICT""")
+    connection.executemany(
+        "INSERT INTO asset_types (id, name_ru, name_en, sort_order) VALUES (?, ?, ?, ?)",
+        _ASSET_TYPES,
+    )
+    connection.execute(
+        "ALTER TABLE asset_accounts ADD COLUMN asset_type_id TEXT REFERENCES asset_types(id) ON DELETE RESTRICT"
+    )
+    connection.execute(
+        "ALTER TABLE asset_accounts ADD COLUMN include_in_capital INTEGER NOT NULL DEFAULT 1 "
+        "CHECK (include_in_capital IN (0, 1))"
+    )
+    connection.execute("DROP VIEW v_asset_snapshots")
+    connection.execute("""CREATE VIEW v_asset_snapshots AS
+        SELECT s.id, s.period, s.account_id, a.name AS account_name,
+          a.asset_type_id, a.include_in_capital,
+          s.currency_code, s.amount_minor, s.row_version
+        FROM asset_snapshots s JOIN asset_accounts a ON a.id = s.account_id""")
+    now = _utc_now()
+    connection.execute(
+        "INSERT INTO schema_migrations VALUES (?, ?, ?, ?)",
+        (SCHEMA_VERSION, "asset_classification", _schema_checksum(), now),
+    )
+    connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
 
 
 @contextmanager
@@ -449,6 +508,9 @@ def initialize_database(path: str | Path, *, data_mode: str = "synthetic") -> No
             if row is None or row[0] != _schema_checksum():
                 raise ValueError("SQLite schema version or checksum mismatch")
             return
+        if version == 7:
+            _migrate_v7_to_v8(connection)
+            return
         has_tables = connection.execute(
             "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' LIMIT 1"
         ).fetchone()
@@ -463,6 +525,10 @@ def initialize_database(path: str | Path, *, data_mode: str = "synthetic") -> No
               (id, parent_id, direction, name_ru, active, income_class, sort_order, created_at, updated_at)
               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             [(*category, now, now) for category in _SYSTEM_CATEGORIES],
+        )
+        connection.executemany(
+            "INSERT INTO asset_types (id, name_ru, name_en, sort_order) VALUES (?, ?, ?, ?)",
+            _ASSET_TYPES,
         )
         connection.executemany("INSERT INTO currencies VALUES (?, 2)", [(code,) for code in sorted(config.UNIQUE_TICKERS)])
         connection.execute("INSERT INTO schema_migrations VALUES (?, ?, ?, ?)",
@@ -1338,13 +1404,74 @@ def void_cash_transaction(path: str | Path, transaction_id: str, *, reason: str)
         _audit(connection, transaction_id, "voided", before, after, reason)
 
 
-def add_asset_account(path: str | Path, account_id: str, name: str) -> None:
+def add_asset_account(path: str | Path, account_id: str, name: str, *,
+                      asset_type_id: str | None = None,
+                      include_in_capital: bool = True) -> None:
     if not account_id or not name.strip():
         raise ValueError("account ID and name are required")
     now = _utc_now()
     with connect_database(path, writable=True) as connection:
-        connection.execute("INSERT INTO asset_accounts VALUES (?, ?, 1, ?, ?)",
-                           (account_id, name.strip(), now, now))
+        connection.execute(
+            """INSERT INTO asset_accounts
+              (id, name, active, created_at, updated_at, asset_type_id, include_in_capital)
+              VALUES (?, ?, 1, ?, ?, ?, ?)""",
+            (account_id, name.strip(), now, now, asset_type_id,
+             int(bool(include_in_capital))),
+        )
+
+
+def asset_types(path: str | Path, *, include_inactive: bool = False) -> list[dict]:
+    query = "SELECT * FROM asset_types"
+    if not include_inactive:
+        query += " WHERE active = 1"
+    query += " ORDER BY sort_order, name_ru, id"
+    with connect_database(path) as connection:
+        return [dict(row) for row in connection.execute(query).fetchall()]
+
+
+def asset_accounts(path: str | Path) -> list[dict]:
+    with connect_database(path) as connection:
+        rows = connection.execute("""SELECT a.id, a.name, a.active, a.asset_type_id,
+            t.name_ru AS asset_type_name_ru, t.name_en AS asset_type_name_en,
+            a.include_in_capital, a.created_at, a.updated_at
+            FROM asset_accounts a LEFT JOIN asset_types t ON t.id = a.asset_type_id
+            ORDER BY a.name, a.id""").fetchall()
+    return [dict(row) for row in rows]
+
+
+def set_asset_account_classification(path: str | Path, account_id: str, *,
+                                     asset_type_id: str | None,
+                                     include_in_capital: bool,
+                                     reason: str) -> None:
+    if not reason.strip():
+        raise ValueError("change reason is required")
+    with connect_database(path, writable=True) as connection:
+        before = connection.execute(
+            "SELECT * FROM asset_accounts WHERE id = ?", (account_id,)
+        ).fetchone()
+        if before is None:
+            raise ValueError("unknown asset account")
+        if asset_type_id is not None:
+            asset_type = connection.execute(
+                "SELECT active FROM asset_types WHERE id = ?", (asset_type_id,)
+            ).fetchone()
+            if asset_type is None or not asset_type["active"]:
+                raise ValueError("asset type must be active")
+        now = _utc_now()
+        connection.execute(
+            """UPDATE asset_accounts SET asset_type_id = ?, include_in_capital = ?,
+              updated_at = ? WHERE id = ?""",
+            (asset_type_id, int(bool(include_in_capital)), now, account_id),
+        )
+        after = connection.execute(
+            "SELECT * FROM asset_accounts WHERE id = ?", (account_id,)
+        ).fetchone()
+        connection.execute("""INSERT INTO audit_events
+            (entity_type, entity_id, action, before_json, after_json, reason, occurred_at)
+            VALUES ('asset_account', ?, 'classification_changed', ?, ?, ?, ?)""",
+            (account_id, json.dumps(dict(before), ensure_ascii=False, sort_keys=True),
+             json.dumps(dict(after), ensure_ascii=False, sort_keys=True),
+             reason.strip(), now))
 
 
 def add_asset_snapshot(path: str | Path, *, snapshot_id: str, account_id: str,
@@ -1401,8 +1528,10 @@ def replace_asset_snapshot_month(path: str | Path, *, period: str,
             account = connection.execute(
                 "SELECT name FROM asset_accounts WHERE id = ?", (account_id,)).fetchone()
             if account is None:
-                connection.execute("INSERT INTO asset_accounts VALUES (?, ?, 1, ?, ?)",
-                                   (account_id, account_name, now, now))
+                connection.execute("""INSERT INTO asset_accounts
+                    (id, name, active, created_at, updated_at)
+                    VALUES (?, ?, 1, ?, ?)""",
+                    (account_id, account_name, now, now))
             elif account["name"] != account_name:
                 raise ValueError("asset account identity collision")
             key = (account_id, currency)

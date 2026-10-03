@@ -192,7 +192,8 @@ def _get_assets_sqlite_cached(database_path: str):
     with connect_database(database_path) as connection:
         rows = connection.execute("""SELECT v.period, v.account_name, v.currency_code,
             v.amount_minor, c.minor_unit FROM v_asset_snapshots v
-            JOIN currencies c ON c.code = v.currency_code ORDER BY v.period, v.id""").fetchall()
+            JOIN currencies c ON c.code = v.currency_code
+            WHERE v.include_in_capital = 1 ORDER BY v.period, v.id""").fetchall()
     if not rows:
         return _empty_frame(ASSET_COLUMNS)
     data = pd.DataFrame([dict(row) for row in rows])

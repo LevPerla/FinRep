@@ -17,8 +17,10 @@ from src.data.sqlite_store import (
     add_category,
     append_cash_drafts,
     annual_goals,
+    asset_accounts,
     asset_snapshot_month,
     asset_snapshots,
+    asset_types,
     backup_database,
     cash_transactions,
     categories,
@@ -45,6 +47,7 @@ from src.data.sqlite_store import (
     save_month,
     saved_asset_months,
     saved_months,
+    set_asset_account_classification,
     set_category_active,
     transaction_drafts_snapshot,
     update_cash_drafts,
@@ -66,7 +69,7 @@ def _add_transaction(database, transaction_id, direction, category, amount="1.00
     )
 
 
-def test_v7_schema_is_strict_and_categories_match_contract(tmp_path):
+def test_v8_schema_is_strict_and_categories_match_contract(tmp_path):
     database = tmp_path / "synthetic.sqlite3"
     initialize_database(database)
     initialize_database(database)
@@ -89,6 +92,40 @@ def test_v7_schema_is_strict_and_categories_match_contract(tmp_path):
     assert names["income"] == {"Зарплата", "Проценты", "Инвест доход", "Прочие доходы"}
     assert len(names["expense"]) == 10
     assert strict and set(strict.values()) == {1}
+
+
+def test_asset_account_classification_preserves_history_and_controls_capital(tmp_path):
+    from src.data.get import _get_assets_sqlite_cached
+
+    database = tmp_path / "synthetic.sqlite3"
+    initialize_database(database)
+    add_asset_account(
+        database, "cash-1", "Основной счёт", asset_type_id="cash_account")
+    add_asset_snapshot(
+        database, snapshot_id="snapshot-1", account_id="cash-1",
+        period="2026-09", amount="123.45", currency="RUB")
+
+    assert {row["id"] for row in asset_types(database)} == {
+        "cash_account", "deposit", "bond", "equity", "fund", "crypto",
+        "real_estate", "other",
+    }
+    assert len(_get_assets_sqlite_cached(str(database))) == 1
+
+    set_asset_account_classification(
+        database, "cash-1", asset_type_id="deposit", include_in_capital=False,
+        reason="Счёт исключён из согласованного капитала")
+    _get_assets_sqlite_cached.cache_clear()
+
+    account = asset_accounts(database)[0]
+    assert account["asset_type_id"] == "deposit"
+    assert account["include_in_capital"] == 0
+    assert [row["id"] for row in asset_snapshots(database)] == ["snapshot-1"]
+    assert _get_assets_sqlite_cached(str(database)).empty
+    with connect_database(database) as connection:
+        event = connection.execute(
+            "SELECT entity_type, action FROM audit_events ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+    assert tuple(event) == ("asset_account", "classification_changed")
 
 
 def test_user_category_lifecycle_preserves_historical_assignment(tmp_path):

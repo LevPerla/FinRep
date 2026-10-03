@@ -5,6 +5,7 @@ import sqlite3
 import pytest
 
 from src import config
+from src.data import sqlite_store
 from src.data.sqlite_bootstrap import ensure_default_live_database
 from src.data.sqlite_store import SCHEMA_VERSION, initialize_database
 
@@ -14,6 +15,45 @@ def _use_default_sqlite(monkeypatch, data_root: Path) -> Path:
     monkeypatch.delenv("FINREP_SQLITE_PATH", raising=False)
     monkeypatch.setattr(config, "DATA_PATH", str(data_root))
     return data_root / "finrep.sqlite3"
+
+
+def _create_v7_database(path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    old_accounts = """CREATE TABLE asset_accounts (
+        id TEXT PRIMARY KEY, name TEXT NOT NULL CHECK (trim(name) <> ''),
+        active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0, 1)),
+        created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+    ) STRICT"""
+    old_view = """CREATE VIEW v_asset_snapshots AS
+        SELECT s.id, s.period, s.account_id, a.name AS account_name,
+          s.currency_code, s.amount_minor, s.row_version
+        FROM asset_snapshots s JOIN asset_accounts a ON a.id = s.account_id"""
+    with sqlite3.connect(path) as connection:
+        connection.execute("PRAGMA foreign_keys = ON")
+        for statement in sqlite_store._TABLES:
+            if statement.startswith("CREATE TABLE asset_types"):
+                continue
+            connection.execute(
+                old_accounts if statement.startswith("CREATE TABLE asset_accounts")
+                else statement)
+        for statement in sqlite_store._INDEXES_AND_TRIGGERS:
+            connection.execute(statement)
+        for statement in sqlite_store._VIEWS:
+            connection.execute(
+                old_view if statement.startswith("CREATE VIEW v_asset_snapshots")
+                else statement)
+        connection.execute(
+            "INSERT INTO app_metadata VALUES (1, 'epoch-v7', 'live', '2026-10-03T00:00:00Z')")
+        connection.execute("INSERT INTO currencies VALUES ('RUB', 2)")
+        connection.execute(
+            "INSERT INTO schema_migrations VALUES (7, 'normalized_core', ?, '2026-10-03T00:00:00Z')",
+            ("0" * 64,))
+        connection.execute(
+            "INSERT INTO asset_accounts VALUES ('account-1', 'Счёт', 1, 'now', 'now')")
+        connection.execute("""INSERT INTO asset_snapshots
+            (id, account_id, period, currency_code, amount_minor, created_at, updated_at)
+            VALUES ('snapshot-1', 'account-1', '2026-09', 'RUB', 12345, 'now', 'now')""")
+        connection.execute("PRAGMA user_version = 7")
 
 
 def test_sqlite_is_the_default_backend(monkeypatch):
@@ -73,6 +113,28 @@ def test_compatible_existing_database_is_preserved(monkeypatch, tmp_path):
     with sqlite3.connect(database) as connection:
         assert connection.execute(
             "SELECT storage_epoch FROM app_metadata WHERE id = 1").fetchone()[0] == epoch
+
+
+def test_v7_database_is_backed_up_and_upgraded_without_guessing_asset_types(
+        monkeypatch, tmp_path):
+    database = _use_default_sqlite(monkeypatch, tmp_path / "data")
+    _create_v7_database(database)
+
+    assert ensure_default_live_database() == "upgraded"
+    assert ensure_default_live_database() == "existing"
+    backup = database.with_name(f"{database.stem}.pre-v{SCHEMA_VERSION}{database.suffix}")
+
+    with sqlite3.connect(database) as connection:
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
+        assert connection.execute(
+            "SELECT asset_type_id, include_in_capital FROM asset_accounts"
+        ).fetchone() == (None, 1)
+        assert connection.execute("SELECT COUNT(*) FROM asset_snapshots").fetchone()[0] == 1
+        assert connection.execute("SELECT COUNT(*) FROM asset_types").fetchone()[0] == 8
+        assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
+    with sqlite3.connect(backup) as connection:
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 7
+        assert connection.execute("SELECT COUNT(*) FROM asset_snapshots").fetchone()[0] == 1
 
 
 def test_concurrent_first_start_publishes_one_database(monkeypatch, tmp_path):
