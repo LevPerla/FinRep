@@ -5,7 +5,7 @@ import pandas as pd
 os.environ.setdefault("FINREP_DASH_PASSWORD", "test-password")
 os.environ.setdefault("FINREP_DASH_SECRET_KEY", "test-session-secret")
 
-from src.dashboard.app import _main_report_layout
+from src.dashboard.app import _grid_section, _main_report_layout
 from src.dashboard.main_data import DashboardDataset, _cockpit_metrics, _format_cockpit_metrics
 
 
@@ -101,6 +101,12 @@ def test_missing_selected_month_keeps_main_layout_and_shows_notice():
             title=dataset_id,
             dataframe=pd.DataFrame(),
         )
+    for dataset_id in ("fx_revaluation", "fx_changes"):
+        datasets[dataset_id] = DashboardDataset(
+            id=dataset_id,
+            title=dataset_id,
+            dataframe=pd.DataFrame({"Дата": [pd.Timestamp("2026-02-28")]}),
+        )
 
     layout = _main_report_layout(
         datasets,
@@ -117,3 +123,25 @@ def test_missing_selected_month_keeps_main_layout_and_shows_notice():
     assert freshness_notice is not None
     assert "Депозит" in str(freshness_notice.children)
     assert _find_component(layout, "main-metrics-primary") is not None
+    assert _find_component(layout, "capital_components-grid") is None
+    assert _find_component(layout, "real_asset_capital-graph") is None
+
+    fx_revaluation_index = next(
+        index for index, section in enumerate(layout.children)
+        if _find_component(section, "fx_revaluation-graph") is not None
+    )
+    fx_changes_index = next(
+        index for index, section in enumerate(layout.children)
+        if _find_component(section, "fx_changes-graph") is not None
+    )
+    assert fx_changes_index == fx_revaluation_index + 1
+
+
+def test_yearly_totals_table_has_no_height_cap():
+    data = pd.DataFrame({"Год": [str(year) for year in range(2016, 2027)]})
+    dataset = DashboardDataset(
+        id="yearly_stats", title="Итоги по годам", dataframe=data)
+
+    section = _grid_section(dataset, height="none", theme="dark")
+
+    assert section.children[1].style["maxHeight"] == "none"

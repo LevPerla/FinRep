@@ -1,9 +1,9 @@
 from datetime import date
 
-import pandas as pd
-
+from src import config
+from src.dashboard import main_data
 from src.data.asset_freshness import evaluate_asset_freshness, freshness_label
-from src.model.create_tables import carry_forward_asset_snapshots
+from src.data import sqlite_store
 
 
 def _account(asset_type_id: str, period: str | None, *, included: bool = True) -> dict:
@@ -56,27 +56,28 @@ def test_missing_date_is_distinct_and_excluded_asset_does_not_warn_total():
     assert freshness_label(result["accounts"][0]) == "Дата оценки неизвестна"
 
 
-def test_carried_value_keeps_original_valuation_date():
-    assets = pd.DataFrame([
-        {
-            "Счет": "Депозит", "Валюта": "RUB", "Значение": 100.0,
-            "Дата": pd.Timestamp("2026-01-31"),
-            "Дата оценки": pd.Timestamp("2026-01-31"),
-        },
-        {
-            "Счет": "Счёт", "Валюта": "RUB", "Значение": 50.0,
-            "Дата": pd.Timestamp("2026-03-31"),
-            "Дата оценки": pd.Timestamp("2026-03-31"),
-        },
-    ])
+def test_dashboard_freshness_uses_accounts_from_latest_complete_snapshot(monkeypatch):
+    accounts = [
+        _account("deposit", "2022-09"),
+        _account("cash_account", "2026-10"),
+    ]
+    monkeypatch.setattr(config, "use_sqlite_storage", lambda: True)
+    monkeypatch.setattr(config, "active_database_path", lambda: "unused.sqlite3")
+    monkeypatch.setattr(sqlite_store, "asset_accounts", lambda _path: accounts)
 
-    carried = carry_forward_asset_snapshots(assets)
-    deposit = carried[carried["Счет"] == "Депозит"].sort_values("Дата")
+    result = main_data._current_asset_freshness()
 
-    assert deposit["Дата"].dt.strftime("%Y-%m").tolist() == [
-        "2026-01", "2026-02", "2026-03"]
-    assert deposit["Значение"].tolist() == [100.0, 100.0, 100.0]
-    assert deposit["Дата оценки"].dt.strftime("%Y-%m-%d").tolist() == [
-        "2026-01-31", "2026-01-31", "2026-01-31"]
-    assert deposit["Дата FX"].dt.strftime("%Y-%m-%d").tolist() == [
-        "2026-01-31", "2026-02-28", "2026-03-31"]
+    assert [row["last_period"] for row in result["accounts"]] == ["2026-10"]
+
+
+def test_dashboard_freshness_is_relative_to_selected_report_month(monkeypatch):
+    accounts = [_account("deposit", "2026-01")]
+    monkeypatch.setattr(config, "use_sqlite_storage", lambda: True)
+    monkeypatch.setattr(config, "active_database_path", lambda: "unused.sqlite3")
+    monkeypatch.setattr(sqlite_store, "asset_accounts", lambda _path: accounts)
+
+    result = main_data._current_asset_freshness("2026", "02")
+
+    assert result["as_of"] == "2026-02-28"
+    assert result["stale_count"] == 0
+    assert result["has_warning"] is False

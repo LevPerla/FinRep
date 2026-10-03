@@ -46,8 +46,6 @@ def _read_statistics(database_path: str | Path) -> dict:
                 (SELECT COUNT(*) FROM cash_transactions
                  WHERE status = 'posted' AND flow_direction = 'expense')
                     AS expense_count,
-                (SELECT COUNT(*) FROM transaction_drafts
-                 WHERE status IN ('draft', 'ready')) AS open_draft_count,
                 (SELECT MIN(occurred_on) FROM cash_transactions WHERE status = 'posted')
                     AS first_transaction_date,
                 (SELECT MAX(occurred_on) FROM cash_transactions WHERE status = 'posted')
@@ -87,7 +85,6 @@ def _statistics_frame(facts: dict) -> pd.DataFrame:
         ("Транзакции", "Всего транзакций", facts["transaction_count"], ""),
         ("Транзакции", "Доходных транзакций", facts["income_count"], ""),
         ("Транзакции", "Расходных транзакций", facts["expense_count"], ""),
-        ("Транзакции", "Открытых черновиков", facts["open_draft_count"], "Не входят в итог транзакций"),
         ("Охват истории", "Первая операция", facts["first_transaction_date"] or missing, ""),
         ("Охват истории", "Последняя операция", facts["last_transaction_date"] or missing, ""),
         ("Охват истории", "Календарный охват, дней", coverage_days if coverage_days is not None else missing, coverage_detail),

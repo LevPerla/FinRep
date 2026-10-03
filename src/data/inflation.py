@@ -196,6 +196,59 @@ def fetch_eurostat_cpi(session: requests.Session) -> CPIRelease:
                       _release_version(updated or max(indexes), digest), digest, published_on)
 
 
+def _fetch_world_bank_gem_cpi(
+    session: requests.Session, *, country: str, currency: str,
+    end_year: int | None = None,
+) -> CPIRelease:
+    end_year = end_year or date.today().year
+    url = f"https://api.worldbank.org/v2/country/{country}/indicator/CPTOTNSXN"
+    response = _get(session, url, params={
+        "source": 15,
+        "date": f"{START_YEAR}M01:{end_year}M12",
+        "format": "json",
+        "per_page": 1000,
+    })
+    payload = response.content
+    document = response.json()
+    if not isinstance(document, list) or len(document) != 2:
+        raise ValueError("World Bank GEM CPI response has an unexpected shape")
+    metadata, rows = document
+    if str(metadata.get("sourceid")) != "15" or not isinstance(rows, list):
+        raise ValueError("World Bank GEM CPI response has an unexpected source")
+    observations = []
+    for item in rows:
+        period_match = re.fullmatch(r"(\d{4})M(0[1-9]|1[0-2])", str(item.get("date", "")))
+        if period_match is None or item.get("value") is None:
+            continue
+        indicator = item.get("indicator", {})
+        if (indicator.get("id") != "CPTOTNSXN"
+                or item.get("country", {}).get("id") != country):
+            raise ValueError("World Bank GEM CPI response contains an unexpected series")
+        value = _decimal(item["value"], label="World Bank GEM CPI value")
+        observations.append({
+            "period": f"{period_match.group(1)}-{period_match.group(2)}",
+            "index_value": format(value, "f"),
+        })
+    if not observations:
+        raise ValueError("World Bank GEM CPI response has no monthly observations")
+    observations.sort(key=lambda item: item["period"])
+    digest = _payload_hash(payload)
+    latest = observations[-1]["period"]
+    last_updated = str(metadata.get("lastupdated", ""))
+    published_on = last_updated if re.fullmatch(r"\d{4}-\d{2}-\d{2}", last_updated) else None
+    return CPIRelease(
+        currency, tuple(observations),
+        _release_version(published_on or latest, digest), digest, published_on,
+    )
+
+
+def fetch_world_bank_russia_cpi(
+    session: requests.Session, *, end_year: int | None = None,
+) -> CPIRelease:
+    return _fetch_world_bank_gem_cpi(
+        session, country="RUS", currency="RUB", end_year=end_year)
+
+
 def _workbook_monthly_rates(payload: bytes, *, sheet_name: str | None,
                             first_year: int) -> list[tuple[str, Decimal]]:
     workbook = load_workbook(BytesIO(payload), read_only=True, data_only=True)
@@ -257,6 +310,66 @@ def fetch_kazakhstan_cpi(session: requests.Session) -> CPIRelease:
                       _release_version(published_on or latest, digest), digest, published_on)
 
 
+def fetch_kazakhstan_hybrid_cpi(
+    session: requests.Session, *, end_year: int | None = None,
+) -> CPIRelease:
+    world_bank = _fetch_world_bank_gem_cpi(
+        session, country="KAZ", currency="KZT", end_year=end_year)
+    official = fetch_kazakhstan_cpi(session)
+    world_bank_indexes = {
+        item["period"]: _decimal(item["index_value"], label="World Bank GEM CPI value")
+        for item in world_bank.observations
+    }
+    anchor = world_bank_indexes.get("2021-12")
+    if anchor is None:
+        raise ValueError("World Bank GEM CPI response has no Kazakhstan 2021-12 anchor")
+
+    world_bank_source = {
+        "provider_id": "world_bank_gem",
+        "source_name": "World Bank Global Economic Monitor",
+        "source_url": (
+            "https://datacatalog.worldbank.org/search/dataset/0037798/"
+            "global-economic-monitor"
+        ),
+    }
+    official_source = {
+        "provider_id": "stat_kz",
+        "source_name": "Бюро национальной статистики Казахстана",
+        "source_url": (
+            "https://stat.gov.kz/ru/industries/economy/prices/"
+            "dynamic-tables/?period=month"
+        ),
+    }
+    observations = [
+        {**item, **world_bank_source}
+        for item in world_bank.observations
+        if item["period"] <= "2021-12"
+    ]
+    for item in official.observations:
+        if item["period"] < "2022-01":
+            continue
+        official_index = _decimal(item["index_value"], label="Kazakhstan CPI value")
+        observations.append({
+            "period": item["period"],
+            "index_value": format(anchor * official_index / Decimal("100"), "f"),
+            **official_source,
+        })
+    if not any(item["period"] >= "2022-01" for item in observations):
+        raise ValueError("Kazakhstan CPI workbook has no observations after the splice point")
+    observations.sort(key=lambda item: item["period"])
+    digest = _payload_hash(
+        f"{world_bank.payload_sha256}\n{official.payload_sha256}".encode())
+    published_dates = [
+        value for value in (world_bank.published_on, official.published_on) if value
+    ]
+    published_on = max(published_dates) if published_dates else None
+    return CPIRelease(
+        "KZT", tuple(observations),
+        _release_version(published_on or observations[-1]["period"], digest),
+        digest, published_on,
+    )
+
+
 def fetch_rosstat_cpi(session: requests.Session) -> CPIRelease:
     page_url = "https://rosstat.gov.ru/statistics/price?print=1"
     page = _get(session, page_url)
@@ -279,8 +392,8 @@ def fetch_rosstat_cpi(session: requests.Session) -> CPIRelease:
 
 
 _FETCHERS = {
-    "RUB": fetch_rosstat_cpi,
-    "KZT": fetch_kazakhstan_cpi,
+    "RUB": fetch_world_bank_russia_cpi,
+    "KZT": fetch_kazakhstan_hybrid_cpi,
     "USD": fetch_bls_cpi,
     "GBP": fetch_ons_cpi,
     "EUR": fetch_eurostat_cpi,
@@ -328,7 +441,7 @@ def import_official_cpi_workbook(
     fetched_at: str | None = None,
     published_on: str | None = None,
 ) -> dict:
-    """Import an official Rosstat or Kazakhstan CPI workbook without weakening TLS."""
+    """Import an official Rosstat or Kazakhstan CPI workbook as a manual fallback."""
     currency = currency.strip().upper()
     if currency not in {"RUB", "KZT"}:
         raise ValueError("official CPI workbook import is supported only for RUB and KZT")
@@ -342,11 +455,27 @@ def import_official_cpi_workbook(
     if not rates:
         raise ValueError("official CPI workbook has no recognized monthly observations")
     digest = _payload_hash(payload)
+    source = (
+        {
+            "provider_id": "rosstat",
+            "source_name": "Росстат",
+            "source_url": "https://rosstat.gov.ru/statistics/price",
+        }
+        if currency == "RUB" else {
+            "provider_id": "stat_kz",
+            "source_name": "Бюро национальной статистики Казахстана",
+            "source_url": (
+                "https://stat.gov.kz/ru/industries/economy/prices/"
+                "dynamic-tables/?period=month"
+            ),
+        }
+    )
     saved = save_cpi_observations(
         database,
         currency=currency,
-        observations=list(_index_from_monthly_rates(rates)),
-        source_version=_release_version("official-xlsx", digest),
+        observations=[{**item, **source} for item in _index_from_monthly_rates(rates)],
+        source_version=_release_version(
+            "rosstat-xlsx" if currency == "RUB" else "stat-kz-xlsx", digest),
         payload_sha256=digest,
         fetched_at=fetched_at or _utc_now(),
         published_on=published_on,

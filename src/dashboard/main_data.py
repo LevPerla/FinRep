@@ -12,7 +12,6 @@ from src.data.get_finance import fx_network_mode, get_fx_rates, require_fx_rate
 from src.data.proccess import convert_transaction
 from src.model.create_tables import (
     asset_valuation_dates,
-    carry_forward_asset_snapshots,
     get_balance_by_month,
 )
 
@@ -85,7 +84,7 @@ def _build_main_dashboard_data(
 
     balance = get_balance_by_month(currency)
 
-    asset_freshness = _current_asset_freshness()
+    asset_freshness = _current_asset_freshness(year, month)
     cockpit_metrics = _cockpit_metrics(
         balance, currency, year, month, asset_freshness=asset_freshness)
     yearly_stats = _create_yearly_stats(balance)
@@ -97,12 +96,19 @@ def _build_main_dashboard_data(
         for column in ["Капитал", "Капитал по активам", "Расхождение с активами"]
         if column in balance.columns
     ]
-    capital = balance[capital_columns].reset_index()
     inflation_rate = _inflation_rate_data()
     real_asset_capital = _real_asset_capital_data(balance, currency, cpi_base_period)
+    capital = balance[capital_columns].reset_index()
+    if not real_asset_capital.empty:
+        real_by_date = real_asset_capital.set_index("Дата")["Реальная стоимость"]
+        capital["Реальная стоимость"] = pd.to_datetime(capital["Дата"]).map(real_by_date)
+    capital.attrs.update({
+        key: real_asset_capital.attrs[key]
+        for key in ("base_period", "status", "missing_periods", "latest_cpi_period")
+        if key in real_asset_capital.attrs
+    })
     capital_change_after_flows = _capital_change_after_flows_data(
         balance, real_asset_capital)
-    capital_components = _capital_components_data(currency)
     fx_revaluation = _fx_revaluation_data(balance)
     asset_currency_allocation = _asset_currency_allocation_data(currency)
     asset_liquidity_allocation = _asset_liquidity_allocation_data(currency)
@@ -167,7 +173,6 @@ def _build_main_dashboard_data(
             id="real_asset_capital",
             title="Покупательная способность активов",
             dataframe=real_asset_capital,
-            figure=_real_asset_capital_figure(real_asset_capital, currency),
         ),
         "capital_change_after_flows": DashboardDataset(
             id="capital_change_after_flows",
@@ -175,13 +180,6 @@ def _build_main_dashboard_data(
             dataframe=capital_change_after_flows,
             figure=_capital_change_after_flows_figure(
                 capital_change_after_flows, currency),
-        ),
-        "capital_components": DashboardDataset(
-            id="capital_components",
-            title="Состав капитала",
-            dataframe=capital_components,
-            display_dataframe=_format_capital_components(
-                capital_components, currency),
         ),
         "fx_revaluation": DashboardDataset(
             id="fx_revaluation",
@@ -361,13 +359,32 @@ def _cockpit_metrics(
     return result
 
 
-def _current_asset_freshness() -> dict | None:
+def _current_asset_freshness(
+    year: str | None = None,
+    month: str | None = None,
+) -> dict | None:
     if not config.use_sqlite_storage():
         return None
     from src.data.asset_freshness import evaluate_asset_freshness
     from src.data.sqlite_store import asset_accounts
 
-    return evaluate_asset_freshness(asset_accounts(config.active_database_path()))
+    accounts = [
+        account for account in asset_accounts(config.active_database_path())
+        if account.get("include_in_capital") and account.get("last_period")
+    ]
+    if accounts:
+        latest_period = max(account["last_period"] for account in accounts)
+        accounts = [
+            account for account in accounts
+            if account["last_period"] == latest_period
+        ]
+    as_of = None
+    if year and month:
+        try:
+            as_of = pd.Period(f"{int(year):04d}-{int(month):02d}", freq="M").end_time.date()
+        except (TypeError, ValueError):
+            pass
+    return evaluate_asset_freshness(accounts, as_of=as_of)
 
 
 def _selected_balance_row(
@@ -623,8 +640,24 @@ def _capital_figure(data: pd.DataFrame, currency: str) -> go.Figure:
                 connectgaps=False,
             )
         )
+    if "Реальная стоимость" in data.columns:
+        base_period = data.attrs.get("base_period", "")
+        fig.add_trace(
+            go.Scatter(
+                x=x_dates,
+                y=data["Реальная стоимость"],
+                mode="lines+markers",
+                name=f"В ценах {base_period}",
+                line=dict(color="#B08A6C", width=2),
+                connectgaps=False,
+            )
+        )
     _apply_dashboard_chart_layout(fig, "Динамика капитала", range_slider=True)
-    max_value = pd.to_numeric(data[["Капитал", "Капитал по активам"]].stack(), errors="coerce").max() if "Капитал по активам" in data.columns else pd.to_numeric(data["Капитал"], errors="coerce").max()
+    plotted_columns = [
+        column for column in ("Капитал", "Капитал по активам", "Реальная стоимость")
+        if column in data.columns
+    ]
+    max_value = pd.to_numeric(data[plotted_columns].stack(), errors="coerce").max()
     if pd.notna(max_value) and max_value > 0:
         fig.update_layout(
             margin=dict(l=70, r=30, t=76, b=55),
@@ -814,7 +847,11 @@ def _capital_components_data_cached(
         "Актуальность",
     ]
     with connect_database(database_path) as connection:
-        rows = connection.execute("""WITH ranked AS (
+        rows = connection.execute("""WITH latest_period AS (
+            SELECT MAX(period) AS period
+            FROM v_asset_snapshots
+            WHERE include_in_capital = 1
+        ), ranked AS (
             SELECT v.*, c.minor_unit,
               COALESCE(t.name_ru, 'Не классифицировано') AS asset_type_name,
               COALESCE(l.name_ru, 'Не задана') AS liquidity_name,
@@ -827,6 +864,7 @@ def _capital_components_data_cached(
             LEFT JOIN asset_types t ON t.id = v.asset_type_id
             LEFT JOIN liquidity_classes l ON l.id = v.liquidity_class_id
             WHERE v.include_in_capital = 1
+              AND v.period = (SELECT period FROM latest_period)
         )
         SELECT * FROM ranked WHERE rank = 1
         ORDER BY account_name, currency_code""").fetchall()
@@ -940,30 +978,6 @@ def _inflation_rate_figure(data: pd.DataFrame) -> go.Figure:
     return fig
 
 
-def _real_asset_capital_figure(data: pd.DataFrame, currency: str) -> go.Figure:
-    fig = go.Figure()
-    if data.empty:
-        _apply_dashboard_chart_layout(fig, "", range_slider=True)
-        return fig
-    base_period = data.attrs.get("base_period", "")
-    fig.add_trace(go.Scatter(
-        x=data["Дата"], y=data["Номинальная стоимость"], mode="lines+markers",
-        name="Номинальная стоимость активов", line=dict(color="royalblue", width=2),
-        hovertemplate="%{x|%Y-%m}<br>%{y:,.0f}<extra></extra>",
-    ))
-    fig.add_trace(go.Scatter(
-        x=data["Дата"], y=data["Реальная стоимость"], mode="lines+markers",
-        name=f"В ценах {base_period}", line=dict(color="#B08A6C", width=2),
-        connectgaps=False,
-        hovertemplate="%{x|%Y-%m}<br>%{y:,.0f}<extra></extra>",
-    ))
-    # The section header already names the chart. Keeping the same long title inside
-    # Plotly makes it collide with the horizontal legend on narrow screens.
-    _apply_dashboard_chart_layout(fig, "", range_slider=True)
-    fig.update_layout(yaxis_title=config.UNIQUE_TICKERS[currency])
-    return fig
-
-
 def _fx_revaluation_data(balance: pd.DataFrame) -> pd.DataFrame:
     if "Валютная переоценка" not in balance.columns:
         return pd.DataFrame(columns=["Дата", "Валютная переоценка"])
@@ -1030,7 +1044,6 @@ def _asset_currency_allocation_data_cached(data_root: str, currency: str) -> pd.
     assets["Дата оценки"] = asset_valuation_dates(assets)
     assets["Значение"] = pd.to_numeric(assets["Значение"], errors="coerce").fillna(0.0)
     assets["Валюта"] = assets["Валюта"].astype(str).str.upper()
-    assets = carry_forward_asset_snapshots(assets)
     assets["value_in_target"] = _convert_asset_allocation_values(assets, currency)
 
     values = (
@@ -1131,7 +1144,6 @@ def _asset_liquidity_allocation_data_cached(
     assets["Значение"] = assets.apply(
         lambda row: float(row["amount_minor"]) / (10 ** int(row["minor_unit"])), axis=1)
     assets["Группа"] = assets["liquidity_class_id"].fillna("Не задана")
-    assets = carry_forward_asset_snapshots(assets, account_column="account_id")
     assets["value_in_target"] = _convert_asset_allocation_values(assets, currency)
 
     values = assets.pivot_table(
@@ -1184,6 +1196,7 @@ def _fx_changes_figure(data: pd.DataFrame, currency: str) -> go.Figure:
             go.Scatter(
                 x=x_dates,
                 y=data[from_currency],
+                yaxis="y2" if from_currency == "KZT" else "y",
                 mode="lines+markers+text",
                 name=f"{from_currency}/{currency}",
                 text=_peak_rate_labels(data[from_currency], max_labels=5),
@@ -1194,6 +1207,13 @@ def _fx_changes_figure(data: pd.DataFrame, currency: str) -> go.Figure:
 
     _apply_dashboard_chart_layout(fig, "Динамика курсов валют", range_slider=True)
     fig.update_layout(yaxis_title=f"1 валюта в {currency}")
+    if "KZT" in data.columns:
+        fig.update_layout(yaxis2=dict(
+            title=f"1 KZT в {currency}",
+            overlaying="y",
+            side="right",
+            showgrid=False,
+        ))
     return fig
 
 
@@ -1347,6 +1367,9 @@ def _apply_dashboard_chart_layout(fig: go.Figure, title: str, range_slider: bool
         tickfont=dict(size=CHART_FONT_SIZE),
         fixedrange=False,
     )
+    date_range = _line_chart_date_range(fig)
+    if date_range is not None:
+        xaxis["range"] = date_range
     if range_slider:
         xaxis["rangeslider"] = dict(visible=True, thickness=0.08)
 
@@ -1370,3 +1393,21 @@ def _apply_dashboard_chart_layout(fig: go.Figure, title: str, range_slider: bool
         ),
         uniformtext=dict(minsize=CHART_LABEL_SIZE, mode="show"),
     )
+
+
+def _line_chart_date_range(fig: go.Figure):
+    dates = []
+    for trace in fig.data:
+        if trace.type != "scatter" or "lines" not in (trace.mode or ""):
+            continue
+        x_values = pd.to_datetime(pd.Series(trace.x), errors="coerce")
+        y_values = pd.to_numeric(pd.Series(trace.y), errors="coerce")
+        valid = x_values.notna() & y_values.notna()
+        dates.extend(x_values.loc[valid].tolist())
+    if not dates:
+        return None
+    first_date = min(dates)
+    last_date = max(dates)
+    if first_date == last_date:
+        return [first_date - pd.Timedelta(days=15), last_date + pd.Timedelta(days=15)]
+    return [first_date, last_date + pd.DateOffset(months=1)]

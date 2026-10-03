@@ -33,6 +33,35 @@ def test_asset_capital_contains_only_explicit_snapshots(monkeypatch):
     assert result.iloc[0]["Капитал по активам"] == 100.0
 
 
+def test_complete_snapshot_does_not_carry_renamed_account(monkeypatch):
+    assets = pd.DataFrame([
+        {
+            "Счет": "Депозит",
+            "Год": "2026",
+            "Месяц": "1",
+            "Квартал": "1",
+            "Валюта": "RUB",
+            "Значение": 100.0,
+        },
+        {
+            "Счет": "Депозит - RUB",
+            "Год": "2026",
+            "Месяц": "2",
+            "Квартал": "1",
+            "Валюта": "RUB",
+            "Значение": 60.0,
+        },
+    ])
+    monkeypatch.setattr(create_tables, "get_assets", lambda: assets)
+    monkeypatch.setattr(
+        create_tables, "_current_asset_valuation_date", lambda: pd.Timestamp("2026-02-28"))
+    create_tables._get_asset_capital_by_month_cached.cache_clear()
+
+    result = create_tables._get_asset_capital_by_month_cached("synthetic", "RUB")
+
+    assert result["Капитал по активам"].tolist() == [100.0, 60.0]
+
+
 def test_monthly_balance_includes_user_defined_income_category(monkeypatch):
     transactions = pd.DataFrame([{
         "Дата": pd.Timestamp("2026-01-15"),
@@ -123,6 +152,7 @@ def test_capital_components_show_only_latest_included_explicit_snapshots(
     initialize_database(database)
     add_asset_account(database, "cash", "Основной счёт")
     add_asset_account(database, "duplicate", "Внешняя оценка портфеля")
+    add_asset_account(database, "historical", "Закрытый старый счёт")
     set_asset_account_classification(
         database,
         "cash",
@@ -140,6 +170,9 @@ def test_capital_components_show_only_latest_included_explicit_snapshots(
     add_asset_snapshot(
         database, snapshot_id="cash-old", account_id="cash",
         period="2026-01", amount="90", currency="RUB")
+    add_asset_snapshot(
+        database, snapshot_id="historical-old", account_id="historical",
+        period="2026-01", amount="700", currency="RUB")
     add_asset_snapshot(
         database, snapshot_id="cash-new", account_id="cash",
         period="2026-02", amount="100", currency="RUB")

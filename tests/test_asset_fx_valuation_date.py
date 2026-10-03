@@ -87,7 +87,7 @@ def test_asset_allocation_uses_today_for_current_month_fx_but_keeps_month_end_ax
     assert result["EUR"].tolist() == [100.0]
 
 
-def test_carried_foreign_balance_uses_each_report_month_fx(monkeypatch):
+def test_foreign_balance_uses_only_explicit_snapshot_month_fx(monkeypatch):
     assets = pd.DataFrame([
         {
             "Счет": "EUR account", "Год": "2026", "Месяц": "1", "Квартал": "1",
@@ -110,10 +110,8 @@ def test_carried_foreign_balance_uses_each_report_month_fx(monkeypatch):
     monkeypatch.setattr(create_tables, "_get_fx_rate_as_of", rate)
     create_tables._get_asset_capital_by_month_cached.cache_clear()
 
-    create_tables._get_asset_capital_by_month_cached("synthetic", "RUB")
+    result = create_tables._get_asset_capital_by_month_cached("synthetic", "RUB")
 
-    assert requested_dates == [
-        pd.Timestamp("2026-01-31"),
-        pd.Timestamp("2026-02-28"),
-        pd.Timestamp("2026-03-31"),
-    ]
+    assert requested_dates == [pd.Timestamp("2026-01-31")]
+    assert result.index.tolist() == [
+        pd.Timestamp("2026-01-31"), pd.Timestamp("2026-03-31")]

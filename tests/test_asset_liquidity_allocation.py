@@ -51,7 +51,7 @@ def test_asset_liquidity_allocation_excludes_assets_outside_capital(tmp_path):
     assert result.empty
 
 
-def test_asset_liquidity_allocation_carries_stale_value_without_refreshing_it(tmp_path):
+def test_asset_liquidity_allocation_does_not_carry_missing_account(tmp_path):
     database = tmp_path / "finrep.sqlite3"
     initialize_database(database)
     add_asset_account(database, "deposit", "Депозит", asset_type_id="deposit")
@@ -66,5 +66,5 @@ def test_asset_liquidity_allocation_carries_stale_value_without_refreshing_it(tm
     result = _asset_liquidity_allocation_data_cached(str(database), "RUB")
     latest = result.sort_values("Дата").iloc[-1]
 
-    assert latest["A1"] == pytest.approx(50.0)
-    assert latest["A4"] == pytest.approx(50.0)
+    assert latest["A1"] == pytest.approx(0.0)
+    assert latest["A4"] == pytest.approx(100.0)

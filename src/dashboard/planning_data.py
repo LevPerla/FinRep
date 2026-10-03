@@ -7,7 +7,7 @@ from src import config, utils
 from src.dashboard.main_data import DashboardDataset, _apply_dashboard_chart_layout, _peak_money_labels
 from src.data.get import get_assets
 from src.data.csv_storage import atomic_write_csv
-from src.data.get_finance import fx_network_mode, get_actual_fx_rate, require_fx_rate
+from src.data.get_finance import fx_network_mode, get_actual_fx_rate, get_fx_rate_as_of, require_fx_rate
 from src.data.money import format_money_amount, parse_money_amount
 from src.model.create_tables import get_balance_by_month
 
@@ -318,9 +318,10 @@ def _fx_scenarios(target_currency: str) -> pd.DataFrame:
         (assets["Год"].astype(int) == latest_year)
         & (assets["Месяц"].astype(int) == latest_month)
     ].copy(deep=True)
+    snapshot_date = pd.Timestamp(year=latest_year, month=latest_month, day=1) + pd.offsets.MonthEnd(0)
 
     rows = []
-    rate_pair, base_rate = _scenario_reference_rate(target_currency)
+    rate_pair, base_rate = _scenario_reference_rate(target_currency, snapshot_date)
     for shock in FX_SHOCKS:
         total = 0.0
         for _, asset in latest_assets.iterrows():
@@ -328,9 +329,11 @@ def _fx_scenarios(target_currency: str) -> pd.DataFrame:
             if pd.isna(amount):
                 continue
             asset_currency = str(asset.get("Валюта", target_currency)).upper()
-            rate = 1.0 if asset_currency == target_currency else get_actual_fx_rate(asset_currency, target_currency)
+            rate = 1.0 if asset_currency == target_currency else get_fx_rate_as_of(
+                asset_currency, target_currency, snapshot_date,
+            )
             if rate is None:
-                require_fx_rate(rate, asset_currency, target_currency)
+                require_fx_rate(rate, asset_currency, target_currency, snapshot_date)
             shock_multiplier = 1.0 if asset_currency == target_currency else _target_currency_shock_multiplier(shock)
             total += float(amount) * float(rate) * shock_multiplier
         rows.append(
@@ -481,9 +484,9 @@ def _target_currency_shock_multiplier(shock: int) -> float:
     return 1 / denominator
 
 
-def _scenario_reference_rate(target_currency: str) -> tuple[str, float | None]:
+def _scenario_reference_rate(target_currency: str, as_of_date) -> tuple[str, float | None]:
     reference_currency = "RUB" if target_currency == "USD" else "USD"
-    rate = get_actual_fx_rate(reference_currency, target_currency)
+    rate = get_fx_rate_as_of(reference_currency, target_currency, as_of_date)
     return f"{reference_currency}/{target_currency}", rate
 
 

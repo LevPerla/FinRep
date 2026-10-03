@@ -1,8 +1,6 @@
 import json
 import logging
 import os
-import base64
-import binascii
 from decimal import Decimal
 from datetime import datetime
 from io import BytesIO
@@ -19,7 +17,7 @@ from flask import request, session
 
 from src import config
 from src.data.get import clear_data_cache, get_transactions
-from src.data.inflation import import_official_cpi_workbook, refresh_official_cpi
+from src.data.inflation import refresh_official_cpi
 from src.data.assets_editor import (
     asset_snapshot_path,
     previous_asset_snapshot_path,
@@ -416,13 +414,6 @@ def create_layout():
                                                 dbc.Button(_i18n_text("dashboard.refresh"), id="refresh-reports", color="secondary", outline=True),
                                                 dbc.Button(_i18n_text("dashboard.refresh_fx"), id="refresh-fx-rates", color="warning", outline=True, disabled=test_mode),
                                                 dbc.Button(_i18n_text("dashboard.refresh_cpi"), id="refresh-cpi", color="warning", outline=True, disabled=test_mode),
-                                                dcc.Upload(
-                                                    dbc.Button(_i18n_text("dashboard.import_cpi"), color="secondary", outline=True, disabled=test_mode),
-                                                    id="cpi-workbook-upload",
-                                                    accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                                                    multiple=False,
-                                                    disabled=test_mode,
-                                                ),
                                                 dbc.Button(
                                                     _i18n_text("dashboard.theme_toggle", initial_key="dashboard.theme_light"),
                                                     id="theme-toggle",
@@ -498,7 +489,9 @@ def create_layout():
                 className="py-2 mb-3",
             ),
             html.Div(id="fx-refresh-status", role="status", **{"aria-live": "polite"}),
+            dcc.Interval(id="fx-status-hide-timer", interval=5_000, max_intervals=1, disabled=True),
             html.Div(id="cpi-refresh-status", role="status", **{"aria-live": "polite"}),
+            dcc.Interval(id="cpi-status-hide-timer", interval=5_000, max_intervals=1, disabled=True),
             _dashboard_tabs(),
             html.Div(
                 dbc.Tabs([
@@ -540,14 +533,16 @@ def register_callbacks(app: Dash) -> None:
     app.clientside_callback(
         """function(clicks, locale) {
             const unchanged = window.dash_clientside.no_update;
-            if (!clicks) return [unchanged, unchanged, unchanged];
+            if (!clicks) return [unchanged, unchanged, unchanged, unchanged, unchanged];
             const en = locale === "en";
             return [en ? "Checking exchange rates…" : "Обновляем курсы…",
-                    "finrep-fx-status is-loading", true];
+                    "finrep-fx-status is-loading", true, true, 0];
         }""",
         Output("fx-refresh-status", "children"),
         Output("fx-refresh-status", "className"),
         Output("refresh-fx-rates", "disabled"),
+        Output("fx-status-hide-timer", "disabled"),
+        Output("fx-status-hide-timer", "n_intervals"),
         Input("refresh-fx-rates", "n_clicks"),
         State("dashboard-locale", "data"),
         prevent_initial_call=True,
@@ -556,14 +551,16 @@ def register_callbacks(app: Dash) -> None:
     app.clientside_callback(
         """function(clicks, locale) {
             const unchanged = window.dash_clientside.no_update;
-            if (!clicks) return [unchanged, unchanged, unchanged];
+            if (!clicks) return [unchanged, unchanged, unchanged, unchanged, unchanged];
             const en = locale === "en";
             return [en ? "Loading official inflation data…" : "Загружаем официальную инфляцию…",
-                    "finrep-fx-status is-loading", true];
+                    "finrep-fx-status is-loading", true, true, 0];
         }""",
         Output("cpi-refresh-status", "children"),
         Output("cpi-refresh-status", "className"),
         Output("refresh-cpi", "disabled"),
+        Output("cpi-status-hide-timer", "disabled"),
+        Output("cpi-status-hide-timer", "n_intervals"),
         Input("refresh-cpi", "n_clicks"),
         State("dashboard-locale", "data"),
         prevent_initial_call=True,
@@ -572,6 +569,8 @@ def register_callbacks(app: Dash) -> None:
     app.clientside_callback(
         """function(result, locale) {
             if (!result) return [window.dash_clientside.no_update,
+                                 window.dash_clientside.no_update,
+                                 window.dash_clientside.no_update,
                                  window.dash_clientside.no_update,
                                  window.dash_clientside.no_update];
             const en = locale === "en";
@@ -584,11 +583,13 @@ def register_callbacks(app: Dash) -> None:
             if (failedItems.length) {
                 message += " " + failedItems.map(item => `${item.currency}: ${item.message}`).join("; ");
             }
-            return [message, "finrep-fx-status is-" + result.status, false];
+            return [message, "finrep-fx-status is-" + result.status, false, false, 0];
         }""",
         Output("cpi-refresh-status", "children", allow_duplicate=True),
         Output("cpi-refresh-status", "className", allow_duplicate=True),
         Output("refresh-cpi", "disabled", allow_duplicate=True),
+        Output("cpi-status-hide-timer", "disabled", allow_duplicate=True),
+        Output("cpi-status-hide-timer", "n_intervals", allow_duplicate=True),
         Input("cpi-refresh-result", "data"),
         State("dashboard-locale", "data"),
         prevent_initial_call=True,
@@ -605,27 +606,6 @@ def register_callbacks(app: Dash) -> None:
         return refresh_official_cpi(config.active_database_path())
 
     @app.callback(
-        Output("cpi-refresh-result", "data", allow_duplicate=True),
-        Input("cpi-workbook-upload", "contents"),
-        State("cpi-workbook-upload", "filename"),
-        State("dashboard-currency", "value"),
-        prevent_initial_call=True,
-    )
-    def import_cpi_workbook(contents, filename, currency):
-        if not contents or config.is_test_mode():
-            raise PreventUpdate
-        try:
-            _metadata, encoded = contents.split(",", 1)
-            payload = base64.b64decode(encoded, validate=True)
-            return import_official_cpi_workbook(
-                config.active_database_path(), currency=currency, payload=payload)
-        except (ValueError, binascii.Error, OSError) as exc:
-            return {"status": "error", "results": [{
-                "currency": str(currency).upper(), "status": "error",
-                "message": f"{_safe_upload_filename(filename)}: {exc}",
-            }]}
-
-    @app.callback(
         Output("cpi-base-period", "data"),
         Input("cpi-base-period-chart", "value"),
         prevent_initial_call=True,
@@ -639,6 +619,8 @@ def register_callbacks(app: Dash) -> None:
         """function(result, locale) {
             if (!result) return [window.dash_clientside.no_update,
                                  window.dash_clientside.no_update,
+                                 window.dash_clientside.no_update,
+                                 window.dash_clientside.no_update,
                                  window.dash_clientside.no_update];
             const en = locale === "en";
             const messages = en ? {
@@ -650,13 +632,43 @@ def register_callbacks(app: Dash) -> None:
                 error: "Не удалось обновить курсы. Подробнее — в сообщении отчёта.",
                 unavailable: "В этом разделе курсы не загружаются."
             };
-            return [messages[result.status], "finrep-fx-status is-" + result.status, false];
+            return [messages[result.status], "finrep-fx-status is-" + result.status, false, false, 0];
         }""",
         Output("fx-refresh-status", "children", allow_duplicate=True),
         Output("fx-refresh-status", "className", allow_duplicate=True),
         Output("refresh-fx-rates", "disabled", allow_duplicate=True),
+        Output("fx-status-hide-timer", "disabled", allow_duplicate=True),
+        Output("fx-status-hide-timer", "n_intervals", allow_duplicate=True),
         Input("fx-refresh-result", "data"),
         State("dashboard-locale", "data"),
+        prevent_initial_call=True,
+    )
+
+    app.clientside_callback(
+        """function(n) {
+            if (!n) return [window.dash_clientside.no_update,
+                            window.dash_clientside.no_update,
+                            window.dash_clientside.no_update];
+            return ["", "", true];
+        }""",
+        Output("fx-refresh-status", "children", allow_duplicate=True),
+        Output("fx-refresh-status", "className", allow_duplicate=True),
+        Output("fx-status-hide-timer", "disabled", allow_duplicate=True),
+        Input("fx-status-hide-timer", "n_intervals"),
+        prevent_initial_call=True,
+    )
+
+    app.clientside_callback(
+        """function(n) {
+            if (!n) return [window.dash_clientside.no_update,
+                            window.dash_clientside.no_update,
+                            window.dash_clientside.no_update];
+            return ["", "", true];
+        }""",
+        Output("cpi-refresh-status", "children", allow_duplicate=True),
+        Output("cpi-refresh-status", "className", allow_duplicate=True),
+        Output("cpi-status-hide-timer", "disabled", allow_duplicate=True),
+        Input("cpi-status-hide-timer", "n_intervals"),
         prevent_initial_call=True,
     )
 
@@ -1882,29 +1894,23 @@ def _main_report_layout(
 
     sections = [
         _cockpit_section(datasets["cockpit_metrics"], theme=theme, locale=locale),
-        _grid_section(datasets["yearly_stats"], height="300px", theme=theme, locale=locale),
+        _grid_section(
+            datasets["yearly_stats"], height="none", theme=theme, locale=locale),
         _grid_section(datasets["fx_rates"], height="260px", theme=theme, locale=locale),
         _graph_section(datasets["income_expense"], theme=theme, locale=locale),
         _graph_section(datasets["delta"], theme=theme, locale=locale),
         _graph_section(datasets["savings_rate"], theme=theme, locale=locale),
-        _graph_section(datasets["capital"], height="640px", theme=theme, locale=locale),
-        _grid_section(
-            datasets["capital_components"],
-            height=f"{min(560, max(220, 76 + len(datasets['capital_components'].dataframe) * 42))}px",
-            theme=theme,
-            locale=locale,
-        ),
+        _capital_section(
+            datasets["capital"], currency=currency,
+            height="640px", theme=theme, locale=locale),
         _graph_section(datasets["inflation_rate"], height="520px", theme=theme, locale=locale),
-        _real_asset_capital_section(
-            datasets["real_asset_capital"], currency=currency,
-            height="520px", theme=theme, locale=locale),
         _capital_change_after_flows_section(
             datasets["capital_change_after_flows"],
             height="520px", theme=theme, locale=locale),
         _graph_section(datasets["fx_revaluation"], height="420px", theme=theme, locale=locale),
+        _graph_section(datasets["fx_changes"], theme=theme, locale=locale),
         _graph_section(datasets["asset_currency_allocation"], height="520px", theme=theme, locale=locale),
         _graph_section(datasets["asset_liquidity_allocation"], height="520px", theme=theme, locale=locale),
-        _graph_section(datasets["fx_changes"], theme=theme, locale=locale),
     ]
     metrics = datasets["cockpit_metrics"].dataframe
     notices = []
@@ -3901,7 +3907,7 @@ def _graph_section(dataset: DashboardDataset, height: str = "520px", theme: str 
     )
 
 
-def _real_asset_capital_section(
+def _capital_section(
     dataset: DashboardDataset,
     *,
     currency: str,
@@ -3910,7 +3916,7 @@ def _real_asset_capital_section(
     locale: str = DEFAULT_LOCALE,
 ):
     section = _graph_section(dataset, height=height, theme=theme, locale=locale)
-    if dataset.dataframe.empty:
+    if dataset.dataframe.empty or not dataset.dataframe.attrs.get("base_period"):
         return section
 
     section.children.insert(
@@ -3940,7 +3946,7 @@ def _real_asset_capital_section(
                     className="finrep-chart-filter-help",
                 ),
             ],
-            id="real-asset-cpi-control",
+            id="capital-cpi-control",
             className="finrep-chart-filter-row",
         ),
     )

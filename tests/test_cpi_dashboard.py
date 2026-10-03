@@ -2,7 +2,6 @@ import os
 from decimal import Decimal
 
 import pandas as pd
-import plotly.graph_objects as go
 import pytest
 
 os.environ.setdefault("FINREP_DASH_PASSWORD", "test-password")
@@ -11,6 +10,7 @@ os.environ.setdefault("FINREP_DASH_SECRET_KEY", "test-session-secret")
 from src import config
 from src.dashboard.main_data import (
     DashboardDataset,
+    _capital_figure,
     _inflation_rate_data,
     _inflation_rate_figure,
     _real_asset_capital_data,
@@ -99,7 +99,7 @@ def _component(node, component_id):
     return None
 
 
-def test_cpi_base_filter_is_labeled_inside_its_chart(monkeypatch):
+def test_cpi_base_filter_is_labeled_inside_capital_chart(monkeypatch):
     from src.dashboard import app as app_module
 
     monkeypatch.setattr(app_module, "_cpi_period_options", lambda _currency: [
@@ -108,24 +108,30 @@ def test_cpi_base_filter_is_labeled_inside_its_chart(monkeypatch):
     ])
     data = pd.DataFrame({
         "Дата": pd.to_datetime(["2026-03-31"]),
-        "Номинальная стоимость": [100],
+        "Капитал": [90],
+        "Капитал по активам": [100],
         "Реальная стоимость": [100],
     })
     data.attrs["base_period"] = "2026-03"
     dataset = DashboardDataset(
-        id="real_asset_capital",
-        title="Покупательная способность активов",
+        id="capital",
+        title="Динамика капитала",
         dataframe=data,
-        figure=go.Figure(),
+        figure=_capital_figure(data, "RUB"),
     )
 
-    section = app_module._real_asset_capital_section(
+    section = app_module._capital_section(
         dataset, currency="RUB", theme="dark")
 
-    control = _component(section, "real-asset-cpi-control")
+    control = _component(section, "capital-cpi-control")
     dropdown = _component(control, "cpi-base-period-chart")
     assert section.children[1] is control
     assert dropdown.value == "2026-03"
     assert dropdown.options[0]["value"] == "2026-03"
     assert "Базовый месяц цен" in str(control.children[0].children[0])
     assert "покупательную способность" in str(control.children[1])
+    assert [trace.name for trace in dataset.figure.data] == [
+        "Капитал по денежному потоку",
+        "Капитал по активам",
+        "В ценах 2026-03",
+    ]

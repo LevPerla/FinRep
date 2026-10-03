@@ -81,10 +81,33 @@ def test_fx_scenario_rejects_partial_total(monkeypatch):
         ]
     )
     monkeypatch.setattr(planning_data, "get_assets", lambda: assets)
-    monkeypatch.setattr(planning_data, "get_actual_fx_rate", lambda *_: None)
+    monkeypatch.setattr(planning_data, "get_fx_rate_as_of", lambda *_: None)
 
-    with pytest.raises(ValueError, match="Нет курса USD → RUB"):
+    with pytest.raises(ValueError, match="Нет курса USD → RUB.*2026-09-30"):
         planning_data._fx_scenarios("RUB")
+
+
+def test_fx_scenario_uses_latest_asset_snapshot_date(monkeypatch):
+    assets = pd.DataFrame(
+        [
+            {"Год": "2026", "Месяц": "6", "Валюта": "RUB", "Значение": 1000.0},
+            {"Год": "2026", "Месяц": "6", "Валюта": "GBP", "Значение": 100.0},
+        ]
+    )
+    calls = []
+
+    def rate_as_of(from_currency, to_currency, as_of_date):
+        calls.append((from_currency, to_currency, pd.Timestamp(as_of_date)))
+        return 100.0
+
+    monkeypatch.setattr(planning_data, "get_assets", lambda: assets)
+    monkeypatch.setattr(planning_data, "get_fx_rate_as_of", rate_as_of)
+
+    result = planning_data._fx_scenarios("RUB")
+
+    assert not result.empty
+    assert calls
+    assert all(as_of_date == pd.Timestamp("2026-06-30") for _, _, as_of_date in calls)
 
 
 def test_conversion_summary_marks_missing_rate_unavailable(monkeypatch):

@@ -36,7 +36,8 @@ def _create_v7_database(path: Path) -> None:
                     "CREATE TABLE liquidity_classes",
                     "CREATE TABLE asset_type_liquidity_defaults",
                     "CREATE TABLE cpi_series",
-                    "CREATE TABLE cpi_observations")):
+                    "CREATE TABLE cpi_observations",
+                    "CREATE TABLE cpi_observation_sources")):
                 continue
             connection.execute(
                 old_accounts if statement.startswith("CREATE TABLE asset_accounts")
@@ -79,6 +80,32 @@ def _create_v9_database(path: Path) -> None:
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys = ON")
         sqlite_store._migrate_v8_to_v9(connection)
+
+
+def _create_v10_database(path: Path) -> None:
+    _create_v9_database(path)
+    with sqlite3.connect(path) as connection:
+        connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA foreign_keys = ON")
+        sqlite_store._migrate_v9_to_v10(connection)
+        connection.execute("""INSERT INTO cpi_observations
+            (id, currency_code, period, index_value_text, source_version,
+             payload_sha256, fetched_at)
+            VALUES ('legacy-rub', 'RUB', '2026-01', '100', 'rosstat-release', ?, 'now')""",
+            ("a" * 64,))
+        connection.execute("""INSERT INTO cpi_observations
+            (id, currency_code, period, index_value_text, source_version,
+             payload_sha256, fetched_at)
+            VALUES ('legacy-kzt', 'KZT', '2026-01', '100', 'stat-kz-release', ?, 'now')""",
+            ("b" * 64,))
+
+
+def _create_v11_database(path: Path) -> None:
+    _create_v10_database(path)
+    with sqlite3.connect(path) as connection:
+        connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA foreign_keys = ON")
+        sqlite_store._migrate_v10_to_v11(connection)
 
 
 def test_sqlite_is_the_default_backend(monkeypatch):
@@ -203,6 +230,45 @@ def test_v9_database_is_backed_up_and_upgraded_with_official_cpi_registry(
         assert connection.execute("PRAGMA user_version").fetchone()[0] == 9
         assert connection.execute(
             "SELECT 1 FROM sqlite_master WHERE name = 'cpi_series'").fetchone() is None
+
+
+def test_v10_database_replaces_unreachable_russia_cpi_source(monkeypatch, tmp_path):
+    database = _use_default_sqlite(monkeypatch, tmp_path / "data")
+    _create_v10_database(database)
+
+    assert ensure_default_live_database() == "upgraded"
+
+    with sqlite3.connect(database) as connection:
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
+        assert connection.execute(
+            "SELECT provider_id, series_code, index_method FROM cpi_series "
+            "WHERE currency_code = 'RUB'"
+        ).fetchone() == ("world_bank_gem", "CPTOTNSXN", "published_index")
+        assert connection.execute(
+            "SELECT COUNT(*) FROM cpi_observations WHERE currency_code = 'RUB'"
+        ).fetchone()[0] == 0
+        assert connection.execute(
+            "SELECT COUNT(*) FROM cpi_observations WHERE currency_code = 'KZT'"
+        ).fetchone()[0] == 0
+        assert connection.execute(
+            "SELECT provider_id FROM cpi_series WHERE currency_code = 'KZT'"
+        ).fetchone()[0] == "world_bank_gem+stat_kz"
+
+
+def test_v11_database_adds_hybrid_kzt_provenance(monkeypatch, tmp_path):
+    database = _use_default_sqlite(monkeypatch, tmp_path / "data")
+    _create_v11_database(database)
+
+    assert ensure_default_live_database() == "upgraded"
+
+    with sqlite3.connect(database) as connection:
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
+        assert connection.execute(
+            "SELECT COUNT(*) FROM cpi_observation_sources"
+        ).fetchone()[0] == 0
+        assert connection.execute(
+            "SELECT provider_id FROM cpi_series WHERE currency_code = 'KZT'"
+        ).fetchone()[0] == "world_bank_gem+stat_kz"
 
 
 def test_concurrent_first_start_publishes_one_database(monkeypatch, tmp_path):

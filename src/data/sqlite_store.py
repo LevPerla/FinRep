@@ -15,7 +15,7 @@ from src import config
 from src.data.money import parse_money_amount
 
 
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 12
 _DIRECTIONS = {"income", "expense"}
 _DATASETS = {"cash_transactions", "asset_snapshots"}
 _ASSET_TYPES = (
@@ -40,10 +40,12 @@ _ASSET_TYPE_LIQUIDITY_DEFAULTS = (
     ("real_estate", "A4"),
 )
 _CPI_SERIES = (
-    ("RUB", "RU", "rosstat", "cpi_all_items_monthly", "Росстат",
-     "https://rosstat.gov.ru/statistics/price", "chained_monthly_rate"),
-    ("KZT", "KZ", "stat_kz", "cpi_all_items_monthly", "Бюро национальной статистики Казахстана",
-     "https://stat.gov.kz/ru/industries/economy/prices/dynamic-tables/?period=month",
+    ("RUB", "RU", "world_bank_gem", "CPTOTNSXN", "World Bank Global Economic Monitor",
+     "https://datacatalog.worldbank.org/search/dataset/0037798/global-economic-monitor",
+     "published_index"),
+    ("KZT", "KZ", "world_bank_gem+stat_kz", "CPTOTNSXN+cpi_all_items_monthly",
+     "World Bank GEM + Бюро национальной статистики Казахстана",
+     "https://datacatalog.worldbank.org/search/dataset/0037798/global-economic-monitor",
      "chained_monthly_rate"),
     ("USD", "US", "bls", "CUUR0000SA0", "U.S. Bureau of Labor Statistics",
      "https://www.bls.gov/cpi/data.htm", "published_index"),
@@ -388,6 +390,13 @@ _TABLES = (
         currency_code TEXT NOT NULL REFERENCES currencies(code) ON DELETE RESTRICT,
         comment TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL
     ) STRICT""",
+    """CREATE TABLE cpi_observation_sources (
+        observation_id TEXT PRIMARY KEY
+            REFERENCES cpi_observations(id) ON DELETE CASCADE,
+        provider_id TEXT NOT NULL CHECK (trim(provider_id) <> ''),
+        source_name TEXT NOT NULL CHECK (trim(source_name) <> ''),
+        source_url TEXT NOT NULL CHECK (source_url LIKE 'https://%')
+    ) STRICT""",
 )
 
 _INDEXES_AND_TRIGGERS = (
@@ -617,9 +626,51 @@ def _migrate_v9_to_v10(connection: sqlite3.Connection) -> None:
     )
     connection.execute(
         "INSERT INTO schema_migrations VALUES (?, ?, ?, ?)",
-        (SCHEMA_VERSION, "official_cpi", _schema_checksum(), now),
+        (10, "official_cpi", _schema_checksum(), now),
     )
-    connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+    connection.execute("PRAGMA user_version = 10")
+
+
+def _migrate_v10_to_v11(connection: sqlite3.Connection) -> None:
+    now = _utc_now()
+    connection.execute("DELETE FROM cpi_observations WHERE currency_code = 'RUB'")
+    connection.execute(
+        """UPDATE cpi_series
+          SET provider_id = ?, series_code = ?, source_name = ?, source_url = ?,
+              index_method = ?, updated_at = ?
+          WHERE currency_code = 'RUB'""",
+        (*_CPI_SERIES[0][2:], now),
+    )
+    connection.execute(
+        "INSERT INTO schema_migrations VALUES (?, ?, ?, ?)",
+        (11, "russia_cpi_world_bank_gem", _schema_checksum(), now),
+    )
+    connection.execute("PRAGMA user_version = 11")
+
+
+def _migrate_v11_to_v12(connection: sqlite3.Connection) -> None:
+    now = _utc_now()
+    connection.execute(_TABLES[-1])
+    connection.execute(
+        """INSERT INTO cpi_observation_sources
+          (observation_id, provider_id, source_name, source_url)
+          SELECT o.id, s.provider_id, s.source_name, s.source_url
+          FROM cpi_observations o
+          JOIN cpi_series s ON s.currency_code = o.currency_code"""
+    )
+    connection.execute("DELETE FROM cpi_observations WHERE currency_code = 'KZT'")
+    connection.execute(
+        """UPDATE cpi_series
+          SET provider_id = ?, series_code = ?, source_name = ?, source_url = ?,
+              index_method = ?, updated_at = ?
+          WHERE currency_code = 'KZT'""",
+        (*_CPI_SERIES[1][2:], now),
+    )
+    connection.execute(
+        "INSERT INTO schema_migrations VALUES (?, ?, ?, ?)",
+        (12, "kazakhstan_cpi_hybrid", _schema_checksum(), now),
+    )
+    connection.execute("PRAGMA user_version = 12")
 
 
 @contextmanager
@@ -664,13 +715,26 @@ def initialize_database(path: str | Path, *, data_mode: str = "synthetic") -> No
             _migrate_v7_to_v8(connection)
             _migrate_v8_to_v9(connection)
             _migrate_v9_to_v10(connection)
+            _migrate_v10_to_v11(connection)
+            _migrate_v11_to_v12(connection)
             return
         if version == 8:
             _migrate_v8_to_v9(connection)
             _migrate_v9_to_v10(connection)
+            _migrate_v10_to_v11(connection)
+            _migrate_v11_to_v12(connection)
             return
         if version == 9:
             _migrate_v9_to_v10(connection)
+            _migrate_v10_to_v11(connection)
+            _migrate_v11_to_v12(connection)
+            return
+        if version == 10:
+            _migrate_v10_to_v11(connection)
+            _migrate_v11_to_v12(connection)
+            return
+        if version == 11:
+            _migrate_v11_to_v12(connection)
             return
         has_tables = connection.execute(
             "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' LIMIT 1"
@@ -2319,28 +2383,53 @@ def save_cpi_observations(
         value = parse_money_amount(item.get("index_value"), field_name="CPI index value")
         if value <= 0:
             raise ValueError("CPI index value must be positive")
-        normalized.append((period, format(value, "f")))
+        source = tuple(item.get(field) for field in (
+            "provider_id", "source_name", "source_url"))
+        if any(value is not None for value in source) and not all(
+                isinstance(value, str) and value.strip() for value in source):
+            raise ValueError("CPI observation source fields must be provided together")
+        if source[2] is not None and not source[2].startswith("https://"):
+            raise ValueError("CPI observation source URL must use HTTPS")
+        normalized.append((period, format(value, "f"), source))
     if not normalized:
         raise ValueError("at least one CPI observation is required")
 
     inserted = 0
     unchanged = 0
     with connect_database(path, writable=True) as connection:
-        if connection.execute(
-                "SELECT 1 FROM cpi_series WHERE currency_code = ? AND active = 1",
-                (currency,)).fetchone() is None:
+        series = connection.execute(
+            """SELECT provider_id, source_name, source_url FROM cpi_series
+              WHERE currency_code = ? AND active = 1""",
+            (currency,),
+        ).fetchone()
+        if series is None:
             raise ValueError("unsupported or inactive CPI currency")
-        for period, value_text in normalized:
+        default_source = tuple(series)
+        for period, value_text, source in normalized:
+            source = default_source if source[0] is None else tuple(
+                value.strip() for value in source)
             existing = connection.execute(
-                """SELECT index_value_text, published_on, payload_sha256
+                """SELECT id, index_value_text, published_on, payload_sha256
                   FROM cpi_observations
                   WHERE currency_code = ? AND period = ? AND source_version = ?""",
                 (currency, period, source_version.strip()),
             ).fetchone()
             expected = (value_text, published_on, payload_sha256.lower())
             if existing is not None:
-                if tuple(existing) != expected:
+                if tuple(existing)[1:] != expected:
                     raise ValueError("CPI source version conflicts with stored observation")
+                stored_source = connection.execute(
+                    """SELECT provider_id, source_name, source_url
+                      FROM cpi_observation_sources WHERE observation_id = ?""",
+                    (existing["id"],),
+                ).fetchone()
+                if stored_source is None:
+                    connection.execute(
+                        "INSERT INTO cpi_observation_sources VALUES (?, ?, ?, ?)",
+                        (existing["id"], *source),
+                    )
+                elif tuple(stored_source) != source:
+                    raise ValueError("CPI source version conflicts with stored provenance")
                 unchanged += 1
                 continue
             identity = f"{currency}\0{period}\0{source_version.strip()}"
@@ -2352,6 +2441,10 @@ def save_cpi_observations(
                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
                 (observation_id, currency, period, value_text, published_on,
                  source_version.strip(), payload_sha256.lower(), fetched_at.strip()),
+            )
+            connection.execute(
+                "INSERT INTO cpi_observation_sources VALUES (?, ?, ?, ?)",
+                (observation_id, *source),
             )
             inserted += 1
     return {"submitted": len(normalized), "inserted": inserted, "unchanged": unchanged}
@@ -2367,9 +2460,11 @@ def cpi_observations(path: str | Path, *, currency: str | None = None) -> list[d
         rows = connection.execute(
             f"""SELECT o.currency_code, s.territory_code, o.period,
               o.index_value_text, o.published_on, o.source_version,
-              o.payload_sha256, o.fetched_at, s.source_name, s.source_url
+              o.payload_sha256, o.fetched_at, p.provider_id,
+              p.source_name, p.source_url
               FROM v_effective_cpi o
               JOIN cpi_series s ON s.currency_code = o.currency_code
+              JOIN cpi_observation_sources p ON p.observation_id = o.id
               {where} ORDER BY o.currency_code, o.period""",
             parameters,
         ).fetchall()

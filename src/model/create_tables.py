@@ -318,7 +318,6 @@ def _get_asset_capital_by_month_cached(data_root: str, currency: str) -> pd.Data
     assets_df = assets_df.copy(deep=True)
     assets_df['Дата'] = _asset_snapshot_dates(assets_df)
     assets_df['Дата оценки'] = asset_valuation_dates(assets_df)
-    assets_df = carry_forward_asset_snapshots(assets_df)
     assets_df['Значение'] = _convert_asset_values_as_of_snapshot(assets_df, currency)
     result = (
         assets_df
@@ -528,31 +527,6 @@ def _asset_snapshot_dates(assets_df: pd.DataFrame) -> pd.Series:
         freq='M',
     )
     return periods.to_timestamp(how='end').normalize()
-
-
-def carry_forward_asset_snapshots(
-        assets_df: pd.DataFrame, *, account_column: str = 'Счет') -> pd.DataFrame:
-    """Carry each account/currency value to the latest observed asset month."""
-    if assets_df.empty:
-        return assets_df.copy(deep=True)
-    data = assets_df.copy(deep=True)
-    data['_Период'] = pd.to_datetime(data['Дата']).dt.to_period('M')
-    latest_period = data['_Период'].max()
-    current_date = _current_asset_valuation_date()
-    expanded = []
-    for (account_value, currency), group in data.groupby(
-            [account_column, 'Валюта'], dropna=False, sort=False):
-        group = group.sort_values('_Период').groupby('_Период', as_index=True).last()
-        periods = pd.period_range(group.index.min(), latest_period, freq='M')
-        carried = group.reindex(periods).ffill()
-        carried[account_column] = account_value
-        carried['Валюта'] = currency
-        carried['Дата'] = periods.to_timestamp(how='end').normalize()
-        carried['Дата FX'] = carried['Дата']
-        current_month = periods == current_date.to_period('M')
-        carried.loc[current_month, 'Дата FX'] = current_date
-        expanded.append(carried.reset_index(drop=True))
-    return pd.concat(expanded, ignore_index=True)
 
 
 def _current_asset_valuation_date() -> pd.Timestamp:
