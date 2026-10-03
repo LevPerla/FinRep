@@ -5,6 +5,7 @@ import sqlite3
 import pytest
 
 from src import config
+from src.data import sqlite_store
 from src.data.sqlite_bootstrap import ensure_default_live_database
 from src.data.sqlite_store import SCHEMA_VERSION, initialize_database
 
@@ -14,6 +15,97 @@ def _use_default_sqlite(monkeypatch, data_root: Path) -> Path:
     monkeypatch.delenv("FINREP_SQLITE_PATH", raising=False)
     monkeypatch.setattr(config, "DATA_PATH", str(data_root))
     return data_root / "finrep.sqlite3"
+
+
+def _create_v7_database(path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    old_accounts = """CREATE TABLE asset_accounts (
+        id TEXT PRIMARY KEY, name TEXT NOT NULL CHECK (trim(name) <> ''),
+        active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0, 1)),
+        created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+    ) STRICT"""
+    old_view = """CREATE VIEW v_asset_snapshots AS
+        SELECT s.id, s.period, s.account_id, a.name AS account_name,
+          s.currency_code, s.amount_minor, s.row_version
+        FROM asset_snapshots s JOIN asset_accounts a ON a.id = s.account_id"""
+    with sqlite3.connect(path) as connection:
+        connection.execute("PRAGMA foreign_keys = ON")
+        for statement in sqlite_store._TABLES:
+            if statement.startswith((
+                    "CREATE TABLE asset_types",
+                    "CREATE TABLE liquidity_classes",
+                    "CREATE TABLE asset_type_liquidity_defaults",
+                    "CREATE TABLE cpi_series",
+                    "CREATE TABLE cpi_observations",
+                    "CREATE TABLE cpi_observation_sources")):
+                continue
+            connection.execute(
+                old_accounts if statement.startswith("CREATE TABLE asset_accounts")
+                else statement)
+        for statement in sqlite_store._INDEXES_AND_TRIGGERS:
+            if "ix_cpi_lookup" in statement:
+                continue
+            connection.execute(statement)
+        for statement in sqlite_store._VIEWS:
+            if statement.startswith("CREATE VIEW v_effective_cpi"):
+                continue
+            connection.execute(
+                old_view if statement.startswith("CREATE VIEW v_asset_snapshots")
+                else statement)
+        connection.execute(
+            "INSERT INTO app_metadata VALUES (1, 'epoch-v7', 'live', '2026-10-03T00:00:00Z')")
+        connection.execute("INSERT INTO currencies VALUES ('RUB', 2)")
+        connection.execute(
+            "INSERT INTO schema_migrations VALUES (7, 'normalized_core', ?, '2026-10-03T00:00:00Z')",
+            ("0" * 64,))
+        connection.execute(
+            "INSERT INTO asset_accounts VALUES ('account-1', 'Счёт', 1, 'now', 'now')")
+        connection.execute("""INSERT INTO asset_snapshots
+            (id, account_id, period, currency_code, amount_minor, created_at, updated_at)
+            VALUES ('snapshot-1', 'account-1', '2026-09', 'RUB', 12345, 'now', 'now')""")
+        connection.execute("PRAGMA user_version = 7")
+
+
+def _create_v8_database(path: Path) -> None:
+    _create_v7_database(path)
+    with sqlite3.connect(path) as connection:
+        connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA foreign_keys = ON")
+        sqlite_store._migrate_v7_to_v8(connection)
+
+
+def _create_v9_database(path: Path) -> None:
+    _create_v8_database(path)
+    with sqlite3.connect(path) as connection:
+        connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA foreign_keys = ON")
+        sqlite_store._migrate_v8_to_v9(connection)
+
+
+def _create_v10_database(path: Path) -> None:
+    _create_v9_database(path)
+    with sqlite3.connect(path) as connection:
+        connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA foreign_keys = ON")
+        sqlite_store._migrate_v9_to_v10(connection)
+        connection.execute("""INSERT INTO cpi_observations
+            (id, currency_code, period, index_value_text, source_version,
+             payload_sha256, fetched_at)
+            VALUES ('legacy-rub', 'RUB', '2026-01', '100', 'rosstat-release', ?, 'now')""",
+            ("a" * 64,))
+        connection.execute("""INSERT INTO cpi_observations
+            (id, currency_code, period, index_value_text, source_version,
+             payload_sha256, fetched_at)
+            VALUES ('legacy-kzt', 'KZT', '2026-01', '100', 'stat-kz-release', ?, 'now')""",
+            ("b" * 64,))
+
+
+def _create_v11_database(path: Path) -> None:
+    _create_v10_database(path)
+    with sqlite3.connect(path) as connection:
+        connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA foreign_keys = ON")
+        sqlite_store._migrate_v10_to_v11(connection)
 
 
 def test_sqlite_is_the_default_backend(monkeypatch):
@@ -73,6 +165,110 @@ def test_compatible_existing_database_is_preserved(monkeypatch, tmp_path):
     with sqlite3.connect(database) as connection:
         assert connection.execute(
             "SELECT storage_epoch FROM app_metadata WHERE id = 1").fetchone()[0] == epoch
+
+
+def test_v7_database_is_backed_up_and_upgraded_without_guessing_asset_types(
+        monkeypatch, tmp_path):
+    database = _use_default_sqlite(monkeypatch, tmp_path / "data")
+    _create_v7_database(database)
+
+    assert ensure_default_live_database() == "upgraded"
+    assert ensure_default_live_database() == "existing"
+    backup = database.with_name(f"{database.stem}.pre-v{SCHEMA_VERSION}{database.suffix}")
+
+    with sqlite3.connect(database) as connection:
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
+        assert connection.execute(
+            "SELECT asset_type_id, include_in_capital FROM asset_accounts"
+        ).fetchone() == (None, 1)
+        assert connection.execute("SELECT COUNT(*) FROM asset_snapshots").fetchone()[0] == 1
+        assert connection.execute("SELECT COUNT(*) FROM asset_types").fetchone()[0] == 8
+        assert connection.execute("SELECT COUNT(*) FROM liquidity_classes").fetchone()[0] == 4
+        assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
+    with sqlite3.connect(backup) as connection:
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 7
+        assert connection.execute("SELECT COUNT(*) FROM asset_snapshots").fetchone()[0] == 1
+
+
+def test_v8_database_is_backed_up_and_upgraded_with_liquidity_defaults(
+        monkeypatch, tmp_path):
+    database = _use_default_sqlite(monkeypatch, tmp_path / "data")
+    _create_v8_database(database)
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "UPDATE asset_accounts SET asset_type_id = 'cash_account' WHERE id = 'account-1'")
+
+    assert ensure_default_live_database() == "upgraded"
+    backup = database.with_name(f"{database.stem}.pre-v{SCHEMA_VERSION}{database.suffix}")
+
+    with sqlite3.connect(database) as connection:
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
+        assert connection.execute(
+            "SELECT liquidity_class_override_id FROM asset_accounts").fetchone()[0] is None
+        assert connection.execute(
+            "SELECT liquidity_class_id, liquidity_source FROM v_asset_snapshots"
+        ).fetchone() == ("A1", "suggested")
+        assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
+    with sqlite3.connect(backup) as connection:
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 8
+
+
+def test_v9_database_is_backed_up_and_upgraded_with_official_cpi_registry(
+        monkeypatch, tmp_path):
+    database = _use_default_sqlite(monkeypatch, tmp_path / "data")
+    _create_v9_database(database)
+
+    assert ensure_default_live_database() == "upgraded"
+    backup = database.with_name(f"{database.stem}.pre-v{SCHEMA_VERSION}{database.suffix}")
+
+    with sqlite3.connect(database) as connection:
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
+        assert connection.execute("SELECT COUNT(*) FROM cpi_series").fetchone()[0] == 5
+        assert connection.execute("SELECT COUNT(*) FROM cpi_observations").fetchone()[0] == 0
+        assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
+    with sqlite3.connect(backup) as connection:
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 9
+        assert connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE name = 'cpi_series'").fetchone() is None
+
+
+def test_v10_database_replaces_unreachable_russia_cpi_source(monkeypatch, tmp_path):
+    database = _use_default_sqlite(monkeypatch, tmp_path / "data")
+    _create_v10_database(database)
+
+    assert ensure_default_live_database() == "upgraded"
+
+    with sqlite3.connect(database) as connection:
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
+        assert connection.execute(
+            "SELECT provider_id, series_code, index_method FROM cpi_series "
+            "WHERE currency_code = 'RUB'"
+        ).fetchone() == ("world_bank_gem", "CPTOTNSXN", "published_index")
+        assert connection.execute(
+            "SELECT COUNT(*) FROM cpi_observations WHERE currency_code = 'RUB'"
+        ).fetchone()[0] == 0
+        assert connection.execute(
+            "SELECT COUNT(*) FROM cpi_observations WHERE currency_code = 'KZT'"
+        ).fetchone()[0] == 0
+        assert connection.execute(
+            "SELECT provider_id FROM cpi_series WHERE currency_code = 'KZT'"
+        ).fetchone()[0] == "world_bank_gem+stat_kz"
+
+
+def test_v11_database_adds_hybrid_kzt_provenance(monkeypatch, tmp_path):
+    database = _use_default_sqlite(monkeypatch, tmp_path / "data")
+    _create_v11_database(database)
+
+    assert ensure_default_live_database() == "upgraded"
+
+    with sqlite3.connect(database) as connection:
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
+        assert connection.execute(
+            "SELECT COUNT(*) FROM cpi_observation_sources"
+        ).fetchone()[0] == 0
+        assert connection.execute(
+            "SELECT provider_id FROM cpi_series WHERE currency_code = 'KZT'"
+        ).fetchone()[0] == "world_bank_gem+stat_kz"
 
 
 def test_concurrent_first_start_publishes_one_database(monkeypatch, tmp_path):

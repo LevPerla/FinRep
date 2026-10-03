@@ -32,7 +32,6 @@ def test_asset_currency_conversion_uses_owned_slice_without_chained_assignment(
     monkeypatch,
 ):
     monkeypatch.setattr(create_tables, "get_assets", _asset_rows)
-    monkeypatch.setattr(create_tables, "current_investment_value", lambda *_: 0)
     monkeypatch.setattr(
         create_tables,
         "_get_fx_rate_as_of",

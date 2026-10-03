@@ -17,8 +17,10 @@ from src.data.sqlite_store import (
     add_category,
     append_cash_drafts,
     annual_goals,
+    asset_accounts,
     asset_snapshot_month,
     asset_snapshots,
+    asset_types,
     backup_database,
     cash_transactions,
     categories,
@@ -29,6 +31,7 @@ from src.data.sqlite_store import (
     create_debt_record,
     fx_rates,
     initialize_database,
+    liquidity_classes,
     link_transaction_source,
     publish_cash_drafts,
     publish_domain_drafts,
@@ -45,6 +48,8 @@ from src.data.sqlite_store import (
     save_month,
     saved_asset_months,
     saved_months,
+    set_asset_account_classification,
+    set_asset_account_classifications,
     set_category_active,
     transaction_drafts_snapshot,
     update_cash_drafts,
@@ -66,7 +71,7 @@ def _add_transaction(database, transaction_id, direction, category, amount="1.00
     )
 
 
-def test_v7_schema_is_strict_and_categories_match_contract(tmp_path):
+def test_v8_schema_is_strict_and_categories_match_contract(tmp_path):
     database = tmp_path / "synthetic.sqlite3"
     initialize_database(database)
     initialize_database(database)
@@ -89,6 +94,102 @@ def test_v7_schema_is_strict_and_categories_match_contract(tmp_path):
     assert names["income"] == {"Зарплата", "Проценты", "Инвест доход", "Прочие доходы"}
     assert len(names["expense"]) == 10
     assert strict and set(strict.values()) == {1}
+
+
+def test_asset_account_classification_preserves_history_and_controls_capital(tmp_path):
+    from src.data.get import _get_assets_sqlite_cached
+
+    database = tmp_path / "synthetic.sqlite3"
+    initialize_database(database)
+    add_asset_account(
+        database, "cash-1", "Основной счёт", asset_type_id="cash_account")
+    add_asset_snapshot(
+        database, snapshot_id="snapshot-1", account_id="cash-1",
+        period="2026-09", amount="123.45", currency="RUB")
+
+    assert {row["id"] for row in asset_types(database)} == {
+        "cash_account", "deposit", "bond", "equity", "fund", "crypto",
+        "real_estate", "other",
+    }
+    assert [row["id"] for row in liquidity_classes(database)] == ["A1", "A2", "A3", "A4"]
+    assert asset_accounts(database)[0]["liquidity_class_id"] == "A1"
+    assert asset_accounts(database)[0]["liquidity_source"] == "suggested"
+    assert len(_get_assets_sqlite_cached(str(database))) == 1
+
+    set_asset_account_classification(
+        database, "cash-1", asset_type_id="deposit", include_in_capital=False,
+        liquidity_class_override_id="A2",
+        reason="Счёт исключён из согласованного капитала")
+    _get_assets_sqlite_cached.cache_clear()
+
+    account = asset_accounts(database)[0]
+    assert account["asset_type_id"] == "deposit"
+    assert account["liquidity_class_override_id"] == "A2"
+    assert account["liquidity_class_id"] == "A2"
+    assert account["liquidity_source"] == "manual"
+    assert account["include_in_capital"] == 0
+    assert [row["id"] for row in asset_snapshots(database)] == ["snapshot-1"]
+    assert _get_assets_sqlite_cached(str(database)).empty
+    with connect_database(database) as connection:
+        event = connection.execute(
+            "SELECT entity_type, action FROM audit_events ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+    assert tuple(event) == ("asset_account", "classification_changed")
+
+    set_asset_account_classification(
+        database, "cash-1", asset_type_id="real_estate", include_in_capital=True,
+        liquidity_class_override_id="A2", reason="Тип уточнён")
+    account = asset_accounts(database)[0]
+    assert account["liquidity_class_id"] == "A2"
+    assert account["liquidity_source"] == "manual"
+
+
+def test_asset_account_classification_batch_is_atomic_and_skips_unchanged_rows(tmp_path):
+    database = tmp_path / "synthetic.sqlite3"
+    initialize_database(database)
+    add_asset_account(database, "account-1", "Счёт 1")
+    add_asset_account(database, "account-2", "Счёт 2")
+
+    with pytest.raises(ValueError, match="unknown asset account"):
+        set_asset_account_classifications(
+            database,
+            [
+                {"account_id": "account-1", "asset_type_id": "deposit",
+                 "include_in_capital": True},
+                {"account_id": "missing", "asset_type_id": "other",
+                 "include_in_capital": False},
+            ],
+            reason="bulk edit",
+        )
+    assert {row["asset_type_id"] for row in asset_accounts(database)} == {None}
+
+    first = set_asset_account_classifications(
+        database,
+        [
+            {"account_id": "account-1", "asset_type_id": "deposit",
+             "include_in_capital": True},
+            {"account_id": "account-2", "asset_type_id": None,
+             "include_in_capital": False},
+        ],
+        reason="bulk edit",
+    )
+    second = set_asset_account_classifications(
+        database,
+        [
+            {"account_id": "account-1", "asset_type_id": "deposit",
+             "include_in_capital": True},
+            {"account_id": "account-2", "asset_type_id": None,
+             "include_in_capital": False},
+        ],
+        reason="bulk retry",
+    )
+
+    assert first == {"submitted": 2, "updated": 2}
+    assert second == {"submitted": 2, "updated": 0}
+    with connect_database(database) as connection:
+        assert connection.execute(
+            "SELECT COUNT(*) FROM audit_events WHERE entity_type = 'asset_account'"
+        ).fetchone()[0] == 2
 
 
 def test_user_category_lifecycle_preserves_historical_assignment(tmp_path):

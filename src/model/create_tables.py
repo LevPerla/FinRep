@@ -3,9 +3,8 @@ import pandas as pd
 from functools import lru_cache
 
 from src import config
-from src.data.get import get_investments, get_transactions, get_assets
+from src.data.get import get_assets, get_income_categories, get_investments, get_transactions
 from src.data.debts import active_debt_balances
-from src.data.investment_calculations import current_investment_value
 from src.data.get_finance import get_actual_rates, get_act_moex, get_fx_rates, require_fx_rate
 from src.data.proccess import convert_transaction, round_money_values
 
@@ -117,23 +116,26 @@ def _get_balance_by_month_cached(data_root: str, currency: str) -> pd.DataFrame:
         # buy_df = convert_transaction(buy_df, to_curr=currency, target_col='Сумма')
         # sell_df = convert_transaction(sell_df, to_curr=currency, target_col='Прибыль/убыток')
 
-    all_stats_df = (transactions_df[transactions_df.Категория.isin(config.NOT_COST_COLS)]
+    configured_income_columns = get_income_categories()["Категория"].astype(str).tolist()
+    non_cost_columns = set(config.NOT_COST_COLS) | set(configured_income_columns)
+    all_stats_df = (transactions_df[transactions_df.Категория.isin(non_cost_columns)]
                     .pivot_table(values='Значение', index=['Дата'], columns=['Категория'], aggfunc='sum')
                     .fillna(0)
                     .resample('M').sum()
                     )
-    all_stats_df['Расход'] = (transactions_df[~transactions_df.Категория.isin(config.NOT_COST_COLS)]
+    all_stats_df['Расход'] = (transactions_df[~transactions_df.Категория.isin(non_cost_columns)]
                               .set_index('Дата').resample('M')['Значение'].sum())
 
     # all_stats_df['Потенциальная прибыль'] = buy_df.set_index('Дата').resample('M')['Потенциальная прибыль'].sum()
     # all_stats_df['Доход от инвестирования'] = sell_df.set_index('Дата').resample('M')['Прибыль/убыток'].sum()
     all_stats_df = all_stats_df.fillna(0)
-    income_columns = [
+    income_columns = list(dict.fromkeys([
         'Доход',
         'Сбережения',
         *config.INCOME_CATEGORY_LABELS,
+        *configured_income_columns,
         config.UNCLASSIFIED_INCOME_LABEL,
-    ]
+    ]))
     for column in [
         *income_columns,
         'Дебиторская задолженность',
@@ -325,10 +327,6 @@ def _get_asset_capital_by_month_cached(data_root: str, currency: str) -> pd.Data
         .rename('Капитал по активам')
         .to_frame()
     )
-    if not result.empty:
-        investment_value = current_investment_value(currency)
-        if investment_value:
-            result.loc[result.index.max(), 'Капитал по активам'] += investment_value
     result['Капитал по активам'] = round_money_values(
         result['Капитал по активам'], field_name='Капитал по активам'
     )
@@ -399,11 +397,6 @@ def get_assets_by_currencies(year, month) -> pd.DataFrame:
                           ].reset_index(drop=True)
     snapshot_date = asset_valuation_dates(assets_df).max() if not assets_df.empty else None
     assets_df.drop(['Год', 'Месяц', 'Квартал'], axis=1, inplace=True)
-
-    investment_value = current_investment_value('RUB') if _is_latest_asset_snapshot(year, month) else 0
-    if investment_value:
-        inv_df = pd.DataFrame([{'Счет': 'Инвестиции', 'Валюта': 'RUB', 'Значение': investment_value}])
-        assets_df = pd.concat([assets_df, inv_df], ignore_index=True)
 
     # Pivot data to currency in cols and accounts in rows
     gr_asset_df = assets_df.pivot_table(index=['Счет', 'Валюта'], columns='Валюта',
@@ -554,7 +547,11 @@ def asset_valuation_dates(assets_df: pd.DataFrame) -> pd.Series:
 
 def _convert_asset_values_as_of_snapshot(assets_df: pd.DataFrame, currency: str) -> pd.Series:
     values = pd.to_numeric(assets_df['Значение'], errors='coerce').copy()
-    valuation_column = 'Дата оценки' if 'Дата оценки' in assets_df.columns else 'Дата'
+    valuation_column = (
+        'Дата FX' if 'Дата FX' in assets_df.columns
+        else 'Дата оценки' if 'Дата оценки' in assets_df.columns
+        else 'Дата'
+    )
     for (from_curr, snapshot_date), index in assets_df.groupby(['Валюта', valuation_column]).groups.items():
         from_curr = str(from_curr).upper()
         if from_curr == currency:
@@ -587,24 +584,6 @@ def _get_fx_rate_as_of(from_curr: str, to_curr: str, as_of_date) -> float | None
         return None
     return float(values.iloc[-1])
 
-
-def _is_latest_asset_snapshot(year, month) -> bool:
-    assets_df = get_assets()
-    if assets_df.empty:
-        return False
-    latest = pd.PeriodIndex(
-        year=assets_df['Год'].astype(int),
-        month=assets_df['Месяц'].astype(int),
-        freq='M',
-    ).max()
-    years = list(np.array(year).astype(int).flat)
-    months = list(np.array(month).astype(int).flat)
-    requested_periods = {
-        pd.Period(year=year_value, month=month_value, freq='M')
-        for year_value in years
-        for month_value in months
-    }
-    return latest in set(requested_periods)
 
 if __name__ == '__main__':
     pd.options.display.max_columns = 40

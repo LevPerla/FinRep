@@ -17,6 +17,7 @@ from flask import request, session
 
 from src import config
 from src.data.get import clear_data_cache, get_transactions
+from src.data.inflation import refresh_official_cpi
 from src.data.assets_editor import (
     asset_snapshot_path,
     previous_asset_snapshot_path,
@@ -83,6 +84,8 @@ DEFAULT_CURRENCY = "RUB"
 DEFAULT_YEAR = datetime.now().strftime("%Y")
 DEFAULT_MONTH = datetime.now().strftime("%m")
 DEFAULT_FX_NETWORK_ENABLED = False
+UNCLASSIFIED_ASSET_TYPE_VALUE = "__unclassified__"
+AUTOMATIC_LIQUIDITY_VALUE = "__automatic__"
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 ASSETS_FOLDER = PROJECT_ROOT / "assets"
 logger = logging.getLogger(__name__)
@@ -222,6 +225,21 @@ def _default_dashboard_period() -> tuple[str, str]:
     return str(year), f"{month:02d}"
 
 
+def _cpi_period_options(currency: str) -> list[dict]:
+    if not config.use_sqlite_storage():
+        return []
+    try:
+        from src.data.sqlite_store import cpi_observations
+
+        periods = [
+            row["period"]
+            for row in cpi_observations(config.active_database_path(), currency=currency)
+        ]
+    except (OSError, ValueError, PermissionError):
+        return []
+    return [{"label": period, "value": period} for period in reversed(periods)]
+
+
 def _dashboard_tabs() -> dbc.Tabs:
     return dbc.Tabs(
         [
@@ -323,6 +341,8 @@ def create_layout():
             dcc.Store(id="dashboard-document-locale", data=DEFAULT_LOCALE),
             dcc.Store(id="dashboard-refresh-token", data=0),
             dcc.Store(id="fx-refresh-result"),
+            dcc.Store(id="cpi-refresh-result"),
+            dcc.Store(id="cpi-base-period"),
             dcc.Store(id="transaction-save-result", storage_type="memory"),
             dcc.Store(
                 id="transaction-add-request-id",
@@ -393,6 +413,7 @@ def create_layout():
                                                 ),
                                                 dbc.Button(_i18n_text("dashboard.refresh"), id="refresh-reports", color="secondary", outline=True),
                                                 dbc.Button(_i18n_text("dashboard.refresh_fx"), id="refresh-fx-rates", color="warning", outline=True, disabled=test_mode),
+                                                dbc.Button(_i18n_text("dashboard.refresh_cpi"), id="refresh-cpi", color="warning", outline=True, disabled=test_mode),
                                                 dbc.Button(
                                                     _i18n_text("dashboard.theme_toggle", initial_key="dashboard.theme_light"),
                                                     id="theme-toggle",
@@ -468,6 +489,9 @@ def create_layout():
                 className="py-2 mb-3",
             ),
             html.Div(id="fx-refresh-status", role="status", **{"aria-live": "polite"}),
+            dcc.Interval(id="fx-status-hide-timer", interval=5_000, max_intervals=1, disabled=True),
+            html.Div(id="cpi-refresh-status", role="status", **{"aria-live": "polite"}),
+            dcc.Interval(id="cpi-status-hide-timer", interval=5_000, max_intervals=1, disabled=True),
             _dashboard_tabs(),
             html.Div(
                 dbc.Tabs([
@@ -509,15 +533,35 @@ def register_callbacks(app: Dash) -> None:
     app.clientside_callback(
         """function(clicks, locale) {
             const unchanged = window.dash_clientside.no_update;
-            if (!clicks) return [unchanged, unchanged, unchanged];
+            if (!clicks) return [unchanged, unchanged, unchanged, unchanged, unchanged];
             const en = locale === "en";
             return [en ? "Checking exchange rates…" : "Обновляем курсы…",
-                    "finrep-fx-status is-loading", true];
+                    "finrep-fx-status is-loading", true, true, 0];
         }""",
         Output("fx-refresh-status", "children"),
         Output("fx-refresh-status", "className"),
         Output("refresh-fx-rates", "disabled"),
+        Output("fx-status-hide-timer", "disabled"),
+        Output("fx-status-hide-timer", "n_intervals"),
         Input("refresh-fx-rates", "n_clicks"),
+        State("dashboard-locale", "data"),
+        prevent_initial_call=True,
+    )
+
+    app.clientside_callback(
+        """function(clicks, locale) {
+            const unchanged = window.dash_clientside.no_update;
+            if (!clicks) return [unchanged, unchanged, unchanged, unchanged, unchanged];
+            const en = locale === "en";
+            return [en ? "Loading official inflation data…" : "Загружаем официальную инфляцию…",
+                    "finrep-fx-status is-loading", true, true, 0];
+        }""",
+        Output("cpi-refresh-status", "children"),
+        Output("cpi-refresh-status", "className"),
+        Output("refresh-cpi", "disabled"),
+        Output("cpi-status-hide-timer", "disabled"),
+        Output("cpi-status-hide-timer", "n_intervals"),
+        Input("refresh-cpi", "n_clicks"),
         State("dashboard-locale", "data"),
         prevent_initial_call=True,
     )
@@ -525,6 +569,57 @@ def register_callbacks(app: Dash) -> None:
     app.clientside_callback(
         """function(result, locale) {
             if (!result) return [window.dash_clientside.no_update,
+                                 window.dash_clientside.no_update,
+                                 window.dash_clientside.no_update,
+                                 window.dash_clientside.no_update,
+                                 window.dash_clientside.no_update];
+            const en = locale === "en";
+            const successful = (result.results || []).filter(item => item.status === "updated").length;
+            const failedItems = (result.results || []).filter(item => item.status === "error");
+            const failed = failedItems.length;
+            let message;
+            if (en) message = `Inflation data updated: ${successful}; errors: ${failed}.`;
+            else message = `Инфляция обновлена: ${successful}; ошибок: ${failed}.`;
+            if (failedItems.length) {
+                message += " " + failedItems.map(item => `${item.currency}: ${item.message}`).join("; ");
+            }
+            return [message, "finrep-fx-status is-" + result.status, false, false, 0];
+        }""",
+        Output("cpi-refresh-status", "children", allow_duplicate=True),
+        Output("cpi-refresh-status", "className", allow_duplicate=True),
+        Output("refresh-cpi", "disabled", allow_duplicate=True),
+        Output("cpi-status-hide-timer", "disabled", allow_duplicate=True),
+        Output("cpi-status-hide-timer", "n_intervals", allow_duplicate=True),
+        Input("cpi-refresh-result", "data"),
+        State("dashboard-locale", "data"),
+        prevent_initial_call=True,
+    )
+
+    @app.callback(
+        Output("cpi-refresh-result", "data"),
+        Input("refresh-cpi", "n_clicks"),
+        prevent_initial_call=True,
+    )
+    def refresh_cpi(clicks):
+        if not clicks or config.is_test_mode():
+            raise PreventUpdate
+        return refresh_official_cpi(config.active_database_path())
+
+    @app.callback(
+        Output("cpi-base-period", "data"),
+        Input("cpi-base-period-chart", "value"),
+        prevent_initial_call=True,
+    )
+    def store_cpi_base_period(value):
+        if not value:
+            raise PreventUpdate
+        return value
+
+    app.clientside_callback(
+        """function(result, locale) {
+            if (!result) return [window.dash_clientside.no_update,
+                                 window.dash_clientside.no_update,
+                                 window.dash_clientside.no_update,
                                  window.dash_clientside.no_update,
                                  window.dash_clientside.no_update];
             const en = locale === "en";
@@ -537,13 +632,43 @@ def register_callbacks(app: Dash) -> None:
                 error: "Не удалось обновить курсы. Подробнее — в сообщении отчёта.",
                 unavailable: "В этом разделе курсы не загружаются."
             };
-            return [messages[result.status], "finrep-fx-status is-" + result.status, false];
+            return [messages[result.status], "finrep-fx-status is-" + result.status, false, false, 0];
         }""",
         Output("fx-refresh-status", "children", allow_duplicate=True),
         Output("fx-refresh-status", "className", allow_duplicate=True),
         Output("refresh-fx-rates", "disabled", allow_duplicate=True),
+        Output("fx-status-hide-timer", "disabled", allow_duplicate=True),
+        Output("fx-status-hide-timer", "n_intervals", allow_duplicate=True),
         Input("fx-refresh-result", "data"),
         State("dashboard-locale", "data"),
+        prevent_initial_call=True,
+    )
+
+    app.clientside_callback(
+        """function(n) {
+            if (!n) return [window.dash_clientside.no_update,
+                            window.dash_clientside.no_update,
+                            window.dash_clientside.no_update];
+            return ["", "", true];
+        }""",
+        Output("fx-refresh-status", "children", allow_duplicate=True),
+        Output("fx-refresh-status", "className", allow_duplicate=True),
+        Output("fx-status-hide-timer", "disabled", allow_duplicate=True),
+        Input("fx-status-hide-timer", "n_intervals"),
+        prevent_initial_call=True,
+    )
+
+    app.clientside_callback(
+        """function(n) {
+            if (!n) return [window.dash_clientside.no_update,
+                            window.dash_clientside.no_update,
+                            window.dash_clientside.no_update];
+            return ["", "", true];
+        }""",
+        Output("cpi-refresh-status", "children", allow_duplicate=True),
+        Output("cpi-refresh-status", "className", allow_duplicate=True),
+        Output("cpi-status-hide-timer", "disabled", allow_duplicate=True),
+        Input("cpi-status-hide-timer", "n_intervals"),
         prevent_initial_call=True,
     )
 
@@ -810,16 +935,24 @@ def register_callbacks(app: Dash) -> None:
         Input("dashboard-currency", "value"),
         Input("dashboard-year", "value"),
         Input("dashboard-month", "value"),
+        Input("cpi-base-period", "data"),
         Input("dashboard-tabs", "active_tab"),
         Input("main-report-tabs", "active_tab"),
         Input("dashboard-theme", "data"),
         Input("dashboard-locale", "data"),
         Input("dashboard-refresh-token", "data"),
         Input("refresh-fx-rates", "n_clicks"),
+        Input("cpi-refresh-result", "data"),
         Input("transaction-save-result", "data"),
         State("crypto-refresh-status", "data"),
     )
-    def render_dashboard_content(currency: str, year: str, month: str, active_tab: str, main_section: str, theme: str, locale: str, refresh_token: int, fx_refresh_clicks: int | None, transaction_save_result: dict | None, crypto_status: dict | None):
+    def render_dashboard_content(currency: str, year: str, month: str,
+                                 cpi_base_period: str | None, active_tab: str,
+                                 main_section: str, theme: str, locale: str,
+                                 refresh_token: int, fx_refresh_clicks: int | None,
+                                 _cpi_refresh_result: dict | None,
+                                 transaction_save_result: dict | None,
+                                 crypto_status: dict | None):
         fx_network_enabled = ctx.triggered_id == "refresh-fx-rates" and not config.is_test_mode()
 
         def finish(content):
@@ -955,6 +1088,7 @@ def register_callbacks(app: Dash) -> None:
                 fx_network_enabled=fx_network_enabled,
                 year=year,
                 month=month,
+                cpi_base_period=cpi_base_period,
             )
         except Exception as exc:
             return finish(_error_state(str(report_text("Не удалось загрузить данные основного отчета.", locale)), exc, locale=locale))
@@ -1635,6 +1769,57 @@ def register_callbacks(app: Dash) -> None:
         except Exception as exc:
             return row_data or [], report_text(str(exc), locale), "danger"
 
+    @app.callback(
+        Output("asset-classification-message", "children"),
+        Output("asset-classification-message", "color"),
+        Output("asset-classification-grid", "rowData"),
+        Input("asset-classification-save-button", "n_clicks", allow_optional=True),
+        State("asset-classification-grid", "rowData", allow_optional=True),
+        State("dashboard-locale", "data"),
+        prevent_initial_call=True,
+    )
+    def save_asset_classification(save_clicks, rows, locale):
+        if not save_clicks:
+            raise PreventUpdate
+        try:
+            config.require_writable_mode()
+            if not config.use_sqlite_storage():
+                raise ValueError("Классификация активов доступна в режиме SQLite.")
+            from src.data.sqlite_store import set_asset_account_classifications
+
+            result = set_asset_account_classifications(
+                config.active_database_path(),
+                [
+                    {
+                        "account_id": row.get("account_id"),
+                        "asset_type_id": (
+                            None if row.get("asset_type_id") == UNCLASSIFIED_ASSET_TYPE_VALUE
+                            else row.get("asset_type_id") or None
+                        ),
+                        "liquidity_class_override_id": (
+                            None if row.get("liquidity_choice") == AUTOMATIC_LIQUIDITY_VALUE
+                            else row.get("liquidity_choice") or None
+                        ),
+                        "include_in_capital": row.get("Включать в капитал"),
+                    }
+                    for row in (rows or [])
+                ],
+                reason="asset classification updated from dashboard",
+            )
+            clear_data_cache()
+            clear_table_cache()
+            clear_main_dashboard_cache()
+            refreshed_rows = _asset_classification_rows(locale)
+            status, color = _asset_classification_status(refreshed_rows, locale)
+            saved = (
+                f"Updated accounts: {result['updated']}. "
+                if normalize_locale(locale) == "en"
+                else f"Обновлено счетов: {result['updated']}. "
+            )
+            return saved + status, color, refreshed_rows
+        except Exception as exc:
+            return report_text(str(exc), locale), "danger", no_update
+
 
 def _ag_grid_changed_column(change_event, column_name: str) -> bool:
     if not change_event:
@@ -1709,20 +1894,36 @@ def _main_report_layout(
 
     sections = [
         _cockpit_section(datasets["cockpit_metrics"], theme=theme, locale=locale),
-        _grid_section(datasets["yearly_stats"], height="300px", theme=theme, locale=locale),
+        _grid_section(
+            datasets["yearly_stats"], height="none", theme=theme, locale=locale),
         _grid_section(datasets["fx_rates"], height="260px", theme=theme, locale=locale),
         _graph_section(datasets["income_expense"], theme=theme, locale=locale),
         _graph_section(datasets["delta"], theme=theme, locale=locale),
         _graph_section(datasets["savings_rate"], theme=theme, locale=locale),
-        _graph_section(datasets["capital"], height="640px", theme=theme, locale=locale),
+        _capital_section(
+            datasets["capital"], currency=currency,
+            height="640px", theme=theme, locale=locale),
+        _graph_section(datasets["inflation_rate"], height="520px", theme=theme, locale=locale),
+        _capital_change_after_flows_section(
+            datasets["capital_change_after_flows"],
+            height="520px", theme=theme, locale=locale),
         _graph_section(datasets["fx_revaluation"], height="420px", theme=theme, locale=locale),
-        _graph_section(datasets["asset_currency_allocation"], height="520px", theme=theme, locale=locale),
         _graph_section(datasets["fx_changes"], theme=theme, locale=locale),
+        _graph_section(datasets["asset_currency_allocation"], height="520px", theme=theme, locale=locale),
+        _graph_section(datasets["asset_liquidity_allocation"], height="520px", theme=theme, locale=locale),
     ]
     metrics = datasets["cockpit_metrics"].dataframe
+    notices = []
     if metrics.attrs.get("selected_period_available") is False:
-        sections.insert(0, _main_missing_month_notice(str(metrics.attrs["selected_period"]), locale=locale))
-    return html.Div(sections, className="d-grid gap-4")
+        notices.append(_main_missing_month_notice(
+            str(metrics.attrs["selected_period"]), locale=locale))
+    freshness = metrics.attrs.get("asset_freshness")
+    if freshness and freshness.get("has_warning"):
+        notices.append(_main_asset_freshness_notice(freshness, locale=locale))
+    inflation = datasets["real_asset_capital"].dataframe
+    if inflation.attrs.get("status") in {"missing", "partial", "stale"}:
+        notices.append(_main_inflation_notice(inflation, locale=locale))
+    return html.Div([*notices, *sections], className="d-grid gap-4")
 
 
 def _statistics_report_layout(
@@ -1778,6 +1979,63 @@ def _main_missing_month_notice(period: str, locale: str = DEFAULT_LOCALE):
         id="main-missing-month-notice",
         color="warning",
         className="mb-0",
+    )
+
+
+def _main_asset_freshness_notice(freshness: dict, locale: str = DEFAULT_LOCALE):
+    stale_names = ", ".join(freshness.get("stale_accounts", []))
+    missing_names = ", ".join(freshness.get("missing_accounts", []))
+    if normalize_locale(locale) == "en":
+        parts = []
+        if stale_names:
+            parts.append(f"Stale valuations: {stale_names}.")
+        if missing_names:
+            parts.append(f"Unknown valuation date: {missing_names}.")
+        title = "Asset valuations need attention"
+        detail = " ".join(parts) + " Values remain included in capital."
+    else:
+        parts = []
+        if stale_names:
+            parts.append(f"Устаревшие оценки: {stale_names}.")
+        if missing_names:
+            parts.append(f"Дата оценки неизвестна: {missing_names}.")
+        title = "Оценки активов требуют внимания"
+        detail = " ".join(parts) + " Значения продолжают учитываться в капитале."
+    return dbc.Alert(
+        [
+            html.Div(title, className="fw-semibold"),
+            html.Div(detail, className="small mt-1"),
+        ],
+        id="main-asset-freshness-notice",
+        color="warning",
+        className="mb-0",
+    )
+
+
+def _main_inflation_notice(data: pd.DataFrame, locale: str = DEFAULT_LOCALE):
+    missing = data.attrs.get("missing_periods", [])
+    stale = data.attrs.get("stale", False)
+    latest = data.attrs.get("latest_cpi_period", "")
+    currency = data.attrs.get("currency", "")
+    if normalize_locale(locale) == "en":
+        title = f"Official inflation data for {currency} is incomplete"
+        detail = (
+            f"Missing months: {', '.join(missing)}. " if missing else ""
+        ) + (f"Latest official month: {latest}. " if stale else "") \
+          + ("Dependent real values are left empty. " if not stale or missing
+             else "Existing real values remain visible. ") \
+          + "Use ‘Refresh inflation’ to check the official source."
+    else:
+        title = f"Официальные данные инфляции для {currency} неполные"
+        detail = (
+            f"Нет месяцев: {', '.join(missing)}. " if missing else ""
+        ) + (f"Последний официальный месяц: {latest}. " if stale else "") \
+          + ("Зависимые реальные значения оставлены пустыми. " if not stale or missing
+             else "Доступные реальные значения остаются видимыми. ") \
+          + "Проверьте источник кнопкой «Обновить инфляцию»."
+    return dbc.Alert(
+        [html.Div(title, className="fw-semibold"), html.Div(detail, className="small mt-1")],
+        id="main-inflation-notice", color="warning", className="mb-0",
     )
 
 
@@ -2787,6 +3045,10 @@ def _debt_input_layout(currency: str, theme: str | None, include_create: bool = 
 def _assets_input_layout(year: str, month: str, theme: str | None, load_records: bool = True, read_only: bool = False, locale: str = DEFAULT_LOCALE):
     records = _asset_input_records(year, month) if load_records else []
     message, message_color = _asset_input_status(year, month, locale)
+    classification_rows = _asset_classification_rows(locale) if load_records else []
+    classification_message, classification_color = _asset_classification_status(
+        classification_rows, locale)
+    classification_read_only = read_only or not config.use_sqlite_storage()
     return html.Div(
         [
             html.Section(
@@ -2801,10 +3063,10 @@ def _assets_input_layout(year: str, month: str, theme: str | None, load_records:
                                     dbc.Button(report_text("Удалить выбранные", locale), id="assets-delete-row-button", color="danger", outline=True, size="sm", disabled=read_only),
                                     dbc.Button(report_text("Применить", locale), id="assets-apply-button", color="primary", outline=True, size="sm", disabled=read_only),
                                 ],
-                                className="d-flex flex-wrap gap-2",
+                                className="d-flex flex-wrap gap-2 finrep-assets-actions",
                             ),
                         ],
-                        className="d-flex justify-content-between align-items-center mb-3",
+                        className="d-flex justify-content-between align-items-center mb-3 finrep-assets-header",
                     ),
                     dbc.Alert(
                         id="assets-input-message",
@@ -2821,7 +3083,65 @@ def _assets_input_layout(year: str, month: str, theme: str | None, load_records:
                             defaultColDef=_ag_grid_default_col_def(editable=not read_only),
                             dashGridOptions={"pagination": False, "suppressFieldDotNotation": True, "rowSelection": "multiple", "stopEditingWhenCellsLoseFocus": True, "undoRedoCellEditing": True},
                             className=_ag_grid_class_name(theme),
-                            style=_ag_grid_style("920px"),
+                            style=_ag_grid_style(_asset_grid_height(len(records), maximum=920)),
+                        )
+                    ),
+                ],
+                style=_section_style(theme),
+            ),
+            html.Section(
+                [
+                    html.Div(
+                        [
+                            html.Div(
+                                [
+                                    html.H2(
+                                        report_text("Классификация активов", locale),
+                                        className="h5 mb-1",
+                                    ),
+                                    html.P(
+                                        report_text(
+                                            "Для брокерского счёта снимок содержит только свободные деньги; бумаги и криптоактивы учитываются отдельно.",
+                                            locale,
+                                        ),
+                                        className="small mb-0",
+                                        style={"color": "var(--finrep-muted)"},
+                                    ),
+                                ]
+                            ),
+                            dbc.Button(
+                                report_text("Сохранить классификацию", locale),
+                                id="asset-classification-save-button",
+                                color="primary",
+                                size="sm",
+                                disabled=classification_read_only,
+                            ),
+                        ],
+                        className="d-flex flex-wrap justify-content-between align-items-start gap-3 mb-3 finrep-asset-classification-header",
+                    ),
+                    dbc.Alert(
+                        id="asset-classification-message",
+                        children=classification_message,
+                        color=classification_color,
+                        is_open=True,
+                        className="mb-3 py-2",
+                    ),
+                    _ag_grid_scroll(
+                        dag.AgGrid(
+                            id="asset-classification-grid",
+                            rowData=classification_rows,
+                            columnDefs=_asset_classification_column_defs(
+                                locale, editable=not classification_read_only),
+                            defaultColDef=_ag_grid_default_col_def(),
+                            dashGridOptions={
+                                "pagination": False,
+                                "suppressFieldDotNotation": True,
+                                "stopEditingWhenCellsLoseFocus": True,
+                                "undoRedoCellEditing": True,
+                            },
+                            className=_ag_grid_class_name(theme),
+                            style=_ag_grid_style(
+                                _asset_grid_height(len(classification_rows), maximum=560)),
                         )
                     ),
                 ],
@@ -2830,6 +3150,157 @@ def _assets_input_layout(year: str, month: str, theme: str | None, load_records:
         ],
         className="d-grid gap-4 pt-3",
     )
+
+
+def _asset_grid_height(row_count: int, *, maximum: int) -> str:
+    return f"{min(maximum, max(220, 64 + row_count * 42))}px"
+
+
+def _asset_classification_rows(locale: str = DEFAULT_LOCALE) -> list[dict]:
+    if not config.use_sqlite_storage():
+        return []
+    from src.data.asset_freshness import evaluate_asset_freshness, freshness_label
+    from src.data.sqlite_store import asset_accounts
+
+    freshness = evaluate_asset_freshness(asset_accounts(config.active_database_path()))
+    return [
+        {
+            "account_id": row["id"],
+            "Счет": row["name"],
+            "asset_type_id": row["asset_type_id"] or UNCLASSIFIED_ASSET_TYPE_VALUE,
+            "liquidity_choice": (
+                row["liquidity_class_override_id"] or AUTOMATIC_LIQUIDITY_VALUE
+            ),
+            "liquidity_class_id": row["liquidity_class_id"] or "",
+            "liquidity_source": row["liquidity_source"],
+            "Включать в капитал": bool(row["include_in_capital"]),
+            "Актуальность": freshness_label(
+                row, locale=normalize_locale(locale)),
+            "freshness_status": row["freshness_status"],
+            "Снимков": row["snapshot_count"],
+            "Первый снимок": row["first_period"] or "",
+            "Последний снимок": row["last_period"] or "",
+        }
+        for row in freshness["accounts"]
+    ]
+
+
+def _asset_classification_status(rows: list[dict], locale: str = DEFAULT_LOCALE) -> tuple[str, str]:
+    if not config.use_sqlite_storage():
+        return report_text("Классификация активов доступна в режиме SQLite.", locale), "secondary"
+    total = len(rows)
+    unclassified = sum(
+        row.get("asset_type_id") in {None, "", UNCLASSIFIED_ASSET_TYPE_VALUE}
+        for row in rows
+    )
+    excluded = sum(not row.get("Включать в капитал", True) for row in rows)
+    liquidity_unclassified = sum(not row.get("liquidity_class_id") for row in rows)
+    stale = sum(
+        row.get("freshness_status") == "stale" and row.get("Включать в капитал", True)
+        for row in rows
+    )
+    missing_date = sum(
+        row.get("freshness_status") == "missing" and row.get("Включать в капитал", True)
+        for row in rows
+    )
+    if normalize_locale(locale) == "en":
+        message = (
+            f"Accounts: {total}. Unclassified: {unclassified}. "
+            f"Liquidity unassigned: {liquidity_unclassified}. "
+            f"Stale valuations: {stale}. Unknown valuation date: {missing_date}. "
+            f"Excluded from capital: {excluded}."
+        )
+    else:
+        message = (
+            f"Счетов: {total}. Не классифицировано: {unclassified}. "
+            f"Ликвидность не задана: {liquidity_unclassified}. "
+            f"Устаревших оценок: {stale}. Без даты оценки: {missing_date}. "
+            f"Исключено из капитала: {excluded}."
+        )
+    return (
+        message,
+        "warning" if unclassified or liquidity_unclassified or stale or missing_date else "success",
+    )
+
+
+def _asset_classification_column_defs(
+        locale: str = DEFAULT_LOCALE, *, editable: bool = True) -> list[dict]:
+    if config.use_sqlite_storage():
+        from src.data.sqlite_store import asset_types, liquidity_classes
+
+        types = asset_types(config.active_database_path())
+        liquidity = liquidity_classes(config.active_database_path())
+    else:
+        types = []
+        liquidity = []
+    type_labels = {
+        UNCLASSIFIED_ASSET_TYPE_VALUE: report_text("Не классифицировано", locale),
+        **{
+            row["id"]: row["name_en"] if normalize_locale(locale) == "en" else row["name_ru"]
+            for row in types
+        },
+    }
+    liquidity_ids = [row["id"] for row in liquidity]
+    unassigned_label = report_text("Не задана", locale)
+    suggested_label = report_text("предложено", locale)
+    manual_label = report_text("вручную", locale)
+    liquidity_formatter = (
+        "params.value === '" + AUTOMATIC_LIQUIDITY_VALUE + "' "
+        f"? (params.data.liquidity_class_id ? params.data.liquidity_class_id + ' · {suggested_label}' "
+        f": '{unassigned_label}') : params.value + ' · {manual_label}'"
+    )
+    columns = [
+        {"field": "account_id", "hide": True},
+        {"field": "Счет", "headerName": "Счет", "flex": 1, "minWidth": 90,
+         "tooltipField": "Счет"},
+        {
+            "field": "asset_type_id",
+            "headerName": "Тип актива",
+            "editable": editable,
+            "cellEditor": "agSelectCellEditor",
+            "cellEditorParams": {"values": list(type_labels)},
+            "valueFormatter": {
+                "function": f"({json.dumps(type_labels, ensure_ascii=False)})[params.value] || params.value"
+            },
+            "width": 95,
+            "minWidth": 90,
+        },
+        {
+            "field": "liquidity_choice",
+            "headerName": "Ликвидность",
+            "editable": editable,
+            "cellEditor": "agSelectCellEditor",
+            "cellEditorParams": {
+                "values": [AUTOMATIC_LIQUIDITY_VALUE, *liquidity_ids],
+            },
+            "valueFormatter": {"function": liquidity_formatter},
+            "width": 112,
+            "minWidth": 105,
+        },
+        {"field": "liquidity_class_id", "hide": True},
+        {"field": "liquidity_source", "hide": True},
+        {
+            "field": "Включать в капитал",
+            "headerName": "Капитал",
+            "editable": editable,
+            "cellRenderer": "agCheckboxCellRenderer",
+            "cellEditor": "agCheckboxCellEditor",
+            "width": 64,
+            "minWidth": 60,
+        },
+        {
+            "field": "Актуальность",
+            "headerName": "Актуальность",
+            "editable": False,
+            "width": 210,
+            "minWidth": 180,
+        },
+        {"field": "freshness_status", "hide": True},
+        {"field": "Снимков", "headerName": "Снимков", "width": 110},
+        {"field": "Первый снимок", "headerName": "Первый снимок", "width": 140},
+        {"field": "Последний снимок", "headerName": "Последний снимок", "width": 150},
+    ]
+    return _localized_input_column_defs(columns, locale)
 
 def _dataframe_records(data: pd.DataFrame) -> list[dict]:
     if data.empty:
@@ -3220,9 +3691,9 @@ def _debt_transaction_draft_column_defs() -> list[dict]:
 def _asset_input_column_defs() -> list[dict]:
     currencies = list(config.UNIQUE_TICKERS)
     return [
-        {"field": "account", "headerName": "Счет", "editable": True, "flex": 1, "minWidth": 260},
-        {"field": "amount", "headerName": "Сумма", "editable": True, "width": 170},
-        {"field": "currency", "headerName": "Валюта", "editable": True, "cellEditor": "agSelectCellEditor", "cellEditorParams": {"values": currencies}, "width": 120},
+        {"field": "account", "headerName": "Счет", "editable": True, "flex": 1, "minWidth": 132},
+        {"field": "amount", "headerName": "Сумма", "editable": True, "width": 125, "minWidth": 112},
+        {"field": "currency", "headerName": "Валюта", "editable": True, "cellEditor": "agSelectCellEditor", "cellEditorParams": {"values": currencies}, "width": 78, "minWidth": 72},
         {"field": "amount_sort", "hide": True, "sort": "desc", "sortIndex": 0},
     ]
 
@@ -3434,6 +3905,73 @@ def _graph_section(dataset: DashboardDataset, height: str = "520px", theme: str 
         className="finrep-chart-section",
         style=_section_style(theme),
     )
+
+
+def _capital_section(
+    dataset: DashboardDataset,
+    *,
+    currency: str,
+    height: str = "520px",
+    theme: str | None = None,
+    locale: str = DEFAULT_LOCALE,
+):
+    section = _graph_section(dataset, height=height, theme=theme, locale=locale)
+    if dataset.dataframe.empty or not dataset.dataframe.attrs.get("base_period"):
+        return section
+
+    section.children.insert(
+        1,
+        html.Div(
+            [
+                html.Div(
+                    [
+                        html.Label(
+                            _i18n_text("dashboard.cpi_base_label"),
+                            htmlFor="cpi-base-period-chart",
+                            className="finrep-chart-filter-label",
+                        ),
+                        dcc.Dropdown(
+                            id="cpi-base-period-chart",
+                            options=_cpi_period_options(currency),
+                            value=dataset.dataframe.attrs.get("base_period"),
+                            placeholder=tr("dashboard.cpi_base_placeholder", locale),
+                            clearable=False,
+                            className="finrep-chart-filter",
+                        ),
+                    ],
+                    className="finrep-chart-filter-field",
+                ),
+                html.Div(
+                    _i18n_text("dashboard.cpi_base_help"),
+                    className="finrep-chart-filter-help",
+                ),
+            ],
+            id="capital-cpi-control",
+            className="finrep-chart-filter-row",
+        ),
+    )
+    return section
+
+
+def _capital_change_after_flows_section(
+    dataset: DashboardDataset,
+    *,
+    height: str = "520px",
+    theme: str | None = None,
+    locale: str = DEFAULT_LOCALE,
+):
+    section = _graph_section(dataset, height=height, theme=theme, locale=locale)
+    if dataset.dataframe.empty:
+        return section
+    section.children.insert(1, html.P(
+        report_text(
+            "Внешний поток включает активные доходы, расходы и движения по долгам. Проценты и инвестиционный результат остаются в изменении капитала; первый месяц не рассчитывается без начальной оценки.",
+            locale,
+        ),
+        className="small",
+        style={"color": "var(--finrep-muted)"},
+    ))
+    return section
 
 
 REPORT_SCROLL_TABLE_IDS = {

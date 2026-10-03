@@ -8,7 +8,12 @@ import sqlite3
 import tempfile
 
 from src import config
-from src.data.sqlite_store import SCHEMA_VERSION, _schema_checksum, initialize_database
+from src.data.sqlite_store import (
+    SCHEMA_VERSION,
+    _schema_checksum,
+    backup_database,
+    initialize_database,
+)
 
 
 _LEGACY_WORKING_DATA_GLOBS = (
@@ -56,6 +61,30 @@ def _verify_database(path: Path) -> None:
         raise RuntimeError(f"Cannot open SQLite database {path}: {exc}") from exc
 
 
+def _schema_version(path: Path) -> int:
+    connection = sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True)
+    try:
+        return int(connection.execute("PRAGMA user_version").fetchone()[0])
+    finally:
+        connection.close()
+
+
+def _upgrade_existing_database(path: Path) -> bool:
+    if path.stat().st_size == 0:
+        return False
+    version = _schema_version(path)
+    if version == SCHEMA_VERSION:
+        return False
+    if version not in {7, 8, 9, 10, 11}:
+        raise RuntimeError(
+            f"Unsupported SQLite schema version {version}; expected {SCHEMA_VERSION}")
+    backup = path.with_name(f"{path.stem}.pre-v{SCHEMA_VERSION}{path.suffix}")
+    if not backup.exists():
+        backup_database(path, backup)
+    initialize_database(path, data_mode="live")
+    return True
+
+
 def ensure_default_live_database() -> str:
     """Return backend state after safely preparing the configured LIVE database."""
     if config.get_storage_backend() != "sqlite":
@@ -63,8 +92,9 @@ def ensure_default_live_database() -> str:
 
     database = config.active_database_path()
     if database.exists():
+        upgraded = _upgrade_existing_database(database)
         _verify_database(database)
-        return "existing"
+        return "upgraded" if upgraded else "existing"
 
     legacy_files = _legacy_working_files(Path(config.DATA_PATH))
     if legacy_files:

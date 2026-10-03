@@ -130,7 +130,7 @@ def test_statistics_count_only_business_facts_in_one_all_time_profile(tmp_path):
     assert metrics["Всего транзакций"]["Значение"] == 2
     assert metrics["Доходных транзакций"]["Значение"] == 1
     assert metrics["Расходных транзакций"]["Значение"] == 1
-    assert metrics["Открытых черновиков"]["Значение"] == 1
+    assert "Открытых черновиков" not in metrics
     assert metrics["Первая операция"]["Значение"] == "2024-01-15"
     assert metrics["Последняя операция"]["Значение"] == "2025-03-20"
     assert metrics["Календарный охват, дней"]["Значение"] == (

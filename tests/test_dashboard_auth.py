@@ -159,6 +159,12 @@ def test_dashboard_filters_and_actions_are_inside_collapsible_settings():
         "dashboard-logout-form",
     ):
         assert _layout_component(settings, component_id) is not None
+    assert _component_text(_layout_component(settings, "refresh-reports")) == "Обновить отчет"
+    assert _layout_component(settings, "cpi-workbook-upload") is None
+    for timer_id in ("fx-status-hide-timer", "cpi-status-hide-timer"):
+        timer = _layout_component(layout, timer_id)
+        assert timer["props"]["interval"] == 5000
+        assert timer["props"]["disabled"] is True
 
 
 def test_mobile_navigation_has_four_primary_actions_and_a_more_menu():
@@ -324,7 +330,48 @@ def test_dashboard_time_chart_keeps_rangeslider_with_label_clearance():
 
     assert figure.layout.xaxis.rangeslider.visible is True
     assert figure.layout.xaxis.rangeslider.thickness == 0.08
+    assert tuple(figure.layout.xaxis.range) == (
+        pd.Timestamp("2026-01-01"), pd.Timestamp("2026-03-01"),
+    )
     assert figure.layout.margin.b == 72
+
+
+def test_dashboard_time_chart_excludes_trailing_months_without_values():
+    from src.dashboard.main_data import _savings_rate_figure
+
+    data = pd.DataFrame(
+        {
+            "Дата": pd.to_datetime(["2026-01-31", "2026-02-28", "2026-03-31"]),
+            "Норма сбережений": [20.0, 30.0, pd.NA],
+        }
+    )
+
+    figure = _savings_rate_figure(data)
+
+    assert tuple(figure.layout.xaxis.range) == (
+        pd.Timestamp("2026-01-01"), pd.Timestamp("2026-03-01"),
+    )
+
+
+def test_fx_changes_uses_secondary_axis_for_kzt():
+    from src.dashboard.main_data import _fx_changes_figure
+
+    data = pd.DataFrame({
+        "Дата": pd.to_datetime(["2026-01-31", "2026-02-28"]),
+        "USD": [80.0, 82.0],
+        "KZT": [0.16, 0.17],
+        "GBP": [100.0, 102.0],
+    })
+
+    figure = _fx_changes_figure(data, "RUB")
+    traces = {trace.name: trace for trace in figure.data}
+
+    assert traces["USD/RUB"].yaxis == "y"
+    assert traces["GBP/RUB"].yaxis == "y"
+    assert traces["KZT/RUB"].yaxis == "y2"
+    assert figure.layout.yaxis2.overlaying == "y"
+    assert figure.layout.yaxis2.side == "right"
+    assert figure.layout.yaxis2.title.text == "1 KZT в RUB"
 
 
 def test_month_transaction_rows_are_clickable():

@@ -39,6 +39,20 @@ def test_main_runway_names_cash_flow_fallback():
     assert metrics.loc["Финансовый запас по денежному потоку", "Значение"] == 1000.0 / 150.0
 
 
+def test_asset_freshness_warning_is_visible_on_dependent_metrics():
+    freshness = {
+        "has_warning": True,
+        "stale_count": 1,
+        "missing_count": 1,
+    }
+    metrics = main_data._cockpit_metrics(
+        _balance(), "RUB", "2026", "02", asset_freshness=freshness).set_index("ID")
+
+    assert metrics.loc["capital", "Статус"] == "stale"
+    assert "устаревших оценок: 1, без даты: 1" in metrics.loc["capital", "Детали"]
+    assert "устаревших оценок: 1, без даты: 1" in metrics.loc["runway", "Детали"]
+
+
 def test_planning_runway_explicitly_uses_cash_flow_capital():
     runway = planning_data._runway(_balance()).iloc[0]
 
