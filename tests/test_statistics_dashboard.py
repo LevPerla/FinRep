@@ -43,8 +43,8 @@ def test_empty_database_statistics_are_explicit(tmp_path):
     assert metrics["Последняя операция"]["Значение"] == "—"
     assert metrics["Календарный охват, дней"]["Значение"] == "—"
     assert metrics["Календарный охват, дней"]["Детали"] == "Нет данных"
-    assert metrics["Доходных категорий"]["Значение"] == "0 / 4"
-    assert metrics["Расходных категорий"]["Значение"] == "0 / 10"
+    assert "Доходных категорий" not in metrics
+    assert "Расходных категорий" not in metrics
     assert metrics["Инвестиционных сделок"]["Значение"] == 0
     assert metrics["Снимков активов"]["Значение"] == 0
     assert metrics["Валют в финансовых фактах"]["Значение"] == 0
@@ -123,8 +123,8 @@ def test_statistics_count_only_business_facts_in_one_all_time_profile(tmp_path):
     ).days + 1
     assert metrics["Календарный охват, дней"]["Детали"] == "1 г. 2 мес."
     assert metrics["Месяцев с операциями"]["Значение"] == 2
-    assert metrics["Доходных категорий"]["Значение"] == "1 / 4"
-    assert metrics["Расходных категорий"]["Значение"] == "1 / 10"
+    assert "Доходных категорий" not in metrics
+    assert "Расходных категорий" not in metrics
     assert metrics["Инвестиционных сделок"]["Значение"] == 3
     assert metrics["Покупок"]["Значение"] == 2
     assert metrics["Продаж"]["Значение"] == 1

@@ -1513,6 +1513,10 @@ body {
   background: var(--finrep-surface);
 }
 
+.finrep-theme-light .finrep-cockpit-card {
+  background: #f1f5f9;
+}
+
 .finrep-main-metric-group {
   background: var(--finrep-surface-subtle);
 }

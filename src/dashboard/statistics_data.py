@@ -55,20 +55,6 @@ def _read_statistics(database_path: str | Path) -> dict:
                 (SELECT COUNT(DISTINCT substr(occurred_on, 1, 7))
                  FROM cash_transactions WHERE status = 'posted')
                     AS transaction_month_count,
-                (SELECT COUNT(DISTINCT t.category_id)
-                 FROM cash_transactions t JOIN categories c ON c.id = t.category_id
-                 WHERE t.status = 'posted' AND c.direction = 'income'
-                   AND c.id <> 'income.unknown') AS used_income_category_count,
-                (SELECT COUNT(*) FROM categories
-                 WHERE direction = 'income' AND active = 1
-                   AND id <> 'income.unknown') AS active_income_category_count,
-                (SELECT COUNT(DISTINCT t.category_id)
-                 FROM cash_transactions t JOIN categories c ON c.id = t.category_id
-                 WHERE t.status = 'posted' AND c.direction = 'expense')
-                    AS used_expense_category_count,
-                (SELECT COUNT(*) FROM categories
-                 WHERE direction = 'expense' AND active = 1)
-                    AS active_expense_category_count,
                 (SELECT COUNT(*) FROM investment_trades) AS trade_count,
                 (SELECT COUNT(*) FROM investment_trades WHERE operation = 'buy')
                     AS buy_count,
@@ -106,18 +92,6 @@ def _statistics_frame(facts: dict) -> pd.DataFrame:
         ("Охват истории", "Последняя операция", facts["last_transaction_date"] or missing, ""),
         ("Охват истории", "Календарный охват, дней", coverage_days if coverage_days is not None else missing, coverage_detail),
         ("Охват истории", "Месяцев с операциями", facts["transaction_month_count"], ""),
-        (
-            "Категории",
-            "Доходных категорий",
-            f"{facts['used_income_category_count']} / {facts['active_income_category_count']}",
-            "Использовано / активно",
-        ),
-        (
-            "Категории",
-            "Расходных категорий",
-            f"{facts['used_expense_category_count']} / {facts['active_expense_category_count']}",
-            "Использовано / активно",
-        ),
         ("Инвестиции", "Инвестиционных сделок", facts["trade_count"], ""),
         ("Инвестиции", "Покупок", facts["buy_count"], ""),
         ("Инвестиции", "Продаж", facts["sell_count"], ""),
