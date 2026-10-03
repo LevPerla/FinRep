@@ -1,4 +1,6 @@
 import os
+from pathlib import Path
+import re
 
 os.environ.setdefault("FINREP_DASH_PASSWORD", "test-password")
 os.environ.setdefault("FINREP_DASH_SECRET_KEY", "test-session-secret")
@@ -28,3 +30,18 @@ def test_dark_financial_table_palettes_meet_normal_text_aa_contrast():
 
         for background in backgrounds.values():
             assert _contrast_ratio(foreground, background) >= 4.5
+
+
+def test_light_metric_cards_have_distinct_readable_surface():
+    css = (Path(__file__).resolve().parents[1] / "assets" / "dashboard.css").read_text(
+        encoding="utf-8"
+    )
+    match = re.search(
+        r"\.finrep-theme-light \.finrep-cockpit-card\s*\{[^}]*background:\s*(#[0-9a-fA-F]{6})",
+        css,
+    )
+
+    assert match is not None
+    background = match.group(1)
+    assert background.lower() != "#ffffff"
+    assert _contrast_ratio("#172033", background) >= 4.5

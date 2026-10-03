@@ -13,7 +13,7 @@ import dash_ag_grid as dag
 import dash_bootstrap_components as dbc
 import pandas as pd
 from dash.exceptions import PreventUpdate
-from flask import request
+from flask import request, session
 
 from src import config
 from src.data.get import clear_data_cache, get_transactions
@@ -46,6 +46,7 @@ from src.data.staging import (
     read_monthly_transaction_csv,
     read_transaction_drafts,
 )
+from src.data.sqlite_bootstrap import ensure_default_live_database
 from src.dashboard.expense_data import build_expense_dashboard_data
 from src.dashboard.income_data import build_income_dashboard_data
 from src.dashboard.export import ExportBusyError, export_dashboard_page
@@ -63,6 +64,7 @@ from src.dashboard.i18n import (
 from src.dashboard.main_data import DashboardDataset, build_main_dashboard_data, clear_main_dashboard_cache
 from src.dashboard.month_data import build_month_dashboard_data, get_day_transaction_details
 from src.dashboard.planning_data import build_planning_dashboard_data, save_goal_targets
+from src.dashboard.statistics_data import build_statistics_dashboard_data
 from src.dashboard.report_tables import (
     _grid_column_defs,
     _grid_row_data,
@@ -178,10 +180,19 @@ def create_app() -> Dash:
     )
     app.server.config["MAX_CONTENT_LENGTH"] = MAX_BANK_PDF_REQUEST_BYTES
     configure_auth(app.server)
+    live_enabled = app.server.config["FINREP_LIVE_AUTH_ENABLED"]
+    if live_enabled:
+        ensure_default_live_database()
     app.index_string = _app_index_string()
     app.server.add_url_rule("/healthz", "healthz", _healthcheck)
     app.layout = create_layout
-    app.validation_layout = _callback_validation_layout(create_layout())
+    if live_enabled:
+        app.validation_layout = _callback_validation_layout(create_layout())
+    else:
+        with app.server.test_request_context("/"):
+            session["authenticated"] = True
+            session["data_mode"] = "test"
+            app.validation_layout = _callback_validation_layout(create_layout())
     register_callbacks(app)
     return app
 
@@ -463,6 +474,7 @@ def create_layout():
                     dbc.Tab(label="Обзор", tab_id="overview", id={"type": "i18n-tab-label", "key": "report.main.overview"}),
                     dbc.Tab(label="Расходы", tab_id="expenses", id={"type": "i18n-tab-label", "key": "report.main.expenses"}),
                     dbc.Tab(label="Доходы", tab_id="income", id={"type": "i18n-tab-label", "key": "report.main.income"}),
+                    dbc.Tab(label="Статистика", tab_id="statistics", id={"type": "i18n-tab-label", "key": "report.main.statistics"}),
                 ], id="main-report-tabs", active_tab="overview"),
                 id="main-report-navigation", className="mt-3",
             ),
@@ -701,7 +713,7 @@ def register_callbacks(app: Dash) -> None:
         section = params.get("section", ["overview"])[0]
         if tab == "expenses":  # Keep links from the first release working.
             tab, section = "main", "expenses"
-        if section not in {"overview", "expenses", "income"}:
+        if section not in {"overview", "expenses", "income", "statistics"}:
             section = "overview"
         if currency not in config.UNIQUE_TICKERS:
             currency = DEFAULT_CURRENCY
@@ -813,7 +825,9 @@ def register_callbacks(app: Dash) -> None:
         def finish(content):
             if not fx_network_enabled:
                 return content, no_update
-            if active_tab in {"input", "debts"}:
+            if active_tab in {"input", "debts"} or (
+                active_tab == "main" and main_section == "statistics"
+            ):
                 status = "unavailable"
             else:
                 status = "error" if isinstance(content, dbc.Alert) and content.color == "danger" else "done"
@@ -846,6 +860,25 @@ def register_callbacks(app: Dash) -> None:
             datasets = localize_report_datasets(datasets, locale)
             _apply_theme_to_datasets(datasets, theme)
             return finish(_income_report_layout(datasets, theme, locale=locale))
+
+        if active_tab == "main" and main_section == "statistics":
+            if not config.use_sqlite_storage():
+                return finish(dbc.Alert(
+                    report_text("Статистика данных доступна в режиме SQLite.", locale),
+                    color="secondary",
+                ))
+            try:
+                datasets = build_statistics_dashboard_data()
+            except Exception as exc:
+                return finish(_error_state(
+                    str(report_text("Не удалось загрузить статистику данных.", locale)),
+                    exc,
+                    locale=locale,
+                ))
+            datasets = localize_report_datasets(datasets, locale)
+            return finish(_statistics_report_layout(
+                datasets["data_statistics"], theme=theme, locale=locale,
+            ))
 
         if active_tab == "year":
             try:
@@ -989,7 +1022,7 @@ def register_callbacks(app: Dash) -> None:
         if not n_clicks:
             raise PreventUpdate
 
-        if active_tab == "main" and main_section in {"expenses", "income"}:
+        if active_tab == "main" and main_section in {"expenses", "income", "statistics"}:
             active_tab = main_section
         dataset_id = button_id["dataset_id"]
         datasets = _datasets_for_tab(active_tab, currency, year, month)
@@ -1033,7 +1066,7 @@ def register_callbacks(app: Dash) -> None:
         if config.is_test_mode():
             return no_update, tr("dashboard.export_live_only", locale), "warning", True
 
-        if active_tab == "main" and main_section in {"expenses", "income"}:
+        if active_tab == "main" and main_section in {"expenses", "income", "statistics"}:
             active_tab = main_section
         export_format = "png" if ctx.triggered_id == "export-png" else "pdf"
         try:
@@ -1690,6 +1723,47 @@ def _main_report_layout(
     if metrics.attrs.get("selected_period_available") is False:
         sections.insert(0, _main_missing_month_notice(str(metrics.attrs["selected_period"]), locale=locale))
     return html.Div(sections, className="d-grid gap-4")
+
+
+def _statistics_report_layout(
+    dataset: DashboardDataset,
+    theme: str | None,
+    locale: str = DEFAULT_LOCALE,
+):
+    data = dataset.display_dataframe if dataset.display_dataframe is not None else dataset.dataframe
+    if data.empty:
+        return _empty_section(dataset, locale=locale)
+
+    groups = []
+    for index, (section, rows) in enumerate(data.groupby("Раздел", sort=False)):
+        cards = []
+        for _, row in rows.iterrows():
+            detail = str(row.get("Детали", ""))
+            cards.append(html.Div(
+                [
+                    html.Div(str(row["Показатель"]), className="finrep-cockpit-label"),
+                    html.Div(str(row["Значение"]), className="finrep-cockpit-value"),
+                    html.Div(detail, className="finrep-cockpit-detail") if detail else None,
+                ],
+                className="finrep-cockpit-card finrep-cockpit-neutral",
+            ))
+        groups.append(html.Div(
+            [
+                html.H3(str(section), className="finrep-cockpit-group-title"),
+                html.Div(
+                    cards,
+                    className="finrep-cockpit-grid finrep-mobile-metric-grid",
+                ),
+            ],
+            id=f"data-statistics-group-{index}",
+            className="finrep-cockpit-group",
+        ))
+
+    return html.Section(
+        [_section_header(dataset), html.Div(groups, className="finrep-cockpit-groups")],
+        id="data-statistics-section",
+        style=_section_style(theme),
+    )
 
 
 def _main_missing_month_notice(period: str, locale: str = DEFAULT_LOCALE):
@@ -3633,6 +3707,8 @@ def _datasets_for_tab(
         return build_expense_dashboard_data(currency, fx_network_enabled=DEFAULT_FX_NETWORK_ENABLED)
     if active_tab == "income":
         return build_income_dashboard_data(currency, fx_network_enabled=DEFAULT_FX_NETWORK_ENABLED)
+    if active_tab == "statistics":
+        return build_statistics_dashboard_data()
     if active_tab == "year":
         return build_year_dashboard_data(
             year,
@@ -3677,6 +3753,8 @@ def _download_filename(
         return f"expenses_{dataset.id}_{currency}_{timestamp}.xlsx"
     if active_tab == "income":
         return f"income_{dataset.id}_{currency}_{timestamp}.xlsx"
+    if active_tab == "statistics":
+        return f"statistics_{dataset.id}_{timestamp}.xlsx"
     if active_tab == "year":
         return f"year_report_{year}_{dataset.id}_{currency}_{timestamp}.xlsx"
     if active_tab == "month":

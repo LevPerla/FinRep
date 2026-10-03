@@ -83,7 +83,7 @@ def active_data_path(*parts: str) -> Path:
 
 
 def get_storage_backend() -> str:
-    backend = os.environ.get("FINREP_STORAGE_BACKEND", "csv").strip().lower()
+    backend = os.environ.get("FINREP_STORAGE_BACKEND", "sqlite").strip().lower()
     if backend not in {"csv", "sqlite"}:
         raise ValueError("FINREP_STORAGE_BACKEND must be csv or sqlite")
     return backend

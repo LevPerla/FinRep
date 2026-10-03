@@ -1019,6 +1019,26 @@ body {
     grid-template-columns: minmax(0, 1fr);
   }
 
+  .finrep-mobile-metric-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+  }
+
+  .finrep-mobile-metric-grid .finrep-cockpit-card {
+    min-height: 70px;
+    padding: 10px;
+    border-left-width: 3px;
+  }
+
+  .finrep-mobile-metric-grid .finrep-cockpit-value {
+    margin: 5px 0 3px;
+    font-size: 1.18rem;
+  }
+
+  .finrep-mobile-metric-grid .finrep-cockpit-detail {
+    margin-top: 3px;
+  }
+
   .finrep-main-metrics-supporting,
   .finrep-cockpit-grid-compact {
     grid-template-columns: minmax(0, 1fr);
@@ -1511,6 +1531,10 @@ body {
 .finrep-cockpit-card,
 .finrep-theme-dark .finrep-cockpit-card {
   background: var(--finrep-surface);
+}
+
+.finrep-theme-light .finrep-cockpit-card {
+  background: #f1f5f9;
 }
 
 .finrep-main-metric-group {
