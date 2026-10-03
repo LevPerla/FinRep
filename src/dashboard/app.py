@@ -344,6 +344,7 @@ def create_layout():
             dcc.Store(id="dashboard-refresh-token", data=0),
             dcc.Store(id="fx-refresh-result"),
             dcc.Store(id="cpi-refresh-result"),
+            dcc.Store(id="cpi-base-period"),
             dcc.Store(id="transaction-save-result", storage_type="memory"),
             dcc.Store(
                 id="transaction-add-request-id",
@@ -411,15 +412,6 @@ def create_layout():
                                                     clearable=False,
                                                     className="dashboard-filter",
                                                     style={"width": "78px"},
-                                                ),
-                                                dcc.Dropdown(
-                                                    id="cpi-base-period",
-                                                    options=_cpi_period_options(DEFAULT_CURRENCY),
-                                                    value=None,
-                                                    placeholder=tr("dashboard.cpi_base", DEFAULT_LOCALE),
-                                                    clearable=False,
-                                                    className="dashboard-filter",
-                                                    style={"width": "142px"},
                                                 ),
                                                 dbc.Button(_i18n_text("dashboard.refresh"), id="refresh-reports", color="secondary", outline=True),
                                                 dbc.Button(_i18n_text("dashboard.refresh_fx"), id="refresh-fx-rates", color="warning", outline=True, disabled=test_mode),
@@ -634,17 +626,14 @@ def register_callbacks(app: Dash) -> None:
             }]}
 
     @app.callback(
-        Output("cpi-base-period", "options"),
-        Output("cpi-base-period", "value"),
-        Input("dashboard-currency", "value"),
-        Input("cpi-refresh-result", "data"),
-        State("cpi-base-period", "value"),
+        Output("cpi-base-period", "data"),
+        Input("cpi-base-period-chart", "value"),
+        prevent_initial_call=True,
     )
-    def sync_cpi_base_period(currency, _refresh_result, current_value):
-        options = _cpi_period_options(currency)
-        values = {option["value"] for option in options}
-        value = current_value if current_value in values else (options[0]["value"] if options else None)
-        return options, value
+    def store_cpi_base_period(value):
+        if not value:
+            raise PreventUpdate
+        return value
 
     app.clientside_callback(
         """function(result, locale) {
@@ -934,7 +923,7 @@ def register_callbacks(app: Dash) -> None:
         Input("dashboard-currency", "value"),
         Input("dashboard-year", "value"),
         Input("dashboard-month", "value"),
-        Input("cpi-base-period", "value"),
+        Input("cpi-base-period", "data"),
         Input("dashboard-tabs", "active_tab"),
         Input("main-report-tabs", "active_tab"),
         Input("dashboard-theme", "data"),
@@ -1899,7 +1888,9 @@ def _main_report_layout(
         _graph_section(datasets["delta"], theme=theme, locale=locale),
         _graph_section(datasets["savings_rate"], theme=theme, locale=locale),
         _graph_section(datasets["capital"], height="640px", theme=theme, locale=locale),
-        _graph_section(datasets["real_asset_capital"], height="520px", theme=theme, locale=locale),
+        _real_asset_capital_section(
+            datasets["real_asset_capital"], currency=currency,
+            height="520px", theme=theme, locale=locale),
         _graph_section(datasets["fx_revaluation"], height="420px", theme=theme, locale=locale),
         _graph_section(datasets["asset_currency_allocation"], height="520px", theme=theme, locale=locale),
         _graph_section(datasets["asset_liquidity_allocation"], height="520px", theme=theme, locale=locale),
@@ -3898,6 +3889,52 @@ def _graph_section(dataset: DashboardDataset, height: str = "520px", theme: str 
         className="finrep-chart-section",
         style=_section_style(theme),
     )
+
+
+def _real_asset_capital_section(
+    dataset: DashboardDataset,
+    *,
+    currency: str,
+    height: str = "520px",
+    theme: str | None = None,
+    locale: str = DEFAULT_LOCALE,
+):
+    section = _graph_section(dataset, height=height, theme=theme, locale=locale)
+    if dataset.dataframe.empty:
+        return section
+
+    section.children.insert(
+        1,
+        html.Div(
+            [
+                html.Div(
+                    [
+                        html.Label(
+                            _i18n_text("dashboard.cpi_base_label"),
+                            htmlFor="cpi-base-period-chart",
+                            className="finrep-chart-filter-label",
+                        ),
+                        dcc.Dropdown(
+                            id="cpi-base-period-chart",
+                            options=_cpi_period_options(currency),
+                            value=dataset.dataframe.attrs.get("base_period"),
+                            placeholder=tr("dashboard.cpi_base_placeholder", locale),
+                            clearable=False,
+                            className="finrep-chart-filter",
+                        ),
+                    ],
+                    className="finrep-chart-filter-field",
+                ),
+                html.Div(
+                    _i18n_text("dashboard.cpi_base_help"),
+                    className="finrep-chart-filter-help",
+                ),
+            ],
+            id="real-asset-cpi-control",
+            className="finrep-chart-filter-row",
+        ),
+    )
+    return section
 
 
 REPORT_SCROLL_TABLE_IDS = {
