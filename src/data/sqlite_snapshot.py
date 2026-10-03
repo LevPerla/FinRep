@@ -82,7 +82,7 @@ def _snapshot_fingerprint(path: Path) -> dict:
     with path.open("rb") as stream:
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(chunk)
-    connection = sqlite3.connect(f"{path.as_uri()}?mode=ro", uri=True)
+    connection = sqlite3.connect(f"{path.as_uri()}?mode=ro&immutable=1", uri=True)
     try:
         connection.execute("PRAGMA query_only = ON")
         integrity = connection.execute("PRAGMA integrity_check").fetchone()[0]
