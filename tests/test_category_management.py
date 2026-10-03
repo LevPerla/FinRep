@@ -1,4 +1,9 @@
+import os
+
 import pandas as pd
+
+os.environ.setdefault("FINREP_DASH_PASSWORD", "test-password")
+os.environ.setdefault("FINREP_DASH_SECRET_KEY", "test-session-secret")
 
 from src.data.get import clear_data_cache, get_transactions
 from src.data.sqlite_store import (

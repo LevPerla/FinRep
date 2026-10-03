@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from decimal import Decimal
 from functools import lru_cache
 
 import pandas as pd
@@ -65,15 +66,17 @@ def build_main_dashboard_data(
     fx_network_enabled: bool = True,
     year: str | None = None,
     month: str | None = None,
+    cpi_base_period: str | None = None,
 ) -> dict[str, DashboardDataset]:
     with fx_network_mode(fx_network_enabled):
-        return _build_main_dashboard_data(currency, year, month)
+        return _build_main_dashboard_data(currency, year, month, cpi_base_period)
 
 
 def _build_main_dashboard_data(
     currency: str,
     year: str | None,
     month: str | None,
+    cpi_base_period: str | None,
 ) -> dict[str, DashboardDataset]:
     currency = currency.upper()
     if currency not in config.UNIQUE_TICKERS:
@@ -94,6 +97,7 @@ def _build_main_dashboard_data(
         if column in balance.columns
     ]
     capital = balance[capital_columns].reset_index()
+    real_asset_capital = _real_asset_capital_data(balance, currency, cpi_base_period)
     fx_revaluation = _fx_revaluation_data(balance)
     asset_currency_allocation = _asset_currency_allocation_data(currency)
     asset_liquidity_allocation = _asset_liquidity_allocation_data(currency)
@@ -147,6 +151,12 @@ def _build_main_dashboard_data(
             title="Динамика капитала",
             dataframe=capital,
             figure=_capital_figure(capital, currency),
+        ),
+        "real_asset_capital": DashboardDataset(
+            id="real_asset_capital",
+            title="Покупательная способность активов",
+            dataframe=real_asset_capital,
+            figure=_real_asset_capital_figure(real_asset_capital, currency),
         ),
         "fx_revaluation": DashboardDataset(
             id="fx_revaluation",
@@ -595,6 +605,78 @@ def _capital_figure(data: pd.DataFrame, currency: str) -> go.Figure:
             margin=dict(l=70, r=30, t=76, b=55),
             yaxis=dict(range=[0, max_value * 1.18], tickfont=dict(size=CHART_FONT_SIZE)),
         )
+    return fig
+
+
+def _real_asset_capital_data(
+    balance: pd.DataFrame,
+    currency: str,
+    base_period: str | None,
+) -> pd.DataFrame:
+    columns = ["Дата", "Номинальная стоимость", "Реальная стоимость"]
+    if "Капитал по активам" not in balance.columns or not config.use_sqlite_storage():
+        result = pd.DataFrame(columns=columns)
+        result.attrs["status"] = "unavailable"
+        return result
+
+    from src.data.inflation import effective_cpi_indexes
+
+    indexes = effective_cpi_indexes(config.active_database_path(), currency)
+    if not indexes:
+        result = pd.DataFrame(columns=columns)
+        result.attrs["status"] = "missing"
+        result.attrs["currency"] = currency
+        return result
+    selected_base = base_period if base_period in indexes else max(indexes)
+    latest_cpi_period = max(indexes)
+    current_period = pd.Period(pd.Timestamp.now(), freq="M")
+    latest_period_value = pd.Period(latest_cpi_period, freq="M")
+    stale = current_period.ordinal - latest_period_value.ordinal > 3
+    base_index = indexes[selected_base]
+    nominal = pd.to_numeric(balance["Капитал по активам"], errors="coerce")
+    data = pd.DataFrame({"Дата": pd.to_datetime(balance.index), "Номинальная стоимость": nominal})
+    periods = data["Дата"].dt.to_period("M").astype(str)
+    data["Реальная стоимость"] = [
+        float(Decimal(str(value)) * base_index / indexes[period])
+        if pd.notna(value) and period in indexes else float("nan")
+        for value, period in zip(data["Номинальная стоимость"], periods)
+    ]
+    data = data[data["Номинальная стоимость"].notna()].reset_index(drop=True)
+    missing = sorted({
+        period for value, period in zip(data["Номинальная стоимость"],
+                                        data["Дата"].dt.to_period("M").astype(str))
+        if pd.notna(value) and period not in indexes
+    })
+    data.attrs["status"] = "partial" if missing else "stale" if stale else "ready"
+    data.attrs["base_period"] = selected_base
+    data.attrs["missing_periods"] = missing
+    data.attrs["latest_cpi_period"] = latest_cpi_period
+    data.attrs["stale"] = stale
+    data.attrs["currency"] = currency
+    return data
+
+
+def _real_asset_capital_figure(data: pd.DataFrame, currency: str) -> go.Figure:
+    fig = go.Figure()
+    if data.empty:
+        _apply_dashboard_chart_layout(fig, "", range_slider=True)
+        return fig
+    base_period = data.attrs.get("base_period", "")
+    fig.add_trace(go.Scatter(
+        x=data["Дата"], y=data["Номинальная стоимость"], mode="lines+markers",
+        name="Номинальная стоимость активов", line=dict(color="royalblue", width=2),
+        hovertemplate="%{x|%Y-%m}<br>%{y:,.0f}<extra></extra>",
+    ))
+    fig.add_trace(go.Scatter(
+        x=data["Дата"], y=data["Реальная стоимость"], mode="lines+markers",
+        name=f"В ценах {base_period}", line=dict(color="#B08A6C", width=2),
+        connectgaps=False,
+        hovertemplate="%{x|%Y-%m}<br>%{y:,.0f}<extra></extra>",
+    ))
+    # The section header already names the chart. Keeping the same long title inside
+    # Plotly makes it collide with the horizontal legend on narrow screens.
+    _apply_dashboard_chart_layout(fig, "", range_slider=True)
+    fig.update_layout(yaxis_title=config.UNIQUE_TICKERS[currency])
     return fig
 
 

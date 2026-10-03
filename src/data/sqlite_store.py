@@ -15,7 +15,7 @@ from src import config
 from src.data.money import parse_money_amount
 
 
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 _DIRECTIONS = {"income", "expense"}
 _DATASETS = {"cash_transactions", "asset_snapshots"}
 _ASSET_TYPES = (
@@ -38,6 +38,21 @@ _ASSET_TYPE_LIQUIDITY_DEFAULTS = (
     ("cash_account", "A1"),
     ("deposit", "A1"),
     ("real_estate", "A4"),
+)
+_CPI_SERIES = (
+    ("RUB", "RU", "rosstat", "cpi_all_items_monthly", "Росстат",
+     "https://rosstat.gov.ru/statistics/price", "chained_monthly_rate"),
+    ("KZT", "KZ", "stat_kz", "cpi_all_items_monthly", "Бюро национальной статистики Казахстана",
+     "https://stat.gov.kz/ru/industries/economy/prices/dynamic-tables/?period=month",
+     "chained_monthly_rate"),
+    ("USD", "US", "bls", "CUUR0000SA0", "U.S. Bureau of Labor Statistics",
+     "https://www.bls.gov/cpi/data.htm", "published_index"),
+    ("GBP", "GB", "ons", "D7BT", "Office for National Statistics",
+     "https://www.ons.gov.uk/economy/inflationandpriceindices/timeseries/d7bt/mm23",
+     "published_index"),
+    ("EUR", "EA", "eurostat", "prc_hicp_minr.I25.TOTAL.EA", "Eurostat",
+     "https://ec.europa.eu/eurostat/databrowser/view/prc_hicp_minr/default/table",
+     "published_index"),
 )
 _SYSTEM_CATEGORIES = (
     ("income.salary", None, "income", "Зарплата", 1, "active", 10),
@@ -233,6 +248,31 @@ _TABLES = (
         sequence INTEGER NOT NULL DEFAULT 0 CHECK (sequence >= 0),
         UNIQUE (rate_date, currency_code, source, fetched_at, sequence)
     ) STRICT""",
+    """CREATE TABLE cpi_series (
+        currency_code TEXT PRIMARY KEY REFERENCES currencies(code) ON DELETE RESTRICT,
+        territory_code TEXT NOT NULL CHECK (trim(territory_code) <> ''),
+        provider_id TEXT NOT NULL CHECK (trim(provider_id) <> ''),
+        series_code TEXT NOT NULL CHECK (trim(series_code) <> ''),
+        source_name TEXT NOT NULL CHECK (trim(source_name) <> ''),
+        source_url TEXT NOT NULL CHECK (source_url LIKE 'https://%'),
+        index_method TEXT NOT NULL CHECK (
+            index_method IN ('published_index', 'chained_monthly_rate')),
+        active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0, 1)),
+        created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+    ) STRICT""",
+    """CREATE TABLE cpi_observations (
+        id TEXT PRIMARY KEY,
+        currency_code TEXT NOT NULL REFERENCES cpi_series(currency_code) ON DELETE RESTRICT,
+        period TEXT NOT NULL CHECK (
+            length(period) = 7 AND substr(period, 5, 1) = '-'),
+        index_value_text TEXT NOT NULL CHECK (
+            trim(index_value_text) <> '' AND substr(index_value_text, 1, 1) NOT IN ('-', '+')),
+        published_on TEXT CHECK (published_on IS NULL OR length(published_on) = 10),
+        source_version TEXT NOT NULL CHECK (trim(source_version) <> ''),
+        payload_sha256 TEXT NOT NULL CHECK (length(payload_sha256) = 64),
+        fetched_at TEXT NOT NULL,
+        UNIQUE (currency_code, period, source_version)
+    ) STRICT""",
     """CREATE TABLE annual_goals (
         year INTEGER NOT NULL CHECK (year BETWEEN 1900 AND 9999),
         currency_code TEXT NOT NULL REFERENCES currencies(code) ON DELETE RESTRICT,
@@ -356,6 +396,7 @@ _INDEXES_AND_TRIGGERS = (
     "CREATE INDEX ix_cash_category_date ON cash_transactions(category_id, occurred_on)",
     "CREATE INDEX ix_snapshots_period_currency ON asset_snapshots(period, currency_code)",
     "CREATE INDEX ix_fx_lookup ON fx_rate_observations(currency_code, rate_date, fetched_at, sequence)",
+    "CREATE INDEX ix_cpi_lookup ON cpi_observations(currency_code, period, fetched_at)",
     "CREATE INDEX ix_source_records_batch ON source_records(batch_id)",
     "CREATE INDEX ix_audit_entity ON audit_events(entity_type, entity_id, id)",
     "CREATE INDEX ix_debt_payments_debt_date ON debt_payments(debt_id, occurred_on, id)",
@@ -450,6 +491,12 @@ _VIEWS = (
     FROM (SELECT f.*, ROW_NUMBER() OVER (PARTITION BY rate_date, currency_code
       ORDER BY fetched_at DESC, sequence DESC, id DESC) AS selection_rank
       FROM fx_rate_observations f) WHERE selection_rank = 1""",
+    """CREATE VIEW v_effective_cpi AS
+    SELECT id, currency_code, period, index_value_text, published_on,
+      source_version, payload_sha256, fetched_at
+    FROM (SELECT c.*, ROW_NUMBER() OVER (PARTITION BY currency_code, period
+      ORDER BY fetched_at DESC, id DESC) AS selection_rank
+      FROM cpi_observations c) WHERE selection_rank = 1""",
 )
 
 
@@ -543,7 +590,34 @@ def _migrate_v8_to_v9(connection: sqlite3.Connection) -> None:
     now = _utc_now()
     connection.execute(
         "INSERT INTO schema_migrations VALUES (?, ?, ?, ?)",
-        (SCHEMA_VERSION, "asset_liquidity", _schema_checksum(), now),
+        (9, "asset_liquidity", "102e211473262760aa72800aa6afe19d295ad5997e0baa500b1cb644cf237ba5", now),
+    )
+    connection.execute("PRAGMA user_version = 9")
+
+
+def _migrate_v9_to_v10(connection: sqlite3.Connection) -> None:
+    if connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'cpi_series'").fetchone():
+        raise ValueError("SQLite v9 unexpectedly contains CPI tables")
+    connection.execute(_TABLES[21])
+    connection.execute(_TABLES[22])
+    connection.execute(_INDEXES_AND_TRIGGERS[5])
+    connection.execute(_VIEWS[5])
+    now = _utc_now()
+    connection.executemany(
+        "INSERT OR IGNORE INTO currencies VALUES (?, 2)",
+        [(code,) for code in sorted(config.UNIQUE_TICKERS)],
+    )
+    connection.executemany(
+        """INSERT INTO cpi_series
+          (currency_code, territory_code, provider_id, series_code, source_name,
+           source_url, index_method, created_at, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        [(*series, now, now) for series in _CPI_SERIES],
+    )
+    connection.execute(
+        "INSERT INTO schema_migrations VALUES (?, ?, ?, ?)",
+        (SCHEMA_VERSION, "official_cpi", _schema_checksum(), now),
     )
     connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
 
@@ -589,9 +663,14 @@ def initialize_database(path: str | Path, *, data_mode: str = "synthetic") -> No
         if version == 7:
             _migrate_v7_to_v8(connection)
             _migrate_v8_to_v9(connection)
+            _migrate_v9_to_v10(connection)
             return
         if version == 8:
             _migrate_v8_to_v9(connection)
+            _migrate_v9_to_v10(connection)
+            return
+        if version == 9:
+            _migrate_v9_to_v10(connection)
             return
         has_tables = connection.execute(
             "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' LIMIT 1"
@@ -623,6 +702,13 @@ def initialize_database(path: str | Path, *, data_mode: str = "synthetic") -> No
             _ASSET_TYPE_LIQUIDITY_DEFAULTS,
         )
         connection.executemany("INSERT INTO currencies VALUES (?, 2)", [(code,) for code in sorted(config.UNIQUE_TICKERS)])
+        connection.executemany(
+            """INSERT INTO cpi_series
+              (currency_code, territory_code, provider_id, series_code, source_name,
+               source_url, index_method, created_at, updated_at)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            [(*series, now, now) for series in _CPI_SERIES],
+        )
         connection.execute("INSERT INTO schema_migrations VALUES (?, ?, ?, ?)",
                            (SCHEMA_VERSION, "normalized_core", _schema_checksum(), now))
         connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
@@ -2192,6 +2278,105 @@ def fx_rates(path: str | Path) -> list[dict]:
             usd_per_unit_text AS usd_rate_text, source, fetched_at, sequence
             FROM v_effective_fx_rates ORDER BY rate_date, currency_code""").fetchall()
     return [{**dict(row), "usd_rate": Decimal(row["usd_rate_text"])} for row in rows]
+
+
+def cpi_series(path: str | Path) -> list[dict]:
+    with connect_database(path) as connection:
+        rows = connection.execute(
+            """SELECT currency_code, territory_code, provider_id, series_code,
+              source_name, source_url, index_method, active
+              FROM cpi_series ORDER BY currency_code"""
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def save_cpi_observations(
+    path: str | Path,
+    *,
+    currency: str,
+    observations: list[dict],
+    source_version: str,
+    payload_sha256: str,
+    fetched_at: str,
+    published_on: str | None = None,
+) -> dict:
+    """Atomically append one version of monthly CPI observations."""
+    currency = currency.strip().upper()
+    if not source_version.strip() or not fetched_at.strip():
+        raise ValueError("CPI source_version and fetched_at are required")
+    if len(payload_sha256) != 64 or any(
+            character not in "0123456789abcdef" for character in payload_sha256.lower()):
+        raise ValueError("CPI payload_sha256 must contain 64 hexadecimal characters")
+    if published_on is not None:
+        published_on = _iso_date(published_on, "published_on")
+    normalized = []
+    seen_periods = set()
+    for item in observations:
+        period = _period(item.get("period"))
+        if period in seen_periods:
+            raise ValueError(f"duplicate CPI period in one source version: {period}")
+        seen_periods.add(period)
+        value = parse_money_amount(item.get("index_value"), field_name="CPI index value")
+        if value <= 0:
+            raise ValueError("CPI index value must be positive")
+        normalized.append((period, format(value, "f")))
+    if not normalized:
+        raise ValueError("at least one CPI observation is required")
+
+    inserted = 0
+    unchanged = 0
+    with connect_database(path, writable=True) as connection:
+        if connection.execute(
+                "SELECT 1 FROM cpi_series WHERE currency_code = ? AND active = 1",
+                (currency,)).fetchone() is None:
+            raise ValueError("unsupported or inactive CPI currency")
+        for period, value_text in normalized:
+            existing = connection.execute(
+                """SELECT index_value_text, published_on, payload_sha256
+                  FROM cpi_observations
+                  WHERE currency_code = ? AND period = ? AND source_version = ?""",
+                (currency, period, source_version.strip()),
+            ).fetchone()
+            expected = (value_text, published_on, payload_sha256.lower())
+            if existing is not None:
+                if tuple(existing) != expected:
+                    raise ValueError("CPI source version conflicts with stored observation")
+                unchanged += 1
+                continue
+            identity = f"{currency}\0{period}\0{source_version.strip()}"
+            observation_id = hashlib.sha256(f"cpi\0{identity}".encode()).hexdigest()[:32]
+            connection.execute(
+                """INSERT INTO cpi_observations
+                  (id, currency_code, period, index_value_text, published_on,
+                   source_version, payload_sha256, fetched_at)
+                  VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (observation_id, currency, period, value_text, published_on,
+                 source_version.strip(), payload_sha256.lower(), fetched_at.strip()),
+            )
+            inserted += 1
+    return {"submitted": len(normalized), "inserted": inserted, "unchanged": unchanged}
+
+
+def cpi_observations(path: str | Path, *, currency: str | None = None) -> list[dict]:
+    parameters = ()
+    where = ""
+    if currency is not None:
+        where = "WHERE o.currency_code = ?"
+        parameters = (currency.strip().upper(),)
+    with connect_database(path) as connection:
+        rows = connection.execute(
+            f"""SELECT o.currency_code, s.territory_code, o.period,
+              o.index_value_text, o.published_on, o.source_version,
+              o.payload_sha256, o.fetched_at, s.source_name, s.source_url
+              FROM v_effective_cpi o
+              JOIN cpi_series s ON s.currency_code = o.currency_code
+              {where} ORDER BY o.currency_code, o.period""",
+            parameters,
+        ).fetchall()
+    return [
+        {**dict(row), "index_value": Decimal(row["index_value_text"])}
+        for row in rows
+    ]
 
 
 def save_market_price(path: str | Path, *, ticker: str, price_date: str, price,

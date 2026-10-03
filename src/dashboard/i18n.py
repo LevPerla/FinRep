@@ -61,6 +61,8 @@ REPORT_TEXT_EN = {
     "Норма сбережений": "Savings rate",
     "Динамика нормы сбережений": "Savings rate trend",
     "Динамика капитала": "Capital trend",
+    "Покупательная способность активов": "Purchasing power of assets",
+    "Номинальная стоимость активов": "Nominal asset value",
     "Валютная переоценка": "FX revaluation",
     "Валютная структура активов": "Asset currency allocation",
     "Динамика аллокации активов по валютам": "Asset allocation by currency",
@@ -396,6 +398,9 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "dashboard.settings": "Параметры",
         "dashboard.refresh": "Обновить",
         "dashboard.refresh_fx": "Обновить курс",
+        "dashboard.refresh_cpi": "Обновить инфляцию",
+        "dashboard.import_cpi": "Импорт CPI XLSX",
+        "dashboard.cpi_base": "Цены на месяц",
         "dashboard.logout": "Выйти",
         "dashboard.theme_light": "Светлая",
         "dashboard.theme_dark": "Темная",
@@ -454,6 +459,9 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "dashboard.settings": "Settings",
         "dashboard.refresh": "Refresh",
         "dashboard.refresh_fx": "Refresh rates",
+        "dashboard.refresh_cpi": "Refresh inflation",
+        "dashboard.import_cpi": "Import CPI XLSX",
+        "dashboard.cpi_base": "Prices as of",
         "dashboard.logout": "Sign out",
         "dashboard.theme_light": "Light",
         "dashboard.theme_dark": "Dark",
@@ -507,6 +515,7 @@ def report_text(value: object, locale: str | None = None) -> object:
         return REPORT_TEXT_EN[value]
 
     patterns = (
+        (r"^В ценах (\d{4}-\d{2})$", r"In \1 prices"),
         (r"^Топ-15 самых больших покупок за (\d{4}) год$", r"Top 15 largest purchases in \1"),
         (r"^1 валюта в (.+)$", r"1 unit in \1"),
         (r"^([^:]+): доход минус расход$", r"\1: income minus expenses"),

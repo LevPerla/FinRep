@@ -34,14 +34,20 @@ def _create_v7_database(path: Path) -> None:
             if statement.startswith((
                     "CREATE TABLE asset_types",
                     "CREATE TABLE liquidity_classes",
-                    "CREATE TABLE asset_type_liquidity_defaults")):
+                    "CREATE TABLE asset_type_liquidity_defaults",
+                    "CREATE TABLE cpi_series",
+                    "CREATE TABLE cpi_observations")):
                 continue
             connection.execute(
                 old_accounts if statement.startswith("CREATE TABLE asset_accounts")
                 else statement)
         for statement in sqlite_store._INDEXES_AND_TRIGGERS:
+            if "ix_cpi_lookup" in statement:
+                continue
             connection.execute(statement)
         for statement in sqlite_store._VIEWS:
+            if statement.startswith("CREATE VIEW v_effective_cpi"):
+                continue
             connection.execute(
                 old_view if statement.startswith("CREATE VIEW v_asset_snapshots")
                 else statement)
@@ -65,6 +71,14 @@ def _create_v8_database(path: Path) -> None:
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys = ON")
         sqlite_store._migrate_v7_to_v8(connection)
+
+
+def _create_v9_database(path: Path) -> None:
+    _create_v8_database(path)
+    with sqlite3.connect(path) as connection:
+        connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA foreign_keys = ON")
+        sqlite_store._migrate_v8_to_v9(connection)
 
 
 def test_sqlite_is_the_default_backend(monkeypatch):
@@ -170,6 +184,25 @@ def test_v8_database_is_backed_up_and_upgraded_with_liquidity_defaults(
         assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
     with sqlite3.connect(backup) as connection:
         assert connection.execute("PRAGMA user_version").fetchone()[0] == 8
+
+
+def test_v9_database_is_backed_up_and_upgraded_with_official_cpi_registry(
+        monkeypatch, tmp_path):
+    database = _use_default_sqlite(monkeypatch, tmp_path / "data")
+    _create_v9_database(database)
+
+    assert ensure_default_live_database() == "upgraded"
+    backup = database.with_name(f"{database.stem}.pre-v{SCHEMA_VERSION}{database.suffix}")
+
+    with sqlite3.connect(database) as connection:
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
+        assert connection.execute("SELECT COUNT(*) FROM cpi_series").fetchone()[0] == 5
+        assert connection.execute("SELECT COUNT(*) FROM cpi_observations").fetchone()[0] == 0
+        assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
+    with sqlite3.connect(backup) as connection:
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 9
+        assert connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE name = 'cpi_series'").fetchone() is None
 
 
 def test_concurrent_first_start_publishes_one_database(monkeypatch, tmp_path):

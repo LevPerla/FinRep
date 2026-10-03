@@ -32,7 +32,7 @@ def test_fx_refresh_reports_completion_or_error_without_real_network(monkeypatch
     assert client.post("/login", data={"data_mode": "live", "password": "test-password"}).status_code in (302, 303)
     output = "..dashboard-content.children...fx-refresh-result.data.."
     callback = app.callback_map[output]
-    values = ["RUB", "2026", "09", "main", "expenses", "dark", "ru", 0, 1, None]
+    values = ["RUB", "2026", "09", None, "main", "expenses", "dark", "ru", 0, 1, None, None]
     response = client.post("/_dash-update-component", json={
         "output": output,
         "outputs": [

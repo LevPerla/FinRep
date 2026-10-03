@@ -151,7 +151,10 @@ def test_render_callback_returns_localized_fx_error(source, monkeypatch):
     app = create_app()
     client = app.server.test_client()
     client.post("/login", data={"data_mode": "test"})
-    values = ["RUB", "2026", "09", "main", "expenses", "dark", "en", 0, 0, None]
+    values = [
+        "RUB", "2026", "09", None, "main", "expenses", "dark", "en",
+        0, 0, None, None,
+    ]
     output = "..dashboard-content.children...fx-refresh-result.data.."
     callback = app.callback_map[output]
     response = client.post("/_dash-update-component", json={

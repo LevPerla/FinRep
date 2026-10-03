@@ -1,6 +1,8 @@
 import json
 import logging
 import os
+import base64
+import binascii
 from decimal import Decimal
 from datetime import datetime
 from io import BytesIO
@@ -17,6 +19,7 @@ from flask import request, session
 
 from src import config
 from src.data.get import clear_data_cache, get_transactions
+from src.data.inflation import import_official_cpi_workbook, refresh_official_cpi
 from src.data.assets_editor import (
     asset_snapshot_path,
     previous_asset_snapshot_path,
@@ -224,6 +227,21 @@ def _default_dashboard_period() -> tuple[str, str]:
     return str(year), f"{month:02d}"
 
 
+def _cpi_period_options(currency: str) -> list[dict]:
+    if not config.use_sqlite_storage():
+        return []
+    try:
+        from src.data.sqlite_store import cpi_observations
+
+        periods = [
+            row["period"]
+            for row in cpi_observations(config.active_database_path(), currency=currency)
+        ]
+    except (OSError, ValueError, PermissionError):
+        return []
+    return [{"label": period, "value": period} for period in reversed(periods)]
+
+
 def _dashboard_tabs() -> dbc.Tabs:
     return dbc.Tabs(
         [
@@ -325,6 +343,7 @@ def create_layout():
             dcc.Store(id="dashboard-document-locale", data=DEFAULT_LOCALE),
             dcc.Store(id="dashboard-refresh-token", data=0),
             dcc.Store(id="fx-refresh-result"),
+            dcc.Store(id="cpi-refresh-result"),
             dcc.Store(id="transaction-save-result", storage_type="memory"),
             dcc.Store(
                 id="transaction-add-request-id",
@@ -393,8 +412,25 @@ def create_layout():
                                                     className="dashboard-filter",
                                                     style={"width": "78px"},
                                                 ),
+                                                dcc.Dropdown(
+                                                    id="cpi-base-period",
+                                                    options=_cpi_period_options(DEFAULT_CURRENCY),
+                                                    value=None,
+                                                    placeholder=tr("dashboard.cpi_base", DEFAULT_LOCALE),
+                                                    clearable=False,
+                                                    className="dashboard-filter",
+                                                    style={"width": "142px"},
+                                                ),
                                                 dbc.Button(_i18n_text("dashboard.refresh"), id="refresh-reports", color="secondary", outline=True),
                                                 dbc.Button(_i18n_text("dashboard.refresh_fx"), id="refresh-fx-rates", color="warning", outline=True, disabled=test_mode),
+                                                dbc.Button(_i18n_text("dashboard.refresh_cpi"), id="refresh-cpi", color="warning", outline=True, disabled=test_mode),
+                                                dcc.Upload(
+                                                    dbc.Button(_i18n_text("dashboard.import_cpi"), color="secondary", outline=True, disabled=test_mode),
+                                                    id="cpi-workbook-upload",
+                                                    accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                                    multiple=False,
+                                                    disabled=test_mode,
+                                                ),
                                                 dbc.Button(
                                                     _i18n_text("dashboard.theme_toggle", initial_key="dashboard.theme_light"),
                                                     id="theme-toggle",
@@ -470,6 +506,7 @@ def create_layout():
                 className="py-2 mb-3",
             ),
             html.Div(id="fx-refresh-status", role="status", **{"aria-live": "polite"}),
+            html.Div(id="cpi-refresh-status", role="status", **{"aria-live": "polite"}),
             _dashboard_tabs(),
             html.Div(
                 dbc.Tabs([
@@ -523,6 +560,91 @@ def register_callbacks(app: Dash) -> None:
         State("dashboard-locale", "data"),
         prevent_initial_call=True,
     )
+
+    app.clientside_callback(
+        """function(clicks, locale) {
+            const unchanged = window.dash_clientside.no_update;
+            if (!clicks) return [unchanged, unchanged, unchanged];
+            const en = locale === "en";
+            return [en ? "Loading official inflation data…" : "Загружаем официальную инфляцию…",
+                    "finrep-fx-status is-loading", true];
+        }""",
+        Output("cpi-refresh-status", "children"),
+        Output("cpi-refresh-status", "className"),
+        Output("refresh-cpi", "disabled"),
+        Input("refresh-cpi", "n_clicks"),
+        State("dashboard-locale", "data"),
+        prevent_initial_call=True,
+    )
+
+    app.clientside_callback(
+        """function(result, locale) {
+            if (!result) return [window.dash_clientside.no_update,
+                                 window.dash_clientside.no_update,
+                                 window.dash_clientside.no_update];
+            const en = locale === "en";
+            const successful = (result.results || []).filter(item => item.status === "updated").length;
+            const failedItems = (result.results || []).filter(item => item.status === "error");
+            const failed = failedItems.length;
+            let message;
+            if (en) message = `Inflation data updated: ${successful}; errors: ${failed}.`;
+            else message = `Инфляция обновлена: ${successful}; ошибок: ${failed}.`;
+            if (failedItems.length) {
+                message += " " + failedItems.map(item => `${item.currency}: ${item.message}`).join("; ");
+            }
+            return [message, "finrep-fx-status is-" + result.status, false];
+        }""",
+        Output("cpi-refresh-status", "children", allow_duplicate=True),
+        Output("cpi-refresh-status", "className", allow_duplicate=True),
+        Output("refresh-cpi", "disabled", allow_duplicate=True),
+        Input("cpi-refresh-result", "data"),
+        State("dashboard-locale", "data"),
+        prevent_initial_call=True,
+    )
+
+    @app.callback(
+        Output("cpi-refresh-result", "data"),
+        Input("refresh-cpi", "n_clicks"),
+        prevent_initial_call=True,
+    )
+    def refresh_cpi(clicks):
+        if not clicks or config.is_test_mode():
+            raise PreventUpdate
+        return refresh_official_cpi(config.active_database_path())
+
+    @app.callback(
+        Output("cpi-refresh-result", "data", allow_duplicate=True),
+        Input("cpi-workbook-upload", "contents"),
+        State("cpi-workbook-upload", "filename"),
+        State("dashboard-currency", "value"),
+        prevent_initial_call=True,
+    )
+    def import_cpi_workbook(contents, filename, currency):
+        if not contents or config.is_test_mode():
+            raise PreventUpdate
+        try:
+            _metadata, encoded = contents.split(",", 1)
+            payload = base64.b64decode(encoded, validate=True)
+            return import_official_cpi_workbook(
+                config.active_database_path(), currency=currency, payload=payload)
+        except (ValueError, binascii.Error, OSError) as exc:
+            return {"status": "error", "results": [{
+                "currency": str(currency).upper(), "status": "error",
+                "message": f"{_safe_upload_filename(filename)}: {exc}",
+            }]}
+
+    @app.callback(
+        Output("cpi-base-period", "options"),
+        Output("cpi-base-period", "value"),
+        Input("dashboard-currency", "value"),
+        Input("cpi-refresh-result", "data"),
+        State("cpi-base-period", "value"),
+    )
+    def sync_cpi_base_period(currency, _refresh_result, current_value):
+        options = _cpi_period_options(currency)
+        values = {option["value"] for option in options}
+        value = current_value if current_value in values else (options[0]["value"] if options else None)
+        return options, value
 
     app.clientside_callback(
         """function(result, locale) {
@@ -812,16 +934,24 @@ def register_callbacks(app: Dash) -> None:
         Input("dashboard-currency", "value"),
         Input("dashboard-year", "value"),
         Input("dashboard-month", "value"),
+        Input("cpi-base-period", "value"),
         Input("dashboard-tabs", "active_tab"),
         Input("main-report-tabs", "active_tab"),
         Input("dashboard-theme", "data"),
         Input("dashboard-locale", "data"),
         Input("dashboard-refresh-token", "data"),
         Input("refresh-fx-rates", "n_clicks"),
+        Input("cpi-refresh-result", "data"),
         Input("transaction-save-result", "data"),
         State("crypto-refresh-status", "data"),
     )
-    def render_dashboard_content(currency: str, year: str, month: str, active_tab: str, main_section: str, theme: str, locale: str, refresh_token: int, fx_refresh_clicks: int | None, transaction_save_result: dict | None, crypto_status: dict | None):
+    def render_dashboard_content(currency: str, year: str, month: str,
+                                 cpi_base_period: str | None, active_tab: str,
+                                 main_section: str, theme: str, locale: str,
+                                 refresh_token: int, fx_refresh_clicks: int | None,
+                                 _cpi_refresh_result: dict | None,
+                                 transaction_save_result: dict | None,
+                                 crypto_status: dict | None):
         fx_network_enabled = ctx.triggered_id == "refresh-fx-rates" and not config.is_test_mode()
 
         def finish(content):
@@ -957,6 +1087,7 @@ def register_callbacks(app: Dash) -> None:
                 fx_network_enabled=fx_network_enabled,
                 year=year,
                 month=month,
+                cpi_base_period=cpi_base_period,
             )
         except Exception as exc:
             return finish(_error_state(str(report_text("Не удалось загрузить данные основного отчета.", locale)), exc, locale=locale))
@@ -1768,6 +1899,7 @@ def _main_report_layout(
         _graph_section(datasets["delta"], theme=theme, locale=locale),
         _graph_section(datasets["savings_rate"], theme=theme, locale=locale),
         _graph_section(datasets["capital"], height="640px", theme=theme, locale=locale),
+        _graph_section(datasets["real_asset_capital"], height="520px", theme=theme, locale=locale),
         _graph_section(datasets["fx_revaluation"], height="420px", theme=theme, locale=locale),
         _graph_section(datasets["asset_currency_allocation"], height="520px", theme=theme, locale=locale),
         _graph_section(datasets["asset_liquidity_allocation"], height="520px", theme=theme, locale=locale),
@@ -1781,6 +1913,9 @@ def _main_report_layout(
     freshness = metrics.attrs.get("asset_freshness")
     if freshness and freshness.get("has_warning"):
         notices.append(_main_asset_freshness_notice(freshness, locale=locale))
+    inflation = datasets["real_asset_capital"].dataframe
+    if inflation.attrs.get("status") in {"missing", "partial", "stale"}:
+        notices.append(_main_inflation_notice(inflation, locale=locale))
     return html.Div([*notices, *sections], className="d-grid gap-4")
 
 
@@ -1867,6 +2002,33 @@ def _main_asset_freshness_notice(freshness: dict, locale: str = DEFAULT_LOCALE):
         id="main-asset-freshness-notice",
         color="warning",
         className="mb-0",
+    )
+
+
+def _main_inflation_notice(data: pd.DataFrame, locale: str = DEFAULT_LOCALE):
+    missing = data.attrs.get("missing_periods", [])
+    stale = data.attrs.get("stale", False)
+    latest = data.attrs.get("latest_cpi_period", "")
+    currency = data.attrs.get("currency", "")
+    if normalize_locale(locale) == "en":
+        title = f"Official inflation data for {currency} is incomplete"
+        detail = (
+            f"Missing months: {', '.join(missing)}. " if missing else ""
+        ) + (f"Latest official month: {latest}. " if stale else "") \
+          + ("Dependent real values are left empty. " if not stale or missing
+             else "Existing real values remain visible. ") \
+          + "Use ‘Refresh inflation’ to check the official source."
+    else:
+        title = f"Официальные данные инфляции для {currency} неполные"
+        detail = (
+            f"Нет месяцев: {', '.join(missing)}. " if missing else ""
+        ) + (f"Последний официальный месяц: {latest}. " if stale else "") \
+          + ("Зависимые реальные значения оставлены пустыми. " if not stale or missing
+             else "Доступные реальные значения остаются видимыми. ") \
+          + "Проверьте источник кнопкой «Обновить инфляцию»."
+    return dbc.Alert(
+        [html.Div(title, className="fw-semibold"), html.Div(detail, className="small mt-1")],
+        id="main-inflation-notice", color="warning", className="mb-0",
     )
 
 
