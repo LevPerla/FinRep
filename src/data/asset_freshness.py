@@ -21,6 +21,14 @@ def evaluate_asset_freshness(
     as_of = as_of or date.today()
     evaluated = []
     for account in accounts:
+        if not bool(account.get("active", 1)):
+            evaluated.append({
+                **account,
+                "freshness_status": "archived",
+                "valuation_age_days": None,
+                "stale_threshold_days": None,
+            })
+            continue
         threshold_days = STALE_DAYS_BY_ASSET_TYPE.get(
             account.get("asset_type_id"), DEFAULT_STALE_DAYS)
         period = account.get("last_period")
@@ -64,10 +72,14 @@ def freshness_label(account: dict, *, locale: str = "ru") -> str:
     age_days = account["valuation_age_days"]
     threshold = account["stale_threshold_days"]
     if locale == "en":
+        if status == "archived":
+            return f"Archived · {account.get('closed_period', '')}".rstrip(" ·")
         if status == "missing":
             return "Valuation date unknown"
         label = "Stale" if status == "stale" else "Current"
         return f"{label} · {age_days} d (limit {threshold})"
+    if status == "archived":
+        return f"В архиве · {account.get('closed_period', '')}".rstrip(" ·")
     if status == "missing":
         return "Дата оценки неизвестна"
     label = "Устарело" if status == "stale" else "Актуально"

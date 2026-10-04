@@ -3,12 +3,17 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from csv import reader as csv_reader
+from datetime import date
+from io import StringIO
 from pathlib import Path
+from uuid import uuid4
 
 import pandas as pd
 
 from src import config
 from src.data.get import get_transactions
+from src.data.money import format_money_amount, parse_money_amount
 from src.data.staging import (
     DRAFT_COLUMNS,
     append_transaction_draft_rows,
@@ -20,6 +25,7 @@ DEFAULT_SOURCE = "kaspi_pdf"
 DEFAULT_EXPENSE_CATEGORY = "Прочее"
 DEFAULT_INCOME_CATEGORY = "Доход"
 INTERNAL_TRANSFER_CATEGORY = "Внутренний перевод"
+MANUAL_GRID_SOURCE = "manual_grid"
 INTERNAL_TRANSFER_PATTERNS = (
     "TO KASPI DEPOSIT",
     "KASPI DEPOSIT",
@@ -240,6 +246,185 @@ def save_import_to_transactions(import_rows: list[dict]) -> dict:
         + len(history_duplicate_keys),
         **publish_result,
     }
+
+
+def new_manual_grid_row(source_row: dict | None = None) -> dict:
+    """Create an unsaved grid row with a new identity and no implicit money fields."""
+    row = {column: "" for column in _import_columns()}
+    row.update({
+        "source": MANUAL_GRID_SOURCE,
+        "source_id": f"manual-grid:{uuid4().hex}",
+        "status": "draft",
+        "bank_status": "posted",
+        "import_action": "import",
+        "duplicate_in_staging": False,
+        "duplicate_in_source": False,
+        "possible_pending_match": False,
+        "validation_error": "",
+    })
+    if source_row:
+        for field in ("date", "category", "currency", "amount", "comment", "direction"):
+            row[field] = source_row.get(field, "")
+    return row
+
+
+def parse_manual_grid_rows(text: str) -> list[dict]:
+    """Parse tab-separated Date/Amount/Currency/Category/Comment rows."""
+    raw_rows = [
+        row for row in csv_reader(StringIO(str(text or "")), delimiter="\t")
+        if any(str(value).strip() for value in row)
+    ]
+    if not raw_rows:
+        raise ValueError("Вставь хотя бы одну строку из таблицы.")
+
+    aliases = {
+        "дата": "date", "date": "date",
+        "сумма": "amount", "amount": "amount",
+        "валюта": "currency", "currency": "currency",
+        "категория": "category", "category": "category",
+        "комментарий": "comment", "comment": "comment",
+    }
+    first = [str(value).strip().lower() for value in raw_rows[0]]
+    has_header = "date" in {aliases.get(value) for value in first} and "amount" in {
+        aliases.get(value) for value in first
+    }
+    if has_header:
+        fields = [aliases.get(value, "") for value in first]
+        if len(set(fields) - {""}) != len([field for field in fields if field]):
+            raise ValueError("В заголовке есть повторяющиеся колонки.")
+        raw_rows = raw_rows[1:]
+    else:
+        fields = ["date", "amount", "currency", "category", "comment"]
+    if not raw_rows:
+        raise ValueError("После заголовка нет строк транзакций.")
+
+    parsed = []
+    for row_number, values in enumerate(raw_rows, start=2 if has_header else 1):
+        if len(values) > len(fields):
+            raise ValueError(
+                f"Строка {row_number}: ожидалось не более {len(fields)} колонок, получено {len(values)}."
+            )
+        values = [*values, *([""] * (len(fields) - len(values)))]
+        payload = {field: str(value).strip() for field, value in zip(fields, values) if field}
+        result = new_manual_grid_row()
+        amount_raw = payload.get("amount", "")
+        if amount_raw:
+            try:
+                signed_amount = parse_money_amount(amount_raw)
+            except ValueError as exc:
+                raise ValueError(f"Строка {row_number}: некорректная сумма {amount_raw!r}.") from exc
+            result["amount"] = format_money_amount(abs(signed_amount))
+            result["direction"] = (
+                "credit" if signed_amount > 0 else "debit" if signed_amount < 0 else ""
+            )
+        result.update({
+            "date": payload.get("date", ""),
+            "currency": payload.get("currency", "").upper(),
+            "category": payload.get("category", ""),
+            "comment": payload.get("comment", ""),
+        })
+        parsed.append(result)
+    return parsed
+
+
+def validate_input_grid_row(row: dict) -> str:
+    action = str(row.get("import_action", "")).strip().lower()
+    category = str(row.get("category", "")).strip()
+    if action == "skip" or category == INTERNAL_TRANSFER_CATEGORY:
+        return ""
+    if action == "review":
+        return "Выбери «Сохранить» или «Пропустить»."
+    if action != "import":
+        return "Выбери действие для строки."
+
+    errors = []
+    occurred_on = str(row.get("date", "")).strip()
+    try:
+        date.fromisoformat(occurred_on)
+    except ValueError:
+        errors.append("укажи дату YYYY-MM-DD")
+    if not category:
+        errors.append("выбери категорию")
+    currency = str(row.get("currency", "")).strip().upper()
+    if currency not in config.UNIQUE_TICKERS:
+        errors.append("выбери поддерживаемую валюту")
+    try:
+        amount = parse_money_amount(row.get("amount", ""))
+        if amount <= 0:
+            errors.append("сумма должна быть больше нуля")
+    except ValueError:
+        errors.append("укажи корректную сумму")
+    direction = str(row.get("direction", "")).strip().lower()
+    if direction not in {"credit", "debit"}:
+        errors.append("знак суммы не определён")
+    elif category:
+        expected = "income" if direction == "credit" else "expense"
+        if _category_direction(category) != expected:
+            errors.append("категория не соответствует знаку суммы")
+    if not str(row.get("source", "")).strip() or not str(row.get("source_id", "")).strip():
+        errors.append("отсутствует идентификатор строки")
+    return "; ".join(errors)
+
+
+def _normalize_manual_grid_amount(row: dict) -> dict:
+    result = dict(row)
+    if str(result.get("source", "")) != MANUAL_GRID_SOURCE:
+        return result
+    try:
+        amount = parse_money_amount(result.get("amount", ""))
+    except ValueError:
+        return result
+    direction = str(result.get("direction", "")).lower()
+    if amount < 0:
+        result["amount"] = format_money_amount(abs(amount))
+        result["direction"] = "debit"
+    elif amount > 0 and direction not in {"credit", "debit"}:
+        result["amount"] = format_money_amount(amount)
+        result["direction"] = "credit"
+    return result
+
+
+def save_input_grid_to_transactions(rows: list[dict]) -> dict:
+    """Save valid grid rows and return invalid/pending rows for another attempt."""
+    if not rows:
+        raise ValueError("Нет операций для сохранения.")
+
+    valid_rows: list[dict] = []
+    invalid_rows: list[dict] = []
+    explicitly_skipped = 0
+    for source_row in rows or []:
+        row = _normalize_manual_grid_amount(source_row)
+        error = validate_input_grid_row(row)
+        row["validation_error"] = error
+        if error:
+            invalid_rows.append(row)
+        elif (str(row.get("import_action", "")).lower() == "skip"
+              or str(row.get("category", "")) == INTERNAL_TRANSFER_CATEGORY):
+            explicitly_skipped += 1
+        else:
+            row["validation_error"] = ""
+            valid_rows.append(row)
+
+    saved = {
+        "accepted_rows": 0,
+        "skipped_rows": 0,
+        "published_rows": 0,
+        "already_published_rows": 0,
+        "pending_rows": 0,
+        "published_keys": [],
+        "pending_keys": [],
+    }
+    if valid_rows:
+        saved = save_import_to_transactions(valid_rows)
+    pending_keys = {tuple(key) for key in saved["pending_keys"]}
+    pending_rows = [
+        row for row in valid_rows
+        if (str(row.get("source", "")), str(row.get("source_id", ""))) in pending_keys
+    ]
+    saved["skipped_rows"] += explicitly_skipped
+    saved["invalid_rows"] = len(invalid_rows)
+    saved["remaining_rows"] = [*invalid_rows, *pending_rows]
+    return saved
 
 
 def _as_bool_series(values: pd.Series) -> pd.Series:

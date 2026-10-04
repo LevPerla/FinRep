@@ -17,6 +17,7 @@ from src.data.sqlite_store import (
     add_category,
     append_cash_drafts,
     annual_goals,
+    archive_asset_accounts,
     asset_accounts,
     asset_snapshot_month,
     asset_snapshots,
@@ -41,6 +42,7 @@ from src.data.sqlite_store import (
     record_debt_payment,
     record_investment_trade,
     replace_asset_snapshot_month,
+    restore_asset_accounts_to_snapshot,
     rename_category,
     register_source_record,
     save_asset_month,
@@ -230,6 +232,132 @@ def test_asset_account_classification_batch_is_atomic_and_skips_unchanged_rows(t
         assert connection.execute(
             "SELECT COUNT(*) FROM audit_events WHERE entity_type = 'asset_account'"
         ).fetchone()[0] == 2
+
+
+def test_archived_asset_account_preserves_history_and_blocks_new_snapshots(tmp_path):
+    database = tmp_path / "synthetic.sqlite3"
+    initialize_database(database)
+    add_asset_account(database, "account-1", "Закрытый счёт")
+    add_asset_snapshot(
+        database, snapshot_id="snapshot-1", account_id="account-1",
+        period="2026-02", amount="100", currency="RUB")
+
+    result = set_asset_account_classifications(
+        database,
+        [{"account_id": "account-1", "asset_type_id": "cash_account",
+          "include_in_capital": True, "active": False,
+          "closed_period": "2026-02"}],
+        reason="account closed",
+    )
+
+    assert result == {"submitted": 1, "updated": 1}
+    account = asset_accounts(database)[0]
+    assert account["active"] == 0
+    assert account["closed_period"] == "2026-02"
+    assert [row["period"] for row in asset_snapshots(database)] == ["2026-02"]
+    with pytest.raises(sqlite3.IntegrityError, match="closed for this period"):
+        add_asset_snapshot(
+            database, snapshot_id="snapshot-2", account_id="account-1",
+            period="2026-03", amount="90", currency="RUB")
+    with connect_database(database) as connection:
+        assert connection.execute(
+            "SELECT action FROM audit_events WHERE entity_id = 'account-1'"
+        ).fetchone()[0] == "archived"
+
+
+def test_asset_account_reopen_is_explicit_and_audited(tmp_path):
+    database = tmp_path / "synthetic.sqlite3"
+    initialize_database(database)
+    add_asset_account(database, "account-1", "Счёт")
+    add_asset_snapshot(
+        database, snapshot_id="snapshot-1", account_id="account-1",
+        period="2026-02", amount="100", currency="RUB")
+    set_asset_account_classifications(
+        database,
+        [{"account_id": "account-1", "asset_type_id": None,
+          "include_in_capital": True, "active": False,
+          "closed_period": "2026-02"}],
+        reason="account closed",
+    )
+
+    set_asset_account_classifications(
+        database,
+        [{"account_id": "account-1", "asset_type_id": None,
+          "include_in_capital": True, "active": True,
+          "closed_period": None}],
+        reason="account reopened",
+    )
+    add_asset_snapshot(
+        database, snapshot_id="snapshot-2", account_id="account-1",
+        period="2026-03", amount="90", currency="RUB")
+
+    account = asset_accounts(database)[0]
+    assert account["active"] == 1
+    assert account["closed_period"] is None
+    with connect_database(database) as connection:
+        assert [row[0] for row in connection.execute(
+            "SELECT action FROM audit_events WHERE entity_id = 'account-1' ORDER BY id"
+        ).fetchall()] == ["archived", "reopened"]
+
+
+def test_archive_and_restore_account_preserve_history_and_copy_latest_values(tmp_path):
+    database = tmp_path / "synthetic.sqlite3"
+    initialize_database(database)
+    add_asset_account(database, "account-1", "Мультивалютный счёт")
+    add_asset_snapshot(
+        database, snapshot_id="snapshot-rub", account_id="account-1",
+        period="2026-02", amount="100", currency="RUB")
+    add_asset_snapshot(
+        database, snapshot_id="snapshot-usd", account_id="account-1",
+        period="2026-02", amount="20", currency="USD")
+
+    archived = archive_asset_accounts(
+        database, ["Мультивалютный счёт"], period="2026-03")
+
+    assert archived == {"submitted": 1, "archived": 1, "period": "2026-03"}
+    account = asset_accounts(database)[0]
+    assert account["active"] == 0
+    assert account["closed_period"] == "2026-03"
+    assert len(asset_snapshots(database)) == 2
+
+    restored = restore_asset_accounts_to_snapshot(
+        database, ["account-1"], period="2026-04")
+
+    assert restored == {
+        "submitted": 1,
+        "reopened": 1,
+        "inserted": 2,
+        "existing": 0,
+        "period": "2026-04",
+    }
+    account = asset_accounts(database)[0]
+    assert account["active"] == 1
+    assert account["closed_period"] is None
+    april = asset_snapshot_month(database, "2026-04")
+    assert {(row["currency_code"], row["amount"]) for row in april} == {
+        ("RUB", Decimal("100")),
+        ("USD", Decimal("20")),
+    }
+
+
+def test_asset_account_cannot_close_before_its_last_snapshot(tmp_path):
+    database = tmp_path / "synthetic.sqlite3"
+    initialize_database(database)
+    add_asset_account(database, "account-1", "Счёт")
+    add_asset_snapshot(
+        database, snapshot_id="snapshot-1", account_id="account-1",
+        period="2026-03", amount="100", currency="RUB")
+
+    with pytest.raises(ValueError, match="cannot precede the last snapshot"):
+        set_asset_account_classifications(
+            database,
+            [{"account_id": "account-1", "asset_type_id": None,
+              "include_in_capital": True, "active": False,
+              "closed_period": "2026-02"}],
+            reason="invalid closure",
+        )
+
+    assert asset_accounts(database)[0]["active"] == 1
 
 
 def test_user_category_lifecycle_preserves_historical_assignment(tmp_path):
@@ -583,6 +711,7 @@ def test_annual_goal_upsert_preserves_optional_values(tmp_path):
         target_capital="1000000.25",
         target_monthly_income=None,
         target_monthly_expense="50000",
+        target_expense_months="300",
         notes="first",
     )
     upsert_annual_goal(
@@ -592,6 +721,7 @@ def test_annual_goal_upsert_preserves_optional_values(tmp_path):
         target_capital="1100000.25",
         target_monthly_income="90000",
         target_monthly_expense="50000",
+        target_expense_months="240",
         notes="updated",
     )
     rows = annual_goals(database)
@@ -599,7 +729,22 @@ def test_annual_goal_upsert_preserves_optional_values(tmp_path):
     assert rows[0]["target_capital"] == Decimal("1100000.25")
     assert rows[0]["target_monthly_income"] == Decimal("90000.00")
     assert rows[0]["target_monthly_expense"] == Decimal("50000.00")
+    assert rows[0]["target_expense_months"] == 240
     assert rows[0]["notes"] == "updated"
+
+
+@pytest.mark.parametrize("invalid_months", ["0", "-1", "12.5"])
+def test_annual_goal_rejects_invalid_expense_month_target(tmp_path, invalid_months):
+    database = tmp_path / "synthetic.sqlite3"
+    initialize_database(database)
+
+    with pytest.raises(ValueError, match="positive integer"):
+        upsert_annual_goal(
+            database,
+            year=2027,
+            currency="RUB",
+            target_expense_months=invalid_months,
+        )
 
 
 def test_debt_commands_are_same_currency_atomic_and_prevent_overpayment(tmp_path):

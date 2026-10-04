@@ -89,7 +89,7 @@ def test_missing_selected_month_keeps_main_layout_and_shows_notice():
         "capital_components",
         "inflation_rate",
         "real_asset_capital",
-        "capital_change_after_flows",
+        "capital_attribution",
         "fx_revaluation",
         "asset_currency_allocation",
         "asset_liquidity_allocation",

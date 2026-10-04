@@ -47,3 +47,23 @@ def test_empty_main_report_shows_one_first_run_route_to_input():
     assert action.href == "?currency=EUR&year=2026&month=09&tab=input"
     assert action.children.children == "Перейти к вводу данных"
     assert "Ещё → Ввод данных" in mobile_hint.children
+
+
+def test_empty_main_report_uses_direct_save_instruction_in_sqlite(monkeypatch):
+    monkeypatch.setenv("FINREP_STORAGE_BACKEND", "sqlite")
+    empty_metrics = DashboardDataset(
+        id="cockpit_metrics",
+        title="Ключевые метрики",
+        dataframe=pd.DataFrame(),
+    )
+
+    layout = _main_report_layout(
+        {"cockpit_metrics": empty_metrics},
+        theme="dark",
+        currency="RUB",
+        year="2026",
+        month="10",
+    )
+
+    assert "Проверьте строки и нажмите «Сохранить транзакции»." in str(layout)
+    assert "Проверьте Preview" not in str(layout)

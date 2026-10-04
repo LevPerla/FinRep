@@ -16,6 +16,8 @@ def _report_table_style_maps(dataset: DashboardDataset, data: pd.DataFrame) -> d
             "signs": {
                 "Сальдо": "__balance_sign",
                 "Процент дохода": "__income_pct_sign",
+                "Валютная переоценка": "__year_fx_sign",
+                "Переоценка и необъяснённые изменения": "__year_unexplained_sign",
             },
         }
     if dataset.id == "year_quarter_stats":
@@ -65,6 +67,7 @@ def _report_table_style_maps(dataset: DashboardDataset, data: pd.DataFrame) -> d
             },
             "signs": {
                 "Валютная переоценка": "__monthly_fx_revaluation_sign",
+                "Переоценка и необъяснённые изменения": "__monthly_unexplained_sign",
                 "Расхождение с активами": "__monthly_asset_gap_sign",
             },
         }
@@ -137,6 +140,11 @@ def _grid_row_data(dataset: DashboardDataset, data: pd.DataFrame) -> list[dict]:
             record["__expense_level"] = 0 if is_total else _gradient_level(row.get("Расход"), expense_max)
             record["__balance_sign"] = "total" if is_total else _value_sign(row.get("Сальдо"))
             record["__income_pct_sign"] = "total" if is_total else _percentage_sign(row.get("Процент дохода"))
+            record["__year_fx_sign"] = "total" if is_total else _value_sign(row.get("Валютная переоценка"))
+            record["__year_unexplained_sign"] = (
+                "total" if is_total else _value_sign(
+                    row.get("Переоценка и необъяснённые изменения"))
+            )
         return records
 
     if dataset.id == "year_quarter_stats":
@@ -187,6 +195,7 @@ def _grid_row_data(dataset: DashboardDataset, data: pd.DataFrame) -> list[dict]:
             raw,
             {
                 "Валютная переоценка": "__month_summary_fx_sign",
+                "Переоценка и необъяснённые изменения": "__month_summary_unexplained_sign",
                 "Расхождение с активами": "__month_summary_asset_gap_sign",
             },
         )
@@ -252,6 +261,7 @@ def _grid_row_data(dataset: DashboardDataset, data: pd.DataFrame) -> list[dict]:
                 raw,
                 {
                     "Валютная переоценка": "__monthly_fx_revaluation_sign",
+                    "Переоценка и необъяснённые изменения": "__monthly_unexplained_sign",
                     "Расхождение с активами": "__monthly_asset_gap_sign",
                 },
             )
@@ -271,6 +281,11 @@ def _grid_column_defs(dataset: DashboardDataset, data: pd.DataFrame, theme: str 
                 column_def["cellStyle"] = _merge_total_style(_sign_style("__balance_sign", theme), theme)
             elif column == "Процент дохода":
                 column_def["cellStyle"] = _merge_total_style(_sign_style("__income_pct_sign", theme), theme)
+            elif column == "Валютная переоценка":
+                column_def["cellStyle"] = _merge_total_style(_sign_style("__year_fx_sign", theme), theme)
+            elif column == "Переоценка и необъяснённые изменения":
+                column_def["cellStyle"] = _merge_total_style(
+                    _sign_style("__year_unexplained_sign", theme), theme)
             column_defs.append(column_def)
         return column_defs
 
@@ -318,6 +333,8 @@ def _grid_column_defs(dataset: DashboardDataset, data: pd.DataFrame, theme: str 
             "Сбережения": _level_style("__month_summary_savings_level", "green", theme),
             "Расход": _level_style("__month_summary_expense_level", "red", theme),
             "Валютная переоценка": _sign_style("__month_summary_fx_sign", theme),
+            "Переоценка и необъяснённые изменения": _sign_style(
+                "__month_summary_unexplained_sign", theme),
             "Расхождение с активами": _sign_style("__month_summary_asset_gap_sign", theme),
         },
         "month_assets": _month_asset_column_styles(data, theme),
@@ -327,6 +344,8 @@ def _grid_column_defs(dataset: DashboardDataset, data: pd.DataFrame, theme: str 
             "Капитал": _level_style("__monthly_capital_level", "green", theme),
             "Капитал по активам": _level_style("__monthly_asset_capital_level", "blue", theme),
             "Валютная переоценка": _sign_style("__monthly_fx_revaluation_sign", theme),
+            "Переоценка и необъяснённые изменения": _sign_style(
+                "__monthly_unexplained_sign", theme),
             "Расхождение с активами": _sign_style("__monthly_asset_gap_sign", theme),
         },
         "planning_goals": {

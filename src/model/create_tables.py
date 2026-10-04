@@ -161,17 +161,16 @@ def _get_balance_by_month_cached(data_root: str, currency: str) -> pd.DataFrame:
     if not asset_capital.empty:
         all_stats_df = all_stats_df.join(asset_capital, how='left')
         asset_delta = all_stats_df['Капитал по активам'].diff()
-        first_asset_index = all_stats_df['Капитал по активам'].first_valid_index()
-        if first_asset_index is not None:
-            asset_delta.loc[first_asset_index] = (
-                all_stats_df.loc[first_asset_index, 'Капитал по активам']
-                - all_stats_df.loc[first_asset_index, 'Капитал']
-            )
-        all_stats_df['Валютная переоценка'] = asset_delta - all_stats_df['Баланс']
+        fx_revaluation = _asset_fx_revaluation_by_month(get_assets(), currency)
+        all_stats_df['Валютная переоценка'] = fx_revaluation.reindex(all_stats_df.index)
+        all_stats_df['Переоценка и необъяснённые изменения'] = (
+            asset_delta - all_stats_df['Баланс'] - all_stats_df['Валютная переоценка']
+        )
         all_stats_df['Расхождение с активами'] = all_stats_df['Капитал по активам'] - all_stats_df['Капитал']
     else:
         all_stats_df['Капитал по активам'] = np.nan
         all_stats_df['Валютная переоценка'] = np.nan
+        all_stats_df['Переоценка и необъяснённые изменения'] = np.nan
         all_stats_df['Расхождение с активами'] = np.nan
     return all_stats_df
 
@@ -331,6 +330,52 @@ def _get_asset_capital_by_month_cached(data_root: str, currency: str) -> pd.Data
         result['Капитал по активам'], field_name='Капитал по активам'
     )
     return result
+
+
+def _asset_fx_revaluation_by_month(
+        assets_df: pd.DataFrame, currency: str) -> pd.Series:
+    """Return the pure FX effect on each component's opening native balance."""
+    currency = str(currency).upper()
+    if assets_df.empty:
+        return pd.Series(dtype=float, name='Валютная переоценка')
+
+    assets = assets_df.copy(deep=True)
+    assets['Дата'] = _asset_snapshot_dates(assets)
+    assets['Дата оценки'] = asset_valuation_dates(assets)
+    assets['Валюта'] = assets['Валюта'].astype(str).str.upper()
+    assets['Значение'] = pd.to_numeric(assets['Значение'], errors='coerce')
+    assets['Курс'] = 1.0
+    for (from_currency, valuation_date), index in assets.groupby(
+            ['Валюта', 'Дата оценки']).groups.items():
+        if from_currency == currency:
+            continue
+        rate = _get_fx_rate_as_of(from_currency, currency, valuation_date)
+        if rate is None:
+            require_fx_rate(rate, from_currency, currency, valuation_date)
+        assets.loc[index, 'Курс'] = rate
+
+    effects = []
+    previous = None
+    for snapshot_date, snapshot in assets.groupby('Дата', sort=True):
+        current = snapshot.set_index(['Счет', 'Валюта'])[['Значение', 'Курс']]
+        if previous is None:
+            effect = np.nan
+        else:
+            common = previous.index.intersection(current.index)
+            effect = sum(
+                previous.loc[key, 'Значение']
+                * (current.loc[key, 'Курс'] - previous.loc[key, 'Курс'])
+                for key in common
+            )
+            effect = float(round_money_values(
+                pd.Series([effect]), field_name='Валютная переоценка').iloc[0])
+        effects.append((snapshot_date, effect))
+        previous = current
+    return pd.Series(
+        {snapshot_date: effect for snapshot_date, effect in effects},
+        name='Валютная переоценка',
+        dtype=float,
+    ).sort_index()
 
 
 def get_cost_distribution(currency, year, month=None):

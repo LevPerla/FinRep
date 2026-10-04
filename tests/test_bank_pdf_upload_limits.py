@@ -122,10 +122,14 @@ def test_upload_limit_error_clears_preview_without_writing(tmp_path, monkeypatch
             {**item, "value": _contents(b"123456789")}
             for item in callback["inputs"]
         ],
-        "state": [
-            {**item, "value": "ru" if item["id"] == "dashboard-locale" else "too-large.pdf"}
-            for item in callback["state"]
-        ],
+        "state": [{
+            **item,
+            "value": (
+                "ru" if item["id"] == "dashboard-locale" else
+                [] if item["id"] == "kaspi-import-grid" else
+                "too-large.pdf"
+            ),
+        } for item in callback["state"]],
         "changedPropIds": ["kaspi-upload.contents"],
     }
 
@@ -134,7 +138,7 @@ def test_upload_limit_error_clears_preview_without_writing(tmp_path, monkeypatch
 
     assert response.status_code == 200
     result = response.get_json()["response"]
-    assert result["kaspi-import-grid"]["rowData"] == []
+    assert "kaspi-import-grid" not in result
     assert result["kaspi-import-message"]["color"] == "danger"
     assert "максимум 8 байт" in result["kaspi-import-message"]["children"]
     after = sorted(path.relative_to(tmp_path) for path in tmp_path.rglob("*") if path.is_file())
@@ -204,10 +208,14 @@ def test_dashboard_hides_private_error_details_and_logs_diagnostics(
             for item in callback["output"]
         ],
         "inputs": [{**item, "value": _contents(b"malformed")} for item in callback["inputs"]],
-        "state": [
-            {**item, "value": "ru" if item["id"] == "dashboard-locale" else "/Users/owner/private-statement.pdf"}
-            for item in callback["state"]
-        ],
+        "state": [{
+            **item,
+            "value": (
+                "ru" if item["id"] == "dashboard-locale" else
+                [] if item["id"] == "kaspi-import-grid" else
+                "/Users/owner/private-statement.pdf"
+            ),
+        } for item in callback["state"]],
         "changedPropIds": ["kaspi-upload.contents"],
     }
 

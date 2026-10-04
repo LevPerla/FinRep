@@ -62,6 +62,14 @@ def test_planning_goals_format_money_and_percent_without_mutating_source():
                 "Прогресс (%)": 93.75,
                 "Тип": "percent",
             },
+            {
+                "Показатель": "N мес расходов",
+                "Факт": 87.04,
+                "Цель": 300,
+                "Отклонение": -212.96,
+                "Прогресс (%)": 29.0133,
+                "Тип": "months",
+            },
         ]
     )
     before = source.copy(deep=True)
@@ -80,5 +88,10 @@ def test_planning_goals_format_money_and_percent_without_mutating_source():
         "80.00%",
         "-5.00%",
     ]
-    assert display["Прогресс (%)"].tolist() == ["157.24%", "93.75%"]
+    assert display.loc[2, ["Факт", "Цель", "Отклонение"]].tolist() == [
+        "87.0", "300", "-213.0",
+    ]
+    assert display["Прогресс (%)"].tolist() == [
+        "157.24%", "93.75%", "29.01%",
+    ]
     assert_frame_equal(source, before)

@@ -43,7 +43,9 @@ def _create_v7_database(path: Path) -> None:
                 old_accounts if statement.startswith("CREATE TABLE asset_accounts")
                 else statement)
         for statement in sqlite_store._INDEXES_AND_TRIGGERS:
-            if "ix_cpi_lookup" in statement or "uq_asset_account_name" in statement:
+            if ("ix_cpi_lookup" in statement or "uq_asset_account_name" in statement
+                    or "asset_account_archive" in statement
+                    or "archived_asset_snapshot" in statement):
                 continue
             connection.execute(statement)
         for statement in sqlite_store._VIEWS:
@@ -117,10 +119,93 @@ def _create_v13_database(path: Path) -> None:
         sqlite_store._migrate_v12_to_v13(connection)
 
 
+def _create_v14_database(path: Path) -> None:
+    _create_v13_database(path)
+    with sqlite3.connect(path) as connection:
+        connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA foreign_keys = ON")
+        sqlite_store._migrate_v13_to_v14(connection)
+
+
+def _create_v15_database(path: Path) -> None:
+    _create_v14_database(path)
+    with sqlite3.connect(path) as connection:
+        connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA foreign_keys = ON")
+        sqlite_store._migrate_v14_to_v15(connection)
+
+
+def _create_v16_database(path: Path) -> None:
+    _create_v15_database(path)
+    with sqlite3.connect(path) as connection:
+        connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA foreign_keys = ON")
+        sqlite_store._migrate_v15_to_v16(connection)
+
+
 def test_sqlite_is_the_default_backend(monkeypatch):
     monkeypatch.delenv("FINREP_STORAGE_BACKEND", raising=False)
 
     assert config.get_storage_backend() == "sqlite"
+
+
+def test_v14_upgrade_infers_closed_period_for_inactive_accounts(tmp_path):
+    database = tmp_path / "synthetic.sqlite3"
+    _create_v14_database(database)
+    with sqlite3.connect(database) as connection:
+        connection.execute("UPDATE asset_accounts SET active = 0 WHERE id = 'account-1'")
+
+    initialize_database(database)
+
+    with sqlite3.connect(database) as connection:
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
+        assert connection.execute(
+            "SELECT active, closed_period FROM asset_accounts WHERE id = 'account-1'"
+        ).fetchone() == (0, "2026-09")
+        with pytest.raises(sqlite3.IntegrityError, match="closed for this period"):
+            connection.execute("""INSERT INTO asset_snapshots
+                (id, account_id, period, currency_code, amount_minor, created_at, updated_at)
+                VALUES ('snapshot-2', 'account-1', '2026-10', 'RUB', 1, 'now', 'now')""")
+
+
+def test_v15_upgrade_archives_accounts_absent_from_latest_snapshot(tmp_path):
+    database = tmp_path / "synthetic.sqlite3"
+    _create_v15_database(database)
+    with sqlite3.connect(database) as connection:
+        connection.execute("""INSERT INTO asset_accounts
+            (id, name, active, created_at, updated_at)
+            VALUES ('latest-account', 'Latest', 1, 'now', 'now')""")
+        connection.execute("""INSERT INTO asset_snapshots
+            (id, account_id, period, currency_code, amount_minor, created_at, updated_at)
+            VALUES ('latest-snapshot', 'latest-account', '2026-10', 'RUB', 1, 'now', 'now')""")
+
+    initialize_database(database)
+
+    with sqlite3.connect(database) as connection:
+        assert connection.execute(
+            "SELECT active, closed_period FROM asset_accounts WHERE id = 'account-1'"
+        ).fetchone() == (0, "2026-09")
+        assert connection.execute(
+            "SELECT active, closed_period FROM asset_accounts WHERE id = 'latest-account'"
+        ).fetchone() == (1, None)
+        assert connection.execute(
+            "SELECT action FROM audit_events WHERE entity_id = 'account-1'"
+        ).fetchone()[0] == "archived"
+
+
+def test_live_bootstrap_upgrades_existing_v16_database(monkeypatch, tmp_path):
+    database = _use_default_sqlite(monkeypatch, tmp_path / "data")
+    database.parent.mkdir(parents=True)
+    _create_v16_database(database)
+
+    assert ensure_default_live_database() == "upgraded"
+
+    with sqlite3.connect(database) as connection:
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
+        assert "target_expense_months" in {
+            row[1] for row in connection.execute("PRAGMA table_info(annual_goals)")
+        }
+    assert database.with_name("finrep.pre-v17.sqlite3").is_file()
 
 
 def test_empty_install_creates_live_database_once(monkeypatch, tmp_path):

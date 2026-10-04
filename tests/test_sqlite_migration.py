@@ -248,7 +248,8 @@ def test_sample_core_migration_is_repeatable_and_reconciled(tmp_path):
             "fx_rate_observations": """SELECT id, rate_date, currency_code, usd_per_unit_text,
                 source, fetched_at, sequence FROM fx_rate_observations ORDER BY id""",
             "annual_goals": """SELECT year, currency_code, target_capital_minor,
-                target_monthly_income_minor, target_monthly_expense_minor, notes
+                target_monthly_income_minor, target_monthly_expense_minor,
+                target_expense_months, notes
                 FROM annual_goals ORDER BY year, currency_code""",
             "transaction_drafts": """SELECT id, occurred_on, draft_kind, domain_action,
                 flow_direction, amount_minor, currency_code, category_id, comment,

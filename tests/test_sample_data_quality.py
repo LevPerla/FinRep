@@ -50,16 +50,24 @@ def test_sample_cashflow_reconciles_with_assets(monkeypatch):
     ].dt.to_period("M")
     capital_gap = monthly["Расхождение с активами"]
     revaluation = monthly["Валютная переоценка"]
+    unexplained = monthly["Переоценка и необъяснённые изменения"]
 
     assert sorted(housing_periods.astype(str).unique()) == EXPECTED_PERIODS
     assert monthly["Баланс"].gt(0).all()
     assert abs(capital_gap.iloc[0] - monthly["Капитал"].iloc[0]) < 1
     assert capital_gap.between(100_000, 200_000).all()
     assert capital_gap.iloc[-1] / monthly["Капитал"].iloc[-1] < 0.1
-    assert abs(revaluation.iloc[0]) < 1
-    assert revaluation.iloc[1:].gt(0).sum() >= 6
-    assert revaluation.iloc[1:].lt(0).sum() >= 4
-    assert revaluation.iloc[1:].abs().between(4_000, 30_000).all()
+    assert pd.isna(revaluation.iloc[0])
+    assert revaluation.iloc[1:].notna().all()
+    assert revaluation.iloc[1:].gt(0).any()
+    assert revaluation.iloc[1:].lt(0).any()
+    reconciliation_error = (
+        monthly["Капитал по активам"].diff()
+        - monthly["Баланс"]
+        - revaluation
+        - unexplained
+    )
+    assert reconciliation_error.iloc[1:].abs().max() < 0.01
 
 
 @pytest.mark.parametrize("currency", config.UNIQUE_TICKERS)

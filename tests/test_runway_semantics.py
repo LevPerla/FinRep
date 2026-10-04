@@ -53,12 +53,21 @@ def test_asset_freshness_warning_is_visible_on_dependent_metrics():
     assert "устаревших оценок: 1, без даты: 1" in metrics.loc["runway", "Детали"]
 
 
-def test_planning_runway_explicitly_uses_cash_flow_capital():
-    runway = planning_data._runway(_balance()).iloc[0]
+def test_planning_runway_explicitly_uses_asset_capital():
+    index = pd.period_range("2025-03", "2026-02", freq="M").to_timestamp("M")
+    balance = pd.DataFrame({
+        "Расход": [150.0] * 12,
+        "Капитал по активам": [1100.0] * 12,
+    }, index=index)
+    runway = planning_data._asset_runway_data(
+        balance,
+        target_months=300,
+    ).iloc[0]
 
-    assert runway["Капитал по cash-flow"] == 1000.0
+    assert runway["Капитал по активам"] == 1100.0
     assert runway["Средний расход"] == 150.0
-    assert runway["Runway, мес."] == 1000.0 / 150.0
+    assert runway["Финансовый запас, мес."] == 1100.0 / 150.0
+    assert runway["Прогресс от цели (%)"] == (1100.0 / 150.0) / 300 * 100
 
 
 def test_savings_rate_display_clamp_remains_intentional():

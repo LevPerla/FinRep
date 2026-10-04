@@ -80,7 +80,9 @@ def read_asset_snapshot(year: str, month: str, assets_root: str | Path | None = 
         return pd.DataFrame([
             {"account": row["account_name"], "amount": row["amount"],
              "currency": row["currency_code"]}
-            for row in rows if row["period"] == selected
+            for row in rows
+            if row["period"] == selected
+            and (row["closed_period"] is None or requested <= row["closed_period"])
         ], columns=ASSET_EDITOR_COLUMNS)
     target_path = asset_snapshot_path(year, month, assets_root)
     path = target_path
