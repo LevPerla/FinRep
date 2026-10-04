@@ -1338,6 +1338,7 @@ def register_callbacks(app: Dash) -> None:
         Output("transaction-paste-text", "value"),
         Input("transaction-grid-add-button", "n_clicks", allow_optional=True),
         Input("transaction-grid-copy-button", "n_clicks", allow_optional=True),
+        Input("transaction-grid-delete-button", "n_clicks", allow_optional=True),
         Input("transaction-grid-paste-button", "n_clicks", allow_optional=True),
         Input("transaction-paste-apply-button", "n_clicks", allow_optional=True),
         Input("transaction-paste-cancel-button", "n_clicks", allow_optional=True),
@@ -1350,6 +1351,7 @@ def register_callbacks(app: Dash) -> None:
     def edit_transaction_input_grid(
         add_clicks,
         copy_clicks,
+        delete_clicks,
         paste_clicks,
         paste_apply_clicks,
         paste_cancel_clicks,
@@ -1358,7 +1360,7 @@ def register_callbacks(app: Dash) -> None:
         paste_text,
         locale,
     ):
-        del add_clicks, copy_clicks, paste_clicks, paste_apply_clicks, paste_cancel_clicks
+        del add_clicks, copy_clicks, delete_clicks, paste_clicks, paste_apply_clicks, paste_cancel_clicks
         trigger = ctx.triggered_id
         if trigger == "transaction-grid-paste-button":
             return no_update, no_update, no_update, no_update, True, no_update
@@ -1384,6 +1386,35 @@ def register_callbacks(app: Dash) -> None:
                 "A copy with a new identity was added."
                 if normalize_locale(locale) == "en"
                 else "Добавлена копия с новым идентификатором."
+            )
+            return updated, [], message, "secondary", False, no_update
+        if trigger == "transaction-grid-delete-button":
+            if not selected_rows:
+                message = (
+                    "Select one row to delete."
+                    if normalize_locale(locale) == "en" else "Выбери одну строку для удаления."
+                )
+                return no_update, no_update, message, "warning", False, no_update
+            selected_key = (
+                str(selected_rows[0].get("source", "")),
+                str(selected_rows[0].get("source_id", "")),
+            )
+            updated = [
+                row for row in (rows or [])
+                if (str(row.get("source", "")), str(row.get("source_id", "")))
+                != selected_key
+            ]
+            if len(updated) == len(rows or []):
+                message = (
+                    "The selected row is no longer in the table."
+                    if normalize_locale(locale) == "en"
+                    else "Выбранной строки уже нет в таблице."
+                )
+                return no_update, [], message, "warning", False, no_update
+            message = (
+                "The unsaved row was deleted."
+                if normalize_locale(locale) == "en"
+                else "Несохранённая строка удалена."
             )
             return updated, [], message, "secondary", False, no_update
         if trigger == "transaction-paste-apply-button":
@@ -2944,6 +2975,7 @@ def _transaction_input_layout(
                                     [
                                         dbc.Button(report_text("Добавить строку", locale), id="transaction-grid-add-button", color="secondary", outline=True, size="sm", disabled=read_only),
                                         dbc.Button(report_text("Копировать строку", locale), id="transaction-grid-copy-button", color="secondary", outline=True, size="sm", disabled=read_only),
+                                        dbc.Button(report_text("Удалить строку", locale), id="transaction-grid-delete-button", color="danger", outline=True, size="sm", disabled=read_only),
                                         dbc.Button(report_text("Вставить строки", locale), id="transaction-grid-paste-button", color="secondary", outline=True, size="sm", disabled=read_only),
                                     ],
                                     className="d-flex flex-wrap gap-2",

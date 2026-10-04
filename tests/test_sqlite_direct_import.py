@@ -304,6 +304,7 @@ def test_sqlite_input_layout_replaces_month_preview_with_direct_save(
     assert "ms-auto" in components["transaction-save-import-button"].className
     assert components["transaction-grid-add-button"].children == "Добавить строку"
     assert components["transaction-grid-copy-button"].children == "Копировать строку"
+    assert components["transaction-grid-delete-button"].children == "Удалить строку"
     assert components["transaction-grid-paste-button"].children == "Вставить строки"
     assert components["transaction-paste-modal"].is_open is False
     assert layout.children[0].style["display"] == "none"
@@ -386,6 +387,7 @@ def test_unified_grid_callback_adds_and_copies_rows(tmp_path, monkeypatch):
         input_values = {
             "transaction-grid-add-button": int(trigger == "transaction-grid-add-button"),
             "transaction-grid-copy-button": int(trigger == "transaction-grid-copy-button"),
+            "transaction-grid-delete-button": int(trigger == "transaction-grid-delete-button"),
             "transaction-grid-paste-button": int(trigger == "transaction-grid-paste-button"),
             "transaction-paste-apply-button": int(trigger == "transaction-paste-apply-button"),
             "transaction-paste-cancel-button": int(trigger == "transaction-paste-cancel-button"),
@@ -432,3 +434,14 @@ def test_unified_grid_callback_adds_and_copies_rows(tmp_path, monkeypatch):
     assert len(copied_rows) == 2
     assert copied_rows[1]["source_id"] != source["source_id"]
     assert copied_rows[1]["amount"] == "50"
+
+    not_selected = invoke("transaction-grid-delete-button", copied_rows)
+    assert not_selected["kaspi-import-message"]["color"] == "warning"
+    assert "Выбери одну строку" in not_selected["kaspi-import-message"]["children"]
+
+    deleted = invoke(
+        "transaction-grid-delete-button", copied_rows, selected=[copied_rows[0]]
+    )
+    remaining = deleted["kaspi-import-grid"]["rowData"]
+    assert [row["source_id"] for row in remaining] == [copied_rows[1]["source_id"]]
+    assert deleted["kaspi-import-message"]["children"] == "Несохранённая строка удалена."

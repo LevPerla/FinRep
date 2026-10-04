@@ -305,6 +305,7 @@ REPORT_TEXT_EN = {
     "Новые транзакции": "New transactions",
     "Добавляй строки вручную, копируй существующие, вставляй таблицу или загружай банковский PDF.": "Add rows manually, copy existing rows, paste a table, or upload a bank PDF.",
     "Копировать строку": "Copy row",
+    "Удалить строку": "Delete row",
     "Вставить строки": "Paste rows",
     "Вставить транзакции": "Paste transactions",
     "Вставь строки из Excel в формате: Дата, Сумма, Валюта, Категория, Комментарий. Заголовок необязателен.": "Paste Excel rows in this format: Date, Amount, Currency, Category, Comment. The header is optional.",
