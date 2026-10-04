@@ -43,7 +43,7 @@ def _create_v7_database(path: Path) -> None:
                 old_accounts if statement.startswith("CREATE TABLE asset_accounts")
                 else statement)
         for statement in sqlite_store._INDEXES_AND_TRIGGERS:
-            if "ix_cpi_lookup" in statement:
+            if "ix_cpi_lookup" in statement or "uq_asset_account_name" in statement:
                 continue
             connection.execute(statement)
         for statement in sqlite_store._VIEWS:
@@ -106,6 +106,15 @@ def _create_v11_database(path: Path) -> None:
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys = ON")
         sqlite_store._migrate_v10_to_v11(connection)
+
+
+def _create_v13_database(path: Path) -> None:
+    _create_v11_database(path)
+    with sqlite3.connect(path) as connection:
+        connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA foreign_keys = ON")
+        sqlite_store._migrate_v11_to_v12(connection)
+        sqlite_store._migrate_v12_to_v13(connection)
 
 
 def test_sqlite_is_the_default_backend(monkeypatch):
@@ -269,6 +278,49 @@ def test_v11_database_adds_hybrid_kzt_provenance(monkeypatch, tmp_path):
         assert connection.execute(
             "SELECT provider_id FROM cpi_series WHERE currency_code = 'KZT'"
         ).fetchone()[0] == "world_bank_gem+stat_kz"
+
+
+def test_v13_database_merges_duplicate_asset_accounts(monkeypatch, tmp_path):
+    database = _use_default_sqlite(monkeypatch, tmp_path / "data")
+    _create_v13_database(database)
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "UPDATE asset_accounts SET asset_type_id = 'cash' WHERE id = 'account-1'"
+        )
+        connection.execute(
+            """INSERT INTO asset_accounts
+            (id, name, active, created_at, updated_at, asset_type_id, include_in_capital)
+            VALUES ('duplicate-account', 'Счёт', 1, 'now', 'now', NULL, 1)"""
+        )
+        connection.execute(
+            """INSERT INTO asset_snapshots
+            (id, account_id, period, currency_code, amount_minor, created_at, updated_at)
+            VALUES ('snapshot-2', 'duplicate-account', '2026-10', 'RUB', 23456, 'now', 'now')"""
+        )
+
+    assert ensure_default_live_database() == "upgraded"
+    backup = database.with_name(f"{database.stem}.pre-v{SCHEMA_VERSION}{database.suffix}")
+
+    with sqlite3.connect(database) as connection:
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
+        assert connection.execute(
+            "SELECT id, asset_type_id FROM asset_accounts WHERE name = 'Счёт'"
+        ).fetchall() == [("account-1", "cash")]
+        assert connection.execute(
+            "SELECT account_id, period FROM asset_snapshots ORDER BY period"
+        ).fetchall() == [("account-1", "2026-09"), ("account-1", "2026-10")]
+        assert connection.execute(
+            "SELECT COUNT(*) FROM audit_events WHERE action = 'merged'"
+        ).fetchone()[0] == 1
+        assert connection.execute(
+            "SELECT COUNT(*) FROM pragma_index_list('asset_accounts') "
+            "WHERE name = 'uq_asset_account_name' AND \"unique\" = 1"
+        ).fetchone()[0] == 1
+    with sqlite3.connect(backup) as connection:
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 13
+        assert connection.execute(
+            "SELECT COUNT(*) FROM asset_accounts WHERE name = 'Счёт'"
+        ).fetchone()[0] == 2
 
 
 def test_concurrent_first_start_publishes_one_database(monkeypatch, tmp_path):

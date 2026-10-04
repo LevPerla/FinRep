@@ -163,7 +163,7 @@ def test_v12_upgrade_adds_cash_and_replaces_manual_liquidity_with_type_defaults(
             "DELETE FROM asset_type_liquidity_defaults "
             "WHERE asset_type_id NOT IN ('cash_account', 'deposit', 'real_estate')")
         connection.execute("DELETE FROM asset_types WHERE id = 'cash'")
-        connection.execute("DELETE FROM schema_migrations WHERE version = 13")
+        connection.execute("DELETE FROM schema_migrations WHERE version >= 13")
         connection.execute("PRAGMA user_version = 12")
 
     initialize_database(database)
@@ -541,6 +541,36 @@ def test_asset_month_replace_is_atomic_and_audited(tmp_path):
         assert connection.execute(
             "SELECT count(*) FROM audit_events WHERE entity_type = 'asset_snapshot'"
         ).fetchone()[0] == 2
+
+
+def test_asset_month_replace_reuses_migrated_account_identity(tmp_path):
+    database = tmp_path / "synthetic.sqlite3"
+    initialize_database(database)
+    add_asset_account(
+        database,
+        "legacy-account-id",
+        "Cash",
+        asset_type_id="cash",
+    )
+    add_asset_snapshot(
+        database,
+        snapshot_id="legacy-snapshot-id",
+        account_id="legacy-account-id",
+        period="2026-09",
+        amount="5.00",
+        currency="USD",
+    )
+
+    result = replace_asset_snapshot_month(
+        database,
+        period="2026-10",
+        rows=[{"account": "Cash", "currency": "USD", "amount": "6.00"}],
+    )
+
+    assert result == {"inserted": 1, "updated": 0, "deleted": 0, "rows": 1}
+    accounts = asset_accounts(database)
+    assert [(row["id"], row["name"], row["asset_type_id"], row["snapshot_count"])
+            for row in accounts] == [("legacy-account-id", "Cash", "cash", 2)]
 
 
 def test_annual_goal_upsert_preserves_optional_values(tmp_path):
