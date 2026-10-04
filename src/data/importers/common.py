@@ -12,6 +12,7 @@ from src.data.get import get_transactions
 from src.data.staging import (
     DRAFT_COLUMNS,
     append_transaction_draft_rows,
+    publish_transaction_draft_rows,
     read_transaction_drafts_snapshot,
 )
 
@@ -154,6 +155,64 @@ def save_import_to_staging(import_rows: list[dict], path: str | Path | None = No
     if result["replaced_pending_rows"]:
         response["replaced_pending_rows"] = result["replaced_pending_rows"]
     return response
+
+
+def save_import_to_transactions(import_rows: list[dict]) -> dict:
+    """Stage and publish the reviewed rows from one SQLite bank import."""
+    if not config.use_sqlite_storage():
+        raise ValueError("Прямое сохранение транзакций доступно только в SQLite.")
+    if not import_rows:
+        raise ValueError("Нет операций для сохранения.")
+
+    incoming = pd.DataFrame(import_rows)
+    for column in _import_columns():
+        if column not in incoming.columns:
+            incoming[column] = ""
+    incoming = incoming[_import_columns()].copy(deep=True)
+    actions = incoming["import_action"].astype(str).str.lower()
+    if (~actions.isin({"import", "skip", "review"})).any():
+        raise ValueError("Некорректное действие импорта: выбери import или skip.")
+    if actions.eq("review").any():
+        raise ValueError(
+            "Есть возможные дубли без решения: для каждой строки review выбери import или skip."
+        )
+
+    actionable = incoming[
+        actions.eq("import")
+        & ~incoming["skip_reason"].astype(str).eq("internal_transfer")
+    ].copy(deep=True)
+    if actionable.empty:
+        return {
+            "accepted_rows": 0,
+            "skipped_rows": int(len(incoming)),
+            "published_rows": 0,
+            "already_published_rows": 0,
+            "pending_rows": 0,
+            "published_keys": [],
+            "pending_keys": [],
+        }
+
+    stored, _ = read_transaction_drafts_snapshot()
+    exported_keys = set(zip(
+        stored.loc[stored["status"].eq("exported"), "source"].astype(str),
+        stored.loc[stored["status"].eq("exported"), "source_id"].astype(str),
+    ))
+    actionable_keys = list(zip(
+        actionable["source"].astype(str), actionable["source_id"].astype(str)
+    ))
+    rows_to_stage = actionable[
+        [key not in exported_keys for key in actionable_keys]
+    ]
+    stage_result = {"accepted_rows": 0, "skipped_rows": 0}
+    if not rows_to_stage.empty:
+        stage_result = save_import_to_staging(rows_to_stage.to_dict("records"))
+
+    publish_result = publish_transaction_draft_rows(actionable.to_dict("records"))
+    return {
+        "accepted_rows": int(stage_result["accepted_rows"]),
+        "skipped_rows": int(len(incoming) - len(actionable)),
+        **publish_result,
+    }
 
 
 def _as_bool_series(values: pd.Series) -> pd.Series:

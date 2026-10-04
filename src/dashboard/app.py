@@ -38,12 +38,13 @@ from src.data.importers.bank_pdf import (
     BankPdfError,
     parse_bank_upload_contents,
 )
-from src.data.importers.common import save_import_to_staging
+from src.data.importers.common import save_import_to_staging, save_import_to_transactions
 from src.data.money import format_money_amount
 from src.data.staging import (
     append_transaction_draft_rows,
     export_monthly_transaction_drafts,
     prepare_monthly_transaction_export,
+    publish_transaction_draft_rows,
     read_monthly_transaction_csv,
     read_transaction_drafts,
     read_transaction_drafts_snapshot,
@@ -1259,7 +1260,7 @@ def register_callbacks(app: Dash) -> None:
                     f"внутренние переводы {internal_count}."
                 )
             period_options, period_value = _import_period_selection(data)
-            if len(period_options) > 1:
+            if len(period_options) > 1 and not config.use_sqlite_storage():
                 message += " The statement contains multiple months — select a period before Preview." if normalize_locale(locale) == "en" else " Выписка содержит несколько месяцев — выбери период перед Preview."
             return (
                 _dataframe_records(data),
@@ -1287,6 +1288,43 @@ def register_callbacks(app: Dash) -> None:
                 [],
                 None,
             )
+
+    @app.callback(
+        Output("kaspi-import-grid", "rowData", allow_duplicate=True),
+        Output("kaspi-import-message", "children", allow_duplicate=True),
+        Output("kaspi-import-message", "color", allow_duplicate=True),
+        Input("transaction-save-import-button", "n_clicks", allow_optional=True),
+        State("kaspi-import-grid", "rowData", allow_optional=True),
+        State("dashboard-locale", "data"),
+        prevent_initial_call=True,
+    )
+    def save_reviewed_import(save_clicks, import_rows, locale):
+        if not save_clicks:
+            raise PreventUpdate
+        try:
+            config.require_writable_mode()
+            result = save_import_to_transactions(import_rows or [])
+            pending_keys = {tuple(key) for key in result["pending_keys"]}
+            remaining_rows = [
+                row for row in (import_rows or [])
+                if (str(row.get("source", "")), str(row.get("source_id", "")))
+                in pending_keys
+            ]
+            if normalize_locale(locale) == "en":
+                message = (
+                    f"Saved transactions: {result['published_rows']}; "
+                    f"already saved: {result['already_published_rows']}; "
+                    f"pending left in staging: {result['pending_rows']}."
+                )
+            else:
+                message = (
+                    f"Сохранено транзакций: {result['published_rows']}; "
+                    f"уже были сохранены: {result['already_published_rows']}; "
+                    f"pending осталось в staging: {result['pending_rows']}."
+                )
+            return remaining_rows, message, "success"
+        except Exception as exc:
+            return no_update, report_text(str(exc), locale), "danger"
 
     @app.callback(
         Output("transaction-input-message", "children"),
@@ -1321,27 +1359,30 @@ def register_callbacks(app: Dash) -> None:
             config.require_writable_mode()
             if not input_date or not input_category or not input_currency or input_amount in {None, ""}:
                 raise ValueError("Заполни дату, категорию, валюту и сумму.")
-            result = append_transaction_draft_rows(
-                pd.DataFrame(
-                    [
-                        {
-                            "date": input_date,
-                            "category": input_category,
-                            "currency": input_currency,
-                            "amount": input_amount,
-                            "comment": input_comment or "",
-                            "source": "manual",
-                            "source_id": f"manual:{next_add_request_id}",
-                            "status": "draft",
-                        }
-                    ]
+            draft_row = {
+                "date": input_date,
+                "category": input_category,
+                "currency": input_currency,
+                "amount": input_amount,
+                "comment": input_comment or "",
+                "source": "manual",
+                "source_id": f"manual:{next_add_request_id}",
+                "status": "draft",
+            }
+            result = append_transaction_draft_rows(pd.DataFrame([draft_row]))
+            if config.use_sqlite_storage():
+                published = publish_transaction_draft_rows([draft_row])
+                message = (
+                    "Транзакция сохранена."
+                    if published["published_rows"]
+                    else "Транзакция уже была сохранена."
                 )
-            )
-            message = (
-                "Черновик добавлен."
-                if result["accepted_rows"]
-                else "Черновик уже был добавлен; повтор не создан."
-            )
+            else:
+                message = (
+                    "Черновик добавлен."
+                    if result["accepted_rows"]
+                    else "Черновик уже был добавлен; повтор не создан."
+                )
             return report_text(message, locale), "success", None, "", uuid4().hex
         except Exception as exc:
             return report_text(str(exc), locale), "danger", no_update, no_update, next_add_request_id
@@ -2631,6 +2672,7 @@ def _transaction_input_layout(
     category_options = _transaction_category_options(locale)
     currency_options = [{"label": ticker, "value": ticker} for ticker in config.UNIQUE_TICKERS]
     month_value = f"{year}-{str(month).zfill(2)}"
+    sqlite_storage = config.use_sqlite_storage()
     upload_limit_label = BANK_PDF_UPLOAD_LIMIT_LABEL
     if normalize_locale(locale) == "en":
         upload_limit_label = upload_limit_label.replace(" и ", " and ").replace(" страниц", " pages")
@@ -2740,6 +2782,24 @@ def _transaction_input_layout(
                         ),
                         className="finrep-import-grid-shell",
                     ),
+                    *(
+                        [
+                            dbc.Button(
+                                report_text("Сохранить транзакции", locale),
+                                id="transaction-save-import-button",
+                                color="primary",
+                                className="mt-3",
+                                disabled=read_only,
+                            ),
+                            dcc.Dropdown(
+                                id="transaction-import-period",
+                                options=[],
+                                value=None,
+                                style={"display": "none"},
+                            ),
+                        ]
+                        if sqlite_storage else []
+                    ),
                 ],
                 style=_section_style(theme),
             ),
@@ -2797,7 +2857,7 @@ def _transaction_input_layout(
                     ),
                 ],
                 style=_section_style(theme),
-            ),
+            ) if not sqlite_storage else None,
         ],
         className="d-grid gap-4 pt-3",
     )
