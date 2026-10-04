@@ -9,7 +9,7 @@ from src.data.get import get_assets
 from src.data.csv_storage import atomic_write_csv
 from src.data.get_finance import fx_network_mode, get_actual_fx_rate, get_fx_rate_as_of, require_fx_rate
 from src.data.money import format_money_amount, parse_money_amount
-from src.model.create_tables import get_balance_by_month
+from src.model.create_tables import asset_valuation_dates, get_balance_by_month
 
 GOALS_COLUMNS = [
     "year",
@@ -318,7 +318,7 @@ def _fx_scenarios(target_currency: str) -> pd.DataFrame:
         (assets["Год"].astype(int) == latest_year)
         & (assets["Месяц"].astype(int) == latest_month)
     ].copy(deep=True)
-    snapshot_date = pd.Timestamp(year=latest_year, month=latest_month, day=1) + pd.offsets.MonthEnd(0)
+    snapshot_date = asset_valuation_dates(latest_assets).max()
 
     rows = []
     rate_pair, base_rate = _scenario_reference_rate(target_currency, snapshot_date)

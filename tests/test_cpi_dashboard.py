@@ -15,6 +15,7 @@ from src.dashboard.main_data import (
     _inflation_rate_figure,
     _real_asset_capital_data,
 )
+from src.dashboard import main_data
 from src.data.sqlite_store import initialize_database, save_cpi_observations
 
 
@@ -53,6 +54,50 @@ def test_real_asset_capital_uses_selected_base_month_and_leaves_gaps(
     assert result.loc[0, "Реальная стоимость"] == 6000000
     assert pd.isna(result.loc[1, "Реальная стоимость"])
     assert result.loc[2, "Реальная стоимость"] == 5500000
+
+
+def test_real_asset_capital_fills_recent_publication_lag(tmp_path, monkeypatch):
+    database = tmp_path / "finrep.sqlite3"
+    initialize_database(database)
+    _seed_cpi(database, [{"period": "2026-07", "index_value": "100"}])
+    monkeypatch.setattr(config, "active_database_path", lambda: database)
+    monkeypatch.setattr(config, "use_sqlite_storage", lambda: True)
+    monkeypatch.setattr(
+        main_data, "_current_cpi_period", lambda: pd.Period("2026-10", freq="M"))
+    balance = pd.DataFrame(
+        {"Капитал по активам": [Decimal("5000000"), Decimal("5200000")]},
+        index=pd.to_datetime(["2026-07-31", "2026-10-31"]),
+    )
+
+    result = _real_asset_capital_data(balance, "RUB", None)
+
+    assert result.attrs["status"] == "ready"
+    assert result.attrs["missing_periods"] == []
+    assert result.attrs["stale"] is False
+    assert result["Реальная стоимость"].tolist() == [5000000, 5200000]
+    assert result.attrs["deflators"]["2026-10"] == Decimal("1")
+
+
+def test_real_asset_capital_rejects_publication_lag_over_six_months(
+        tmp_path, monkeypatch):
+    database = tmp_path / "finrep.sqlite3"
+    initialize_database(database)
+    _seed_cpi(database, [{"period": "2026-01", "index_value": "100"}])
+    monkeypatch.setattr(config, "active_database_path", lambda: database)
+    monkeypatch.setattr(config, "use_sqlite_storage", lambda: True)
+    monkeypatch.setattr(
+        main_data, "_current_cpi_period", lambda: pd.Period("2026-08", freq="M"))
+    balance = pd.DataFrame(
+        {"Капитал по активам": [Decimal("5000000")]},
+        index=pd.to_datetime(["2026-08-31"]),
+    )
+
+    result = _real_asset_capital_data(balance, "RUB", None)
+
+    assert result.attrs["status"] == "partial"
+    assert result.attrs["missing_periods"] == ["2026-08"]
+    assert result.attrs["stale"] is True
+    assert pd.isna(result.loc[0, "Реальная стоимость"])
 
 
 def test_inflation_chart_uses_year_over_year_rate_and_keeps_missing_months(

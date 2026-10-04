@@ -19,6 +19,7 @@ from src.model.create_tables import (
 CHART_FONT_SIZE = 13
 CHART_TITLE_SIZE = 18
 CHART_LABEL_SIZE = 9
+CPI_PUBLICATION_LAG_MONTHS = 6
 ASSET_ALLOCATION_COLORS = [
     "#6F8FB8",
     "#7FAF91",
@@ -687,23 +688,32 @@ def _real_asset_capital_data(
         return result
     selected_base = base_period if base_period in indexes else max(indexes)
     latest_cpi_period = max(indexes)
-    current_period = pd.Period(pd.Timestamp.now(), freq="M")
+    current_period = _current_cpi_period()
     latest_period_value = pd.Period(latest_cpi_period, freq="M")
-    stale = current_period.ordinal - latest_period_value.ordinal > 3
+    stale = (
+        current_period.ordinal - latest_period_value.ordinal
+        > CPI_PUBLICATION_LAG_MONTHS
+    )
     base_index = indexes[selected_base]
     nominal = pd.to_numeric(balance["Капитал по активам"], errors="coerce")
     data = pd.DataFrame({"Дата": pd.to_datetime(balance.index), "Номинальная стоимость": nominal})
     periods = data["Дата"].dt.to_period("M").astype(str)
+    effective_indexes = dict(indexes)
+    for period in periods.unique():
+        period_value = pd.Period(period, freq="M")
+        age_months = period_value.ordinal - latest_period_value.ordinal
+        if period not in indexes and 0 < age_months <= CPI_PUBLICATION_LAG_MONTHS:
+            effective_indexes[period] = indexes[latest_cpi_period]
     data["Реальная стоимость"] = [
-        float(Decimal(str(value)) * base_index / indexes[period])
-        if pd.notna(value) and period in indexes else float("nan")
+        float(Decimal(str(value)) * base_index / effective_indexes[period])
+        if pd.notna(value) and period in effective_indexes else float("nan")
         for value, period in zip(data["Номинальная стоимость"], periods)
     ]
     data = data[data["Номинальная стоимость"].notna()].reset_index(drop=True)
     missing = sorted({
         period for value, period in zip(data["Номинальная стоимость"],
                                         data["Дата"].dt.to_period("M").astype(str))
-        if pd.notna(value) and period not in indexes
+        if pd.notna(value) and period not in effective_indexes
     })
     data.attrs["status"] = "partial" if missing else "stale" if stale else "ready"
     data.attrs["base_period"] = selected_base
@@ -713,9 +723,13 @@ def _real_asset_capital_data(
     data.attrs["currency"] = currency
     data.attrs["deflators"] = {
         period: base_index / index_value
-        for period, index_value in indexes.items()
+        for period, index_value in effective_indexes.items()
     }
     return data
+
+
+def _current_cpi_period() -> pd.Period:
+    return pd.Period(pd.Timestamp.now(), freq="M")
 
 
 def _capital_change_after_flows_data(
