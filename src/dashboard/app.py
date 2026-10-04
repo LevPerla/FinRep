@@ -2008,6 +2008,9 @@ def _main_report_layout(
         _capital_change_after_flows_section(
             datasets["capital_change_after_flows"],
             height="520px", theme=theme, locale=locale),
+        _capital_attribution_section(
+            datasets["capital_attribution"],
+            height="520px", theme=theme, locale=locale),
         _graph_section(datasets["fx_revaluation"], height="420px", theme=theme, locale=locale),
         _graph_section(datasets["fx_changes"], theme=theme, locale=locale),
         _graph_section(datasets["asset_currency_allocation"], height="520px", theme=theme, locale=locale),
@@ -4195,6 +4198,27 @@ def _capital_change_after_flows_section(
     section.children.insert(1, html.P(
         report_text(
             "Внешний поток включает активные доходы, расходы и движения по долгам. Проценты и инвестиционный результат остаются в изменении капитала; первый месяц не рассчитывается без начальной оценки.",
+            locale,
+        ),
+        className="small",
+        style={"color": "var(--finrep-muted)"},
+    ))
+    return section
+
+
+def _capital_attribution_section(
+    dataset: DashboardDataset,
+    *,
+    height: str = "520px",
+    theme: str | None = None,
+    locale: str = DEFAULT_LOCALE,
+):
+    section = _graph_section(dataset, height=height, theme=theme, locale=locale)
+    if dataset.dataframe.empty:
+        return section
+    section.children.insert(1, html.P(
+        report_text(
+            "Столбцы полностью сверяются с изменением капитала. Валютная переоценка содержит только эффект курсов на начальные валютные остатки; изменения, которые нельзя надёжно разделить без привязки операций к активам, остаются в необъяснённом остатке.",
             locale,
         ),
         className="small",

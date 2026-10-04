@@ -146,6 +146,81 @@ def test_capital_change_is_unavailable_without_complete_cpi(monkeypatch):
     assert result["Реальное изменение после потоков"].isna().all()
 
 
+def test_fx_revaluation_uses_opening_native_exposure_only(monkeypatch):
+    assets = pd.DataFrame([
+        {"Счет": "USD счёт", "Год": "2025", "Месяц": "1", "Квартал": "1",
+         "Валюта": "USD", "Значение": 100.0},
+        {"Счет": "Закрыт", "Год": "2025", "Месяц": "1", "Квартал": "1",
+         "Валюта": "GBP", "Значение": 50.0},
+        {"Счет": "USD счёт", "Год": "2025", "Месяц": "2", "Квартал": "1",
+         "Валюта": "USD", "Значение": 110.0},
+        {"Счет": "Новый", "Год": "2025", "Месяц": "2", "Квартал": "1",
+         "Валюта": "EUR", "Значение": 70.0},
+    ])
+
+    def rate(from_currency, _to_currency, as_of):
+        month = pd.Timestamp(as_of).month
+        return {
+            ("USD", 1): 90.0,
+            ("USD", 2): 100.0,
+            ("GBP", 1): 120.0,
+            ("EUR", 2): 95.0,
+        }[(from_currency, month)]
+
+    monkeypatch.setattr(create_tables, "_get_fx_rate_as_of", rate)
+
+    result = create_tables._asset_fx_revaluation_by_month(assets, "RUB")
+
+    assert pd.isna(result.iloc[0])
+    assert result.iloc[1] == 1_000.0
+
+
+def test_capital_attribution_reconciles_and_keeps_fx_separate(monkeypatch):
+    monkeypatch.setattr(main_data, "get_income_categories", lambda: pd.DataFrame({
+        "Категория": ["Зарплата", "Проценты"],
+        "Класс": ["active", "passive"],
+    }))
+    balance = pd.DataFrame({
+        "Капитал по активам": [100.0, 175.0],
+        "Баланс": [100.0, 55.0],
+        "Зарплата": [100.0, 50.0],
+        "Проценты": [0.0, 5.0],
+        "Валютная переоценка": [float("nan"), 10.0],
+    }, index=pd.to_datetime(["2026-01-31", "2026-02-28"]))
+
+    result = main_data._capital_attribution_data(balance)
+    row = result.iloc[1]
+
+    assert row["Изменение капитала"] == 75.0
+    assert row["Внешний поток"] == 50.0
+    assert row["Пассивный доход"] == 5.0
+    assert row["Валютная переоценка"] == 10.0
+    assert row["Переоценка и необъяснённые изменения"] == 10.0
+    assert row["Изменение капитала"] == sum(row[column] for column in [
+        "Внешний поток", "Пассивный доход", "Валютная переоценка",
+        "Переоценка и необъяснённые изменения",
+    ])
+
+
+def test_first_asset_month_does_not_invent_zero_fx_revaluation():
+    balance = pd.DataFrame({
+        "Доход": [100.0],
+        "Расход": [50.0],
+        "Дельта": [50.0],
+        "Баланс": [50.0],
+        "Капитал": [50.0],
+        "Капитал по активам": [100.0],
+        "Расхождение с активами": [50.0],
+        "Валютная переоценка": [float("nan")],
+    }, index=pd.to_datetime(["2026-01-31"]))
+
+    metrics = main_data._cockpit_metrics(
+        balance, "RUB", "2026", "01").set_index("ID")
+
+    assert pd.isna(metrics.loc["monthly_fx_revaluation", "Значение"])
+    assert metrics.loc["monthly_fx_revaluation", "Статус"] == "empty"
+
+
 def test_capital_components_show_only_latest_included_explicit_snapshots(
         tmp_path, monkeypatch):
     database = tmp_path / "finrep.sqlite3"

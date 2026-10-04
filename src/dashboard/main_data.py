@@ -110,6 +110,7 @@ def _build_main_dashboard_data(
     })
     capital_change_after_flows = _capital_change_after_flows_data(
         balance, real_asset_capital)
+    capital_attribution = _capital_attribution_data(balance)
     fx_revaluation = _fx_revaluation_data(balance)
     asset_currency_allocation = _asset_currency_allocation_data(currency)
     asset_liquidity_allocation = _asset_liquidity_allocation_data(currency)
@@ -181,6 +182,12 @@ def _build_main_dashboard_data(
             dataframe=capital_change_after_flows,
             figure=_capital_change_after_flows_figure(
                 capital_change_after_flows, currency),
+        ),
+        "capital_attribution": DashboardDataset(
+            id="capital_attribution",
+            title="Декомпозиция изменения капитала",
+            dataframe=capital_attribution,
+            figure=_capital_attribution_figure(capital_attribution, currency),
         ),
         "fx_revaluation": DashboardDataset(
             id="fx_revaluation",
@@ -254,7 +261,10 @@ def _cockpit_metrics(
     runway_months = current_capital / avg_expense if avg_expense > 0 else pd.NA
     savings_rate = _bounded_percent(delta / income * 100) if pd.notna(income) and income > 0 else pd.NA
     asset_gap = _row_number(latest_row, "Расхождение с активами")
-    fx_impact = _row_number(selected_row, "Валютная переоценка") if selected_period_available else pd.NA
+    fx_impact = (
+        _row_optional_number(selected_row, "Валютная переоценка")
+        if selected_period_available else pd.NA
+    )
     period_label = str(selected_period)
     period_detail = (
         "выбранный месяц"
@@ -421,6 +431,12 @@ def _row_number(row: pd.Series, column: str) -> float:
     return float(parsed) if pd.notna(parsed) else 0.0
 
 
+def _row_optional_number(row: pd.Series, column: str):
+    value = row.get(column, pd.NA) if not row.empty else pd.NA
+    parsed = pd.to_numeric(value, errors="coerce")
+    return float(parsed) if pd.notna(parsed) else pd.NA
+
+
 def _savings_rate_status(value) -> str:
     if pd.isna(value):
         return "empty"
@@ -482,6 +498,10 @@ def _create_yearly_stats(balance: pd.DataFrame) -> pd.DataFrame:
     yearly_stats["Сальдо"] = yearly_stats["Доход"] - yearly_stats["Расход"]
     if "Валютная переоценка" in balance.columns:
         yearly_stats["Валютная переоценка"] = balance["Валютная переоценка"].resample("Y").sum(min_count=1)
+    if "Переоценка и необъяснённые изменения" in balance.columns:
+        yearly_stats["Переоценка и необъяснённые изменения"] = balance[
+            "Переоценка и необъяснённые изменения"
+        ].resample("Y").sum(min_count=1)
     if "Расхождение с активами" in balance.columns:
         yearly_stats["Расхождение с активами"] = balance["Расхождение с активами"].resample("Y").last()
     yearly_stats.index = yearly_stats.index.strftime("%Y")
@@ -819,6 +839,86 @@ def _capital_change_after_flows_figure(
         ))
     _apply_dashboard_chart_layout(fig, "", range_slider=True)
     fig.update_layout(barmode="group", yaxis_title=config.UNIQUE_TICKERS[currency])
+    fig.add_hline(y=0, line_dash="dot", line_color="rgba(120,120,120,0.7)")
+    return fig
+
+
+def _capital_attribution_data(balance: pd.DataFrame) -> pd.DataFrame:
+    columns = [
+        "Дата",
+        "Изменение капитала",
+        "Внешний поток",
+        "Пассивный доход",
+        "Валютная переоценка",
+        "Переоценка и необъяснённые изменения",
+    ]
+    if "Капитал по активам" not in balance.columns:
+        return pd.DataFrame(columns=columns)
+
+    passive_categories = get_income_categories()
+    passive_names = passive_categories.loc[
+        passive_categories["Класс"].eq("passive"), "Категория"
+    ].tolist()
+    passive_income = pd.Series(0.0, index=balance.index)
+    for category in passive_names:
+        if category in balance.columns:
+            passive_income = passive_income.add(
+                pd.to_numeric(balance[category], errors="coerce").fillna(0.0),
+                fill_value=0.0,
+            )
+
+    capital = pd.to_numeric(balance["Капитал по активам"], errors="coerce")
+    capital_change = capital.diff()
+    cash_balance = pd.to_numeric(
+        balance.get("Баланс", pd.Series(0.0, index=balance.index)), errors="coerce"
+    ).fillna(0.0)
+    external_flow = cash_balance - passive_income
+    fx_effect = pd.to_numeric(
+        balance.get("Валютная переоценка", pd.Series(index=balance.index, dtype=float)),
+        errors="coerce",
+    )
+    residual = capital_change - external_flow - passive_income - fx_effect
+    available = capital_change.notna() & fx_effect.notna()
+    result = pd.DataFrame({
+        "Дата": pd.to_datetime(balance.index),
+        "Изменение капитала": capital_change.where(available).to_numpy(),
+        "Внешний поток": external_flow.where(available).to_numpy(),
+        "Пассивный доход": passive_income.where(available).to_numpy(),
+        "Валютная переоценка": fx_effect.where(available).to_numpy(),
+        "Переоценка и необъяснённые изменения": residual.where(available).to_numpy(),
+    })
+    return result[capital.notna().to_numpy()].reset_index(drop=True)[columns]
+
+
+def _capital_attribution_figure(data: pd.DataFrame, currency: str) -> go.Figure:
+    fig = go.Figure()
+    if data.empty:
+        _apply_dashboard_chart_layout(fig, "", range_slider=True)
+        return fig
+    x_dates = _month_start_dates(data)
+    for column, color in (
+        ("Внешний поток", "#6F8FB8"),
+        ("Пассивный доход", "#7FAF91"),
+        ("Валютная переоценка", "#9B7AAE"),
+        ("Переоценка и необъяснённые изменения", "#B08A6C"),
+    ):
+        fig.add_trace(go.Bar(
+            x=x_dates,
+            y=pd.to_numeric(data[column], errors="coerce"),
+            name=column,
+            marker_color=color,
+            hovertemplate=f"{column}<br>%{{x|%Y-%m}}<br>%{{y:,.0f}}<extra></extra>",
+        ))
+    fig.add_trace(go.Scatter(
+        x=x_dates,
+        y=pd.to_numeric(data["Изменение капитала"], errors="coerce"),
+        name="Изменение капитала",
+        mode="lines+markers",
+        line=dict(color="#C4A35A", width=2),
+        hovertemplate="Изменение капитала<br>%{x|%Y-%m}<br>%{y:,.0f}<extra></extra>",
+    ))
+    _apply_dashboard_chart_layout(fig, "", range_slider=True)
+    fig.update_layout(barmode="relative", yaxis_title=config.UNIQUE_TICKERS[currency])
     fig.add_hline(y=0, line_dash="dot", line_color="rgba(120,120,120,0.7)")
     return fig
 
