@@ -4,12 +4,22 @@ import pandas as pd
 import plotly.graph_objects as go
 
 from src import config, utils
-from src.dashboard.main_data import DashboardDataset, _apply_dashboard_chart_layout, _peak_money_labels
+from src.dashboard.main_data import (
+    DashboardDataset,
+    _apply_dashboard_chart_layout,
+    _current_asset_freshness,
+    _peak_money_labels,
+)
 from src.data.get import get_assets
 from src.data.csv_storage import atomic_write_csv
 from src.data.get_finance import fx_network_mode, get_actual_fx_rate, get_fx_rate_as_of, require_fx_rate
 from src.data.money import format_money_amount, parse_money_amount
-from src.model.create_tables import asset_valuation_dates, get_balance_by_month
+from src.model.create_tables import (
+    asset_valuation_dates,
+    get_act_liabilities,
+    get_act_receivables,
+    get_balance_by_month,
+)
 
 GOALS_COLUMNS = [
     "year",
@@ -29,6 +39,7 @@ GOAL_LABEL_TO_COLUMN = {
     "Средний расход/мес": "target_monthly_expense",
 }
 FX_SHOCKS = [-20, -10, 0, 10, 20]
+FINANCIAL_INDEPENDENCE_MULTIPLIER = 300
 
 
 def build_planning_dashboard_data(
@@ -54,11 +65,24 @@ def _build_planning_dashboard_data(
     goal_row = _goal_for_year_currency(goals, year, currency)
 
     goals_progress = _goals_progress(balance, goal_row, year, currency)
+    financial_independence = _financial_independence_300x(
+        balance,
+        currency,
+        saved_periods=_saved_cash_periods(),
+        asset_freshness=_current_asset_freshness(),
+    )
     forecast = _capital_forecast(balance, year)
     runway = _runway(balance)
     fx_scenarios = _fx_scenarios(currency)
 
     return {
+        "planning_300x": DashboardDataset(
+            id="planning_300x",
+            title="Цель 300 расходов",
+            dataframe=financial_independence,
+            display_dataframe=_format_financial_independence(
+                financial_independence, currency),
+        ),
         "planning_goals": DashboardDataset(
             id="planning_goals",
             title="Цели года",
@@ -86,6 +110,125 @@ def _build_planning_dashboard_data(
             figure=_fx_scenarios_figure(fx_scenarios, currency),
         ),
     }
+
+
+def _saved_cash_periods() -> set[str] | None:
+    if not config.use_sqlite_storage():
+        return None
+    from src.data.sqlite_store import saved_months
+
+    return set(saved_months(config.active_database_path()))
+
+
+def _current_period() -> pd.Period:
+    return pd.Period(pd.Timestamp.today(), freq="M")
+
+
+def _financial_independence_300x(
+    balance: pd.DataFrame,
+    currency: str,
+    *,
+    saved_periods: set[str] | None = None,
+    asset_freshness: dict | None = None,
+) -> pd.DataFrame:
+    columns = [
+        "Период расходов",
+        "Период капитала",
+        "Средний расход",
+        "Множитель",
+        "Цель",
+        "Активы",
+        "Требования",
+        "Обязательства",
+        "Чистый капитал",
+        "Прогресс (%)",
+        "Статус",
+        "Детали",
+    ]
+    if balance.empty:
+        return pd.DataFrame(columns=columns)
+
+    monthly = balance.copy(deep=True).sort_index()
+    monthly.index = pd.to_datetime(monthly.index).to_period("M")
+    completed = monthly.index[monthly.index < _current_period()]
+    if completed.empty:
+        return pd.DataFrame(columns=columns)
+    end_period = completed.max()
+    window = pd.period_range(end=end_period, periods=12, freq="M")
+    known_periods = (
+        {str(period) for period in monthly.index}
+        if saved_periods is None else {str(period) for period in saved_periods}
+    )
+    missing = [str(period) for period in window if str(period) not in known_periods]
+    window_label = f"{window[0]} — {window[-1]}"
+
+    asset_values = pd.to_numeric(
+        monthly.get("Капитал по активам", pd.Series(index=monthly.index, dtype=float)),
+        errors="coerce",
+    ).dropna()
+    asset_capital = asset_values.iloc[-1] if not asset_values.empty else pd.NA
+    capital_period = str(asset_values.index[-1]) if not asset_values.empty else ""
+    receivables = _debt_total(get_act_receivables(currency), "Дебиторская задолженность")
+    liabilities = _debt_total(get_act_liabilities(currency), "Кредиторская задолженность")
+    net_capital = (
+        float(asset_capital) + receivables - liabilities
+        if pd.notna(asset_capital) else pd.NA
+    )
+
+    avg_expense = target = progress = pd.NA
+    status = "рассчитано"
+    details = ""
+    if missing:
+        status = "недостаточно данных"
+        details = f"Нет сохранённых месяцев: {', '.join(missing)}"
+    else:
+        expenses = pd.to_numeric(
+            monthly.reindex(window)["Расход"], errors="coerce")
+        if expenses.isna().any():
+            status = "недостаточно данных"
+            details = "В окне есть месяцы без суммы расходов"
+        else:
+            avg_expense = float(expenses.sum() / 12)
+            if avg_expense <= 0:
+                status = "не рассчитано"
+                details = "Средний расход должен быть больше нуля"
+            else:
+                target = avg_expense * FINANCIAL_INDEPENDENCE_MULTIPLIER
+                if pd.isna(net_capital):
+                    status = "нет снимка капитала"
+                    details = "Нет доступной оценки активов"
+                else:
+                    progress = float(net_capital) / target * 100
+
+    if asset_freshness and asset_freshness.get("has_warning"):
+        stale_detail = (
+            f"Устаревших оценок: {asset_freshness.get('stale_count', 0)}; "
+            f"без даты: {asset_freshness.get('missing_count', 0)}"
+        )
+        details = "; ".join(part for part in (details, stale_detail) if part)
+        if status == "рассчитано":
+            status = "рассчитано с предупреждением"
+
+    return pd.DataFrame([{
+        "Период расходов": window_label,
+        "Период капитала": capital_period,
+        "Средний расход": avg_expense,
+        "Множитель": FINANCIAL_INDEPENDENCE_MULTIPLIER,
+        "Цель": target,
+        "Активы": asset_capital,
+        "Требования": receivables,
+        "Обязательства": liabilities,
+        "Чистый капитал": net_capital,
+        "Прогресс (%)": progress,
+        "Статус": status,
+        "Детали": details,
+    }], columns=columns)
+
+
+def _debt_total(data: pd.DataFrame, column: str) -> float:
+    if data.empty or column not in data.columns:
+        return 0.0
+    return float(pd.to_numeric(data[column], errors="coerce").fillna(0.0).sum())
 
 
 def _load_goals() -> pd.DataFrame:
@@ -420,6 +563,23 @@ def _format_goals_progress(data: pd.DataFrame, currency: str) -> pd.DataFrame:
         display.loc[percent_mask, column] = display.loc[percent_mask, column].map(_format_percent)
     display["Прогресс (%)"] = display["Прогресс (%)"].map(_format_percent)
     return display.drop(columns=["Тип"])
+
+
+def _format_financial_independence(
+        data: pd.DataFrame, currency: str) -> pd.DataFrame:
+    display = data.copy(deep=True)
+    if display.empty:
+        return display
+    for column in [
+        "Средний расход", "Цель", "Активы", "Требования", "Обязательства",
+        "Чистый капитал",
+    ]:
+        display[column] = display[column].map(
+            lambda value: _format_money(value, currency))
+    display["Множитель"] = display["Множитель"].map(
+        lambda value: f"{int(value)}×")
+    display["Прогресс (%)"] = display["Прогресс (%)"].map(_format_percent)
+    return display
 
 
 def _format_money_columns(data: pd.DataFrame, currency: str, not_money_cols: list[str]) -> pd.DataFrame:

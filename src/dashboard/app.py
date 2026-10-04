@@ -2381,6 +2381,8 @@ def _year_report_layout(datasets: dict[str, DashboardDataset], theme: str | None
 def _planning_report_layout(datasets: dict[str, DashboardDataset], theme: str | None, read_only: bool = False, locale: str = DEFAULT_LOCALE):
     return html.Div(
         [
+            _planning_300x_section(
+                datasets["planning_300x"], theme=theme, locale=locale),
             _grid_section(datasets["planning_goals"], height="260px", theme=theme, read_only=read_only, locale=locale),
             dbc.Row(
                 [
@@ -2393,6 +2395,56 @@ def _planning_report_layout(datasets: dict[str, DashboardDataset], theme: str | 
             _graph_section(datasets["planning_fx_scenarios"], height="360px", theme=theme, locale=locale),
         ],
         className="d-grid gap-4",
+    )
+
+
+def _planning_300x_section(
+    dataset: DashboardDataset,
+    theme: str | None = None,
+    locale: str = DEFAULT_LOCALE,
+):
+    data = dataset.display_dataframe if dataset.display_dataframe is not None else dataset.dataframe
+    if data.empty:
+        return _empty_section(dataset, locale=locale)
+    row = data.iloc[0]
+    cards = [
+        ("Средний расход/мес", row.get("Средний расход"), row.get("Период расходов")),
+        ("Цель 300 расходов", row.get("Цель"), f"{row.get('Множитель', '300×')} расходов"),
+        (
+            "Чистый капитал",
+            row.get("Чистый капитал"),
+            f"{report_text('Оценка на', locale)} {row.get('Период капитала', '')}; "
+            f"{report_text('Активы + требования − обязательства', locale)}",
+        ),
+        ("Прогресс цели", row.get("Прогресс (%)"), row.get("Статус")),
+    ]
+    return html.Section(
+        [
+            _section_header(dataset),
+            html.Div(
+                [
+                    html.Div(
+                        [
+                            html.Div(report_text(label, locale), className="finrep-cockpit-label"),
+                            html.Div(report_text(str(value), locale), className="finrep-cockpit-value"),
+                            html.Div(
+                                report_text(str(detail), locale),
+                                className="finrep-cockpit-detail",
+                            ),
+                        ],
+                        className="finrep-cockpit-card finrep-cockpit-neutral",
+                    )
+                    for label, value, detail in cards
+                ],
+                className="finrep-cockpit-grid finrep-mobile-metric-grid",
+            ),
+            dbc.Alert(
+                str(row.get("Детали")),
+                color="warning",
+                className="mt-3 mb-0 py-2",
+            ) if row.get("Детали") else None,
+        ],
+        style=_section_style(theme),
     )
 
 
