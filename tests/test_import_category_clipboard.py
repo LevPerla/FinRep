@@ -1,6 +1,10 @@
 from pathlib import Path
 
-from src.dashboard.app import _kaspi_import_column_defs, _transaction_input_layout
+from src.dashboard.app import (
+    _kaspi_import_column_defs,
+    _merge_input_grid_rows,
+    _transaction_input_layout,
+)
 
 
 def _component(node, component_id):
@@ -17,7 +21,9 @@ def _component(node, component_id):
 
 
 def test_category_column_has_multi_cell_selection_rule():
-    category_column = _kaspi_import_column_defs()[0]
+    category_column = next(
+        column for column in _kaspi_import_column_defs() if column["field"] == "category"
+    )
 
     assert category_column["field"] == "category"
     assert "finrep-category-selected" in category_column["cellClassRules"]
@@ -35,6 +41,27 @@ def test_import_grid_hides_bank_status_and_has_no_sort_priority_numbers():
     assert "sort" not in date_column
     assert "sortIndex" not in date_column
     assert bank_status_column["hide"] is True
+
+
+def test_unified_grid_shows_source_selection_and_manual_editors():
+    columns = _kaspi_import_column_defs()
+    source = next(column for column in columns if column["field"] == "source")
+    date = next(column for column in columns if column["field"] == "date")
+    amount = next(column for column in columns if column["field"] == "amount")
+
+    assert source["checkboxSelection"] is True
+    assert "manual_grid" in source["valueFormatter"]["function"]
+    assert date["editable"] == {"function": "params.data.source == 'manual_grid'"}
+    assert amount["editable"] == {"function": "params.data.source == 'manual_grid'"}
+
+
+def test_pdf_rows_append_without_replacing_unsaved_manual_rows():
+    manual = {"source": "manual_grid", "source_id": "manual-1", "comment": "Manual"}
+    pdf = {"source": "kaspi_pdf", "source_id": "pdf-1", "comment": "PDF"}
+
+    merged = _merge_input_grid_rows([manual], [pdf, pdf])
+
+    assert [row["comment"] for row in merged] == ["Manual", "PDF"]
 
 
 def test_import_amount_column_displays_bank_direction_as_sign():
@@ -69,3 +96,5 @@ def test_category_clipboard_uses_native_events_without_permission_api(monkeypatc
         "cellValueChanged"]
     assert "neutralCategories" in script
     assert 'setDataValue("import_action", decision[0])' in script
+    assert "finrepInputCellChanged" in script
+    assert 'params.data.source !== "manual_grid"' in script

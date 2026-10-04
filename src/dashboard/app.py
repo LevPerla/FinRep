@@ -40,8 +40,10 @@ from src.data.importers.bank_pdf import (
 )
 from src.data.importers.common import (
     INTERNAL_TRANSFER_CATEGORY,
+    new_manual_grid_row,
+    parse_manual_grid_rows,
     save_import_to_staging,
-    save_import_to_transactions,
+    save_input_grid_to_transactions,
 )
 from src.data.money import format_money_amount
 from src.data.staging import (
@@ -1237,9 +1239,10 @@ def register_callbacks(app: Dash) -> None:
         Input("kaspi-upload", "contents", allow_optional=True),
         State("kaspi-upload", "filename", allow_optional=True),
         State("dashboard-locale", "data"),
+        State("kaspi-import-grid", "rowData", allow_optional=True),
         prevent_initial_call=True,
     )
-    def preview_kaspi_pdf(contents, filename, locale):
+    def preview_kaspi_pdf(contents, filename, locale, current_rows):
         if not contents:
             raise PreventUpdate
         display_filename = _safe_upload_filename(filename)
@@ -1266,8 +1269,8 @@ def register_callbacks(app: Dash) -> None:
             if len(period_options) > 1 and not config.use_sqlite_storage():
                 message += " The statement contains multiple months — select a period before Preview." if normalize_locale(locale) == "en" else " Выписка содержит несколько месяцев — выбери период перед Preview."
             return (
-                _dataframe_records(data),
-                _localized_input_column_defs(_kaspi_import_column_defs(), locale),
+                _merge_input_grid_rows(current_rows, _dataframe_records(data)),
+                _localized_input_column_defs(_kaspi_import_column_defs(locale), locale),
                 message,
                 "secondary",
                 period_options,
@@ -1280,16 +1283,16 @@ def register_callbacks(app: Dash) -> None:
                 type(exc).__name__,
                 exc_info=True,
             )
-            return [], _localized_input_column_defs(_kaspi_import_column_defs(), locale), f"{display_filename}: {report_text(str(exc), locale)}", "danger", [], None
+            return no_update, no_update, f"{display_filename}: {report_text(str(exc), locale)}", "danger", no_update, no_update
         except Exception:
             logger.exception("Unexpected bank PDF import failure: filename=%r", display_filename)
             return (
-                [],
-                _localized_input_column_defs(_kaspi_import_column_defs(), locale),
+                no_update,
+                no_update,
                 (f"{display_filename}: import failed due to an internal error." if normalize_locale(locale) == "en" else f"{display_filename}: импорт не выполнен из-за внутренней ошибки."),
                 "danger",
-                [],
-                None,
+                no_update,
+                no_update,
             )
 
     @app.callback(
@@ -1306,28 +1309,96 @@ def register_callbacks(app: Dash) -> None:
             raise PreventUpdate
         try:
             config.require_writable_mode()
-            result = save_import_to_transactions(import_rows or [])
-            pending_keys = {tuple(key) for key in result["pending_keys"]}
-            remaining_rows = [
-                row for row in (import_rows or [])
-                if (str(row.get("source", "")), str(row.get("source_id", "")))
-                in pending_keys
-            ]
+            result = save_input_grid_to_transactions(import_rows or [])
+            remaining_rows = result["remaining_rows"]
             if normalize_locale(locale) == "en":
                 message = (
                     f"Saved transactions: {result['published_rows']}; "
                     f"already saved: {result['already_published_rows']}; "
-                    f"pending left in staging: {result['pending_rows']}."
+                    f"pending left in staging: {result['pending_rows']}; "
+                    f"need attention: {result['invalid_rows']}."
                 )
             else:
                 message = (
                     f"Сохранено транзакций: {result['published_rows']}; "
                     f"уже были сохранены: {result['already_published_rows']}; "
-                    f"pending осталось в staging: {result['pending_rows']}."
+                    f"pending осталось в staging: {result['pending_rows']}; "
+                    f"требуют внимания: {result['invalid_rows']}."
                 )
-            return remaining_rows, message, "success"
+            return remaining_rows, message, "warning" if result["invalid_rows"] else "success"
         except Exception as exc:
             return no_update, report_text(str(exc), locale), "danger"
+
+    @app.callback(
+        Output("kaspi-import-grid", "rowData", allow_duplicate=True),
+        Output("kaspi-import-grid", "selectedRows"),
+        Output("kaspi-import-message", "children", allow_duplicate=True),
+        Output("kaspi-import-message", "color", allow_duplicate=True),
+        Output("transaction-paste-modal", "is_open"),
+        Output("transaction-paste-text", "value"),
+        Input("transaction-grid-add-button", "n_clicks", allow_optional=True),
+        Input("transaction-grid-copy-button", "n_clicks", allow_optional=True),
+        Input("transaction-grid-paste-button", "n_clicks", allow_optional=True),
+        Input("transaction-paste-apply-button", "n_clicks", allow_optional=True),
+        Input("transaction-paste-cancel-button", "n_clicks", allow_optional=True),
+        State("kaspi-import-grid", "rowData", allow_optional=True),
+        State("kaspi-import-grid", "selectedRows", allow_optional=True),
+        State("transaction-paste-text", "value", allow_optional=True),
+        State("dashboard-locale", "data"),
+        prevent_initial_call=True,
+    )
+    def edit_transaction_input_grid(
+        add_clicks,
+        copy_clicks,
+        paste_clicks,
+        paste_apply_clicks,
+        paste_cancel_clicks,
+        rows,
+        selected_rows,
+        paste_text,
+        locale,
+    ):
+        del add_clicks, copy_clicks, paste_clicks, paste_apply_clicks, paste_cancel_clicks
+        trigger = ctx.triggered_id
+        if trigger == "transaction-grid-paste-button":
+            return no_update, no_update, no_update, no_update, True, no_update
+        if trigger == "transaction-paste-cancel-button":
+            return no_update, no_update, no_update, no_update, False, ""
+        if trigger == "transaction-grid-add-button":
+            updated = [*(rows or []), new_manual_grid_row()]
+            message = (
+                "Empty row added. Fill in the date, signed amount, currency, and category."
+                if normalize_locale(locale) == "en"
+                else "Добавлена пустая строка. Заполни дату, сумму со знаком, валюту и категорию."
+            )
+            return updated, [], message, "secondary", False, no_update
+        if trigger == "transaction-grid-copy-button":
+            if not selected_rows:
+                message = (
+                    "Select one row to copy."
+                    if normalize_locale(locale) == "en" else "Выбери одну строку для копирования."
+                )
+                return no_update, no_update, message, "warning", False, no_update
+            updated = [*(rows or []), new_manual_grid_row(selected_rows[0])]
+            message = (
+                "A copy with a new identity was added."
+                if normalize_locale(locale) == "en"
+                else "Добавлена копия с новым идентификатором."
+            )
+            return updated, [], message, "secondary", False, no_update
+        if trigger == "transaction-paste-apply-button":
+            try:
+                pasted_rows = parse_manual_grid_rows(paste_text or "")
+            except ValueError as exc:
+                return no_update, no_update, report_text(str(exc), locale), "danger", True, no_update
+            updated = [*(rows or []), *pasted_rows]
+            message = (
+                f"Added rows: {len(pasted_rows)}. Review them before saving."
+                if normalize_locale(locale) == "en"
+                else f"Добавлено строк: {len(pasted_rows)}. Проверь их перед сохранением."
+            )
+            return updated, [], message, "secondary", False, ""
+        raise PreventUpdate
 
     @app.callback(
         Output("transaction-input-message", "children"),
@@ -1504,7 +1575,7 @@ def register_callbacks(app: Dash) -> None:
                 cleared_create_name,
                 options,
                 selected_value,
-                _localized_input_column_defs(_kaspi_import_column_defs(), locale),
+                _localized_input_column_defs(_kaspi_import_column_defs(locale), locale),
             )
         except Exception as exc:
             return (
@@ -2159,7 +2230,16 @@ def _main_first_run_state(currency: str, year: str, month: str, locale: str = DE
                 [
                     html.Li(report_text("Откройте раздел «Ввод данных».", locale)),
                     html.Li(report_text("Загрузите банковскую выписку или добавьте операцию вручную.", locale)),
-                    html.Li(report_text("Проверьте Preview и нажмите «Сохранить месяц».", locale)),
+                    html.Li(
+                        report_text(
+                            (
+                                "Проверьте строки и нажмите «Сохранить транзакции»."
+                                if config.use_sqlite_storage()
+                                else "Проверьте Preview и нажмите «Сохранить месяц»."
+                            ),
+                            locale,
+                        )
+                    ),
                 ],
                 className="finrep-first-run-steps",
             ),
@@ -2525,7 +2605,14 @@ def _month_empty_state(dataset: DashboardDataset, locale: str = DEFAULT_LOCALE):
             html.Div(report_text("Месяц не сохранён", locale), className="finrep-first-run-kicker"),
             html.H2(f"No data for {year}-{month}" if normalize_locale(locale) == "en" else f"Нет данных за {year}-{month}", className="h3 mb-2"),
             html.P(
-                report_text("Выбранный месяц ещё не создан. Добавьте или импортируйте операции, проверьте Preview и сохраните месяц.", locale),
+                report_text(
+                    (
+                        "За выбранный месяц ещё нет операций. Добавьте или импортируйте строки, проверьте их и сохраните транзакции."
+                        if config.use_sqlite_storage()
+                        else "Выбранный месяц ещё не создан. Добавьте или импортируйте операции, проверьте Preview и сохраните месяц."
+                    ),
+                    locale,
+                ),
                 className="finrep-first-run-intro",
             ),
             dcc.Link(
@@ -2786,11 +2873,30 @@ def _transaction_input_layout(
                     ),
                     dbc.Alert(id="transaction-input-message", children="", color="secondary", is_open=True, className="mt-3 mb-0 py-2"),
                 ],
-                style=_section_style(theme),
+                style={
+                    **_section_style(theme),
+                    **({"display": "none"} if sqlite_storage else {}),
+                },
             ),
             html.Section(
                 [
-                    html.H2(report_text("Импорт банковского PDF", locale), className="h5 mb-3"),
+                    html.H2(
+                        report_text(
+                            "Новые транзакции" if sqlite_storage else "Импорт банковского PDF",
+                            locale,
+                        ),
+                        className="h5 mb-2",
+                    ),
+                    *(
+                        [html.P(
+                            report_text(
+                                "Добавляй строки вручную, копируй существующие, вставляй таблицу или загружай банковский PDF.",
+                                locale,
+                            ),
+                            className="small opacity-75 mb-3",
+                        )]
+                        if sqlite_storage else []
+                    ),
                     dcc.Upload(
                         id="kaspi-upload",
                         children=html.Div(
@@ -2817,12 +2923,32 @@ def _transaction_input_layout(
                             **_section_style(theme),
                         },
                     ),
-                    dbc.Alert(id="kaspi-import-message", children=report_text("Операции из PDF появятся здесь. Дубли среди черновиков и сохранённых операций будут пропущены.", locale), color="secondary", is_open=True, className="my-3 py-2"),
+                    dbc.Alert(
+                        id="kaspi-import-message",
+                        children=report_text(
+                            (
+                                "Добавь, вставь или загрузи операции. Готовые строки будут сохранены в SQLite; ошибки останутся в таблице."
+                                if sqlite_storage else
+                                "Операции из PDF появятся здесь. Дубли среди черновиков и сохранённых операций будут пропущены."
+                            ),
+                            locale,
+                        ),
+                        color="secondary",
+                        is_open=True,
+                        className="my-3 py-2",
+                    ),
                     html.Div(
                         [
-                            html.Div(
-                                report_text("Категории: клик — одна ячейка, Shift+клик — диапазон, Ctrl/Cmd+клик — несколько; Ctrl/Cmd+C и Ctrl/Cmd+V — копировать и вставить.", locale),
-                                className="small opacity-75",
+                            *(
+                                [html.Div(
+                                    [
+                                        dbc.Button(report_text("Добавить строку", locale), id="transaction-grid-add-button", color="secondary", outline=True, size="sm", disabled=read_only),
+                                        dbc.Button(report_text("Копировать строку", locale), id="transaction-grid-copy-button", color="secondary", outline=True, size="sm", disabled=read_only),
+                                        dbc.Button(report_text("Вставить строки", locale), id="transaction-grid-paste-button", color="secondary", outline=True, size="sm", disabled=read_only),
+                                    ],
+                                    className="d-flex flex-wrap gap-2",
+                                )]
+                                if sqlite_storage else []
                             ),
                             *(
                                 [dbc.Button(
@@ -2838,21 +2964,67 @@ def _transaction_input_layout(
                         className="d-flex flex-wrap align-items-center justify-content-between gap-2 mb-2",
                     ),
                     html.Div(
+                        report_text("Категории: клик — одна ячейка, Shift+клик — диапазон, Ctrl/Cmd+клик — несколько; Ctrl/Cmd+C и Ctrl/Cmd+V — копировать и вставить.", locale),
+                        className="small opacity-75 mb-2",
+                    ),
+                    html.Div(
                         dag.AgGrid(
                             id="kaspi-import-grid",
                             rowData=[],
-                            columnDefs=_localized_input_column_defs(_kaspi_import_column_defs(), locale),
+                            selectedRows=[],
+                            columnDefs=_localized_input_column_defs(_kaspi_import_column_defs(locale), locale),
                             defaultColDef=_ag_grid_default_col_def(editable=False),
-                            dashGridOptions={"pagination": False, "suppressFieldDotNotation": True, "stopEditingWhenCellsLoseFocus": True},
+                            dashGridOptions={
+                                "pagination": False,
+                                "suppressFieldDotNotation": True,
+                                "stopEditingWhenCellsLoseFocus": True,
+                                **({"rowSelection": "single"} if sqlite_storage else {}),
+                            },
                             eventListeners={
                                 "cellClicked": ["finrepCategoryCellClicked(params)"],
-                                "cellValueChanged": ["finrepCategoryCellChanged(params)"],
+                                "cellValueChanged": [
+                                    "finrepInputCellChanged(params)",
+                                    "finrepCategoryCellChanged(params)",
+                                ],
                                 "rowDataUpdated": ["finrepCategorySelectionReset(params)"],
                             },
                             className=f"{_ag_grid_class_name(theme)} finrep-import-grid",
                             style=_ag_grid_style("420px"),
                         ),
                         className="finrep-import-grid-shell",
+                    ),
+                    dbc.Modal(
+                        [
+                            dbc.ModalHeader(dbc.ModalTitle(report_text("Вставить транзакции", locale))),
+                            dbc.ModalBody(
+                                [
+                                    html.P(
+                                        report_text(
+                                            "Вставь строки из Excel в формате: Дата, Сумма, Валюта, Категория, Комментарий. Заголовок необязателен.",
+                                            locale,
+                                        ),
+                                        className="small",
+                                    ),
+                                    dcc.Textarea(
+                                        id="transaction-paste-text",
+                                        value="",
+                                        className="form-control finrep-native-input",
+                                        style={"width": "100%", "minHeight": "220px", **_form_control_style(theme)},
+                                    ),
+                                ]
+                            ),
+                            dbc.ModalFooter(
+                                [
+                                    dbc.Button(report_text("Отмена", locale), id="transaction-paste-cancel-button", color="secondary", outline=True),
+                                    dbc.Button(report_text("Добавить строки", locale), id="transaction-paste-apply-button", color="primary"),
+                                ],
+                                className="gap-2",
+                            ),
+                        ],
+                        id="transaction-paste-modal",
+                        is_open=False,
+                        centered=True,
+                        size="lg",
                     ),
                     *(
                         [
@@ -3510,6 +3682,19 @@ def _dataframe_records(data: pd.DataFrame) -> list[dict]:
     return data.fillna("0").to_dict("records")
 
 
+def _merge_input_grid_rows(existing_rows: list[dict] | None, new_rows: list[dict]) -> list[dict]:
+    merged = [dict(row) for row in (existing_rows or [])]
+    existing_keys = {
+        (str(row.get("source", "")), str(row.get("source_id", ""))) for row in merged
+    }
+    for row in new_rows:
+        key = (str(row.get("source", "")), str(row.get("source_id", "")))
+        if key not in existing_keys:
+            merged.append(dict(row))
+            existing_keys.add(key)
+    return merged
+
+
 def _simple_column_defs(data: pd.DataFrame) -> list[dict]:
     if data.empty:
         return []
@@ -3982,7 +4167,7 @@ def _format_input_amount(value) -> str:
     return f"{sign}{grouped_integer}{separator}{fraction}"
 
 
-def _kaspi_import_column_defs() -> list[dict]:
+def _kaspi_import_column_defs(locale: str = DEFAULT_LOCALE) -> list[dict]:
     if config.use_sqlite_storage():
         from src.data.sqlite_store import categories as category_registry
 
@@ -4017,7 +4202,22 @@ def _kaspi_import_column_defs() -> list[dict]:
         "kaspi-category-communication": "params.value == 'Связь'",
         "kaspi-category-other": "params.value == 'Прочее'",
     }
+    manual_source_label = "Manual" if normalize_locale(locale) == "en" else "Вручную"
     return [
+        {
+            "field": "source",
+            "headerName": "Источник",
+            "checkboxSelection": True,
+            "width": 145,
+            "valueFormatter": {
+                "function": (
+                    f"params.value == 'manual_grid' ? '{manual_source_label}' : "
+                    "(params.value == 'kaspi_pdf' ? 'Kaspi PDF' : "
+                    "(params.value == 'bcc_pdf' ? 'BCC PDF' : "
+                    "(params.value == 'ozon_pdf' ? 'Ozon PDF' : params.value)))"
+                )
+            },
+        },
         {
             "field": "category",
             "headerName": "Категория",
@@ -4032,11 +4232,17 @@ def _kaspi_import_column_defs() -> list[dict]:
             "width": 190,
             "cellClassRules": category_class_rules,
         },
-        {"field": "date", "headerName": "Дата", "width": 120},
+        {
+            "field": "date",
+            "headerName": "Дата",
+            "width": 130,
+            "editable": {"function": "params.data.source == 'manual_grid'"},
+        },
         {
             "field": "amount",
             "headerName": "Сумма",
             "width": 120,
+            "editable": {"function": "params.data.source == 'manual_grid'"},
             "valueFormatter": {
                 "function": (
                     "params.data.direction == 'credit' ? '+ ' + params.value : "
@@ -4045,16 +4251,29 @@ def _kaspi_import_column_defs() -> list[dict]:
             },
         },
         {"field": "import_action", "headerName": "Действие", "editable": True, "cellEditor": "agSelectCellEditor", "cellEditorParams": {"values": ["import", "skip"]}, "width": 120, "cellClassRules": {"text-warning": "params.value == 'review'"}},
-        {"field": "currency", "headerName": "Валюта", "width": 100},
+        {
+            "field": "currency",
+            "headerName": "Валюта",
+            "width": 110,
+            "editable": {"function": "params.data.source == 'manual_grid'"},
+            "cellEditor": "agSelectCellEditor",
+            "cellEditorParams": {"values": list(config.UNIQUE_TICKERS)},
+        },
         {"field": "direction", "headerName": "Направление", "hide": True},
         {"field": "bank_status", "headerName": "Статус банка", "hide": True},
         {"field": "comment", "headerName": "Комментарий", "editable": True, "flex": 1, "minWidth": 220},
+        {
+            "field": "validation_error",
+            "headerName": "Проверка",
+            "flex": 1,
+            "minWidth": 240,
+            "cellClassRules": {"text-danger": "Boolean(params.value)"},
+        },
         {"field": "skip_reason", "headerName": "Причина skip", "width": 170},
         {"field": "duplicate_in_source", "headerName": "Дубль в CSV", "width": 130},
         {"field": "duplicate_in_staging", "headerName": "Дубль в staging", "width": 150},
         {"field": "details", "headerName": "Детали PDF", "flex": 1, "minWidth": 240},
         {"field": "source_id", "headerName": "ID", "hide": True},
-        {"field": "source", "headerName": "Источник", "hide": True},
         {"field": "status", "headerName": "Статус", "hide": True},
         {"field": "bank_reference", "headerName": "Reference", "hide": True},
         {"field": "bank_account_id", "headerName": "Счёт банка", "hide": True},

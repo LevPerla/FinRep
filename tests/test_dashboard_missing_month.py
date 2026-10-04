@@ -1,10 +1,13 @@
 import os
 
+import pandas as pd
+
 os.environ.setdefault("FINREP_DASH_PASSWORD", "test-password")
 os.environ.setdefault("FINREP_DASH_SECRET_KEY", "test-session-secret")
 
 from src import config
 from src.dashboard.app import _month_report_layout
+from src.dashboard.main_data import DashboardDataset
 from src.dashboard.month_data import build_month_dashboard_data
 from src.data.staging import monthly_transaction_csv_path
 
@@ -36,3 +39,21 @@ def test_missing_month_report_is_read_only_and_has_input_route(tmp_path, monkeyp
     action = _find_component(layout, "month-empty-input-link")
     assert action.href == "?currency=RUB&year=2026&month=09&tab=input"
 
+
+def test_missing_month_report_uses_direct_save_instruction_in_sqlite(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(config, "DATA_PATH", str(tmp_path))
+    monkeypatch.setenv("FINREP_STORAGE_BACKEND", "sqlite")
+    dataset = DashboardDataset(
+        id="month_empty",
+        title="Месяц не сохранён",
+        dataframe=pd.DataFrame([
+            {"Год": "2026", "Месяц": "09", "Валюта": "RUB"}
+        ]),
+    )
+
+    layout = _month_report_layout({"month_empty": dataset}, theme="dark")
+
+    assert "сохраните транзакции" in str(layout)
+    assert "Preview" not in str(layout)

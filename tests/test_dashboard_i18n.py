@@ -292,7 +292,10 @@ def test_data_entry_grid_translation_changes_headers_only():
     localized_assets = _localized_input_column_defs(raw_assets, "en")
 
     assert [column["field"] for column in localized_import] == [column["field"] for column in raw_import]
-    assert localized_import[0]["cellEditorParams"] == raw_import[0]["cellEditorParams"]
+    localized_category = next(
+        column for column in localized_import if column["field"] == "category")
+    raw_category = next(column for column in raw_import if column["field"] == "category")
+    assert localized_category["cellEditorParams"] == raw_category["cellEditorParams"]
     assert [column["field"] for column in localized_assets] == [column["field"] for column in raw_assets]
     localized_currency = next(
         column for column in localized_assets if column["field"] == "currency")

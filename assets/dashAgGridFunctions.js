@@ -13,9 +13,16 @@ function finrepRefreshCategoryCells(api) {
 
 function finrepCategoriesForRow(params) {
   var categoryContext = params.colDef?.context || {};
-  var directional = params.data?.direction === "credit"
+  var direction = params.data?.direction;
+  var directional = direction === "credit"
     ? (categoryContext.incomeCategories || [])
-    : (categoryContext.expenseCategories || []);
+    : direction === "debit"
+      ? (categoryContext.expenseCategories || [])
+      : (categoryContext.incomeCategories || []).concat(
+          categoryContext.expenseCategories || []
+        ).filter(function (category, index, categories) {
+          return categories.indexOf(category) === index;
+        });
   var neutral = categoryContext.neutralCategories || [];
   return directional.concat(neutral.filter(function (category) {
     return !directional.includes(category);
@@ -63,6 +70,36 @@ dagfuncs.finrepCategoryCellChanged = function (params) {
     columns: ["category", "import_action", "skip_reason"],
     force: true
   });
+};
+
+dagfuncs.finrepInputCellChanged = function (params) {
+  if (!params.column || !params.node || !params.data) {
+    return;
+  }
+  var columnId = params.column.getColId();
+  if (["date", "category", "amount", "currency", "comment", "import_action"].includes(columnId)
+      && params.data.validation_error) {
+    params.node.setDataValue("validation_error", "");
+  }
+  if (columnId !== "amount" || params.data.source !== "manual_grid") {
+    return;
+  }
+  var raw = String(params.newValue ?? "").replace(/\s/g, "").replace(",", ".");
+  var amount = Number(raw);
+  if (!Number.isFinite(amount) || amount === 0) {
+    if (params.data.direction) {
+      params.node.setDataValue("direction", "");
+    }
+    return;
+  }
+  var direction = amount > 0 ? "credit" : "debit";
+  if (params.data.direction !== direction) {
+    params.node.setDataValue("direction", direction);
+  }
+  if (Number(params.data.amount) !== Math.abs(amount)) {
+    params.node.setDataValue("amount", Math.abs(amount));
+  }
+  params.api.refreshCells({rowNodes: [params.node], columns: ["amount", "category"], force: true});
 };
 
 dagfuncs.finrepCategorySelectionReset = function (params) {
