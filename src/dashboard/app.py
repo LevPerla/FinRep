@@ -2763,8 +2763,23 @@ def _transaction_input_layout(
                     ),
                     dbc.Alert(id="kaspi-import-message", children=report_text("Операции из PDF появятся здесь. Дубли среди черновиков и сохранённых операций будут пропущены.", locale), color="secondary", is_open=True, className="my-3 py-2"),
                     html.Div(
-                        report_text("Категории: клик — одна ячейка, Shift+клик — диапазон, Ctrl/Cmd+клик — несколько; Ctrl/Cmd+C и Ctrl/Cmd+V — копировать и вставить.", locale),
-                        className="small opacity-75 mb-2",
+                        [
+                            html.Div(
+                                report_text("Категории: клик — одна ячейка, Shift+клик — диапазон, Ctrl/Cmd+клик — несколько; Ctrl/Cmd+C и Ctrl/Cmd+V — копировать и вставить.", locale),
+                                className="small opacity-75",
+                            ),
+                            *(
+                                [dbc.Button(
+                                    report_text("Сохранить транзакции", locale),
+                                    id="transaction-save-import-button",
+                                    color="primary",
+                                    className="ms-auto flex-shrink-0",
+                                    disabled=read_only,
+                                )]
+                                if sqlite_storage else []
+                            ),
+                        ],
+                        className="d-flex flex-wrap align-items-center justify-content-between gap-2 mb-2",
                     ),
                     html.Div(
                         dag.AgGrid(
@@ -2784,13 +2799,6 @@ def _transaction_input_layout(
                     ),
                     *(
                         [
-                            dbc.Button(
-                                report_text("Сохранить транзакции", locale),
-                                id="transaction-save-import-button",
-                                color="primary",
-                                className="mt-3",
-                                disabled=read_only,
-                            ),
                             dcc.Dropdown(
                                 id="transaction-import-period",
                                 options=[],

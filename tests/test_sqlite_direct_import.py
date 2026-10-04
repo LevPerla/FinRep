@@ -91,6 +91,7 @@ def test_sqlite_input_layout_replaces_month_preview_with_direct_save(
     }
 
     assert components["transaction-save-import-button"].children == "Сохранить транзакции"
+    assert "ms-auto" in components["transaction-save-import-button"].className
     assert "transaction-confirm-export-button" not in components
     assert "transaction-export-preview-grid" not in components
 
