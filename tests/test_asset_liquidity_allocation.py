@@ -5,7 +5,6 @@ from src.data.sqlite_store import (
     add_asset_account,
     add_asset_snapshot,
     initialize_database,
-    set_asset_account_classification,
 )
 
 
@@ -14,7 +13,7 @@ def test_asset_liquidity_allocation_uses_effective_class_and_keeps_unassigned(tm
     initialize_database(database)
     accounts = [
         ("cash", "Счёт", "cash_account", "100"),
-        ("manual", "Портфель", "equity", "100"),
+        ("equity", "Портфель", "equity", "100"),
         ("property", "Квартира", "real_estate", "200"),
         ("unknown", "Другое", "other", "100"),
     ]
@@ -23,17 +22,13 @@ def test_asset_liquidity_allocation_uses_effective_class_and_keeps_unassigned(tm
         add_asset_snapshot(
             database, snapshot_id=f"snapshot-{account_id}", account_id=account_id,
             period="2026-09", amount=amount, currency="RUB")
-    set_asset_account_classification(
-        database, "manual", asset_type_id="equity", include_in_capital=True,
-        liquidity_class_override_id="A2", reason="Срок продажи определён вручную")
-
     result = _asset_liquidity_allocation_data_cached(str(database), "RUB")
 
-    assert list(result.columns) == ["Дата", "A1", "A2", "A4", "Не задана"]
+    assert list(result.columns) == ["Дата", "A1", "A2", "A3", "A4"]
     assert result.iloc[0]["A1"] == pytest.approx(20.0)
     assert result.iloc[0]["A2"] == pytest.approx(20.0)
     assert result.iloc[0]["A4"] == pytest.approx(40.0)
-    assert result.iloc[0]["Не задана"] == pytest.approx(20.0)
+    assert result.iloc[0]["A3"] == pytest.approx(20.0)
 
 
 def test_asset_liquidity_allocation_excludes_assets_outside_capital(tmp_path):

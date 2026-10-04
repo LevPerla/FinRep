@@ -15,10 +15,11 @@ from src import config
 from src.data.money import parse_money_amount
 
 
-SCHEMA_VERSION = 12
+SCHEMA_VERSION = 13
 _DIRECTIONS = {"income", "expense"}
 _DATASETS = {"cash_transactions", "asset_snapshots"}
 _ASSET_TYPES = (
+    ("cash", "Наличные", "Cash", 5),
     ("cash_account", "Расчётный счёт", "Cash account", 10),
     ("deposit", "Депозит", "Deposit", 20),
     ("bond", "Облигации", "Bonds", 30),
@@ -35,9 +36,15 @@ _LIQUIDITY_CLASSES = (
     ("A4", "Труднореализуемые активы", "Hard-to-realize assets", "Обычно не менее 12 месяцев", "Usually at least 12 months", 40),
 )
 _ASSET_TYPE_LIQUIDITY_DEFAULTS = (
+    ("cash", "A1"),
     ("cash_account", "A1"),
     ("deposit", "A1"),
+    ("bond", "A2"),
+    ("equity", "A2"),
+    ("fund", "A2"),
+    ("crypto", "A2"),
     ("real_estate", "A4"),
+    ("other", "A3"),
 )
 _CPI_SERIES = (
     ("RUB", "RU", "world_bank_gem", "CPTOTNSXN", "World Bank Global Economic Monitor",
@@ -673,6 +680,33 @@ def _migrate_v11_to_v12(connection: sqlite3.Connection) -> None:
     connection.execute("PRAGMA user_version = 12")
 
 
+def _migrate_v12_to_v13(connection: sqlite3.Connection) -> None:
+    now = _utc_now()
+    connection.executemany(
+        """INSERT INTO asset_types (id, name_ru, name_en, sort_order)
+          VALUES (?, ?, ?, ?)
+          ON CONFLICT(id) DO UPDATE SET name_ru = excluded.name_ru,
+            name_en = excluded.name_en, active = 1, sort_order = excluded.sort_order""",
+        _ASSET_TYPES,
+    )
+    connection.executemany(
+        """INSERT INTO asset_type_liquidity_defaults
+          (asset_type_id, liquidity_class_id) VALUES (?, ?)
+          ON CONFLICT(asset_type_id) DO UPDATE
+          SET liquidity_class_id = excluded.liquidity_class_id""",
+        _ASSET_TYPE_LIQUIDITY_DEFAULTS,
+    )
+    connection.execute(
+        "UPDATE asset_accounts SET liquidity_class_override_id = NULL "
+        "WHERE liquidity_class_override_id IS NOT NULL"
+    )
+    connection.execute(
+        "INSERT INTO schema_migrations VALUES (?, ?, ?, ?)",
+        (13, "asset_liquidity_by_type", _schema_checksum(), now),
+    )
+    connection.execute("PRAGMA user_version = 13")
+
+
 @contextmanager
 def connect_database(path: str | Path, *, writable: bool = False):
     database_path = Path(path).resolve()
@@ -717,24 +751,32 @@ def initialize_database(path: str | Path, *, data_mode: str = "synthetic") -> No
             _migrate_v9_to_v10(connection)
             _migrate_v10_to_v11(connection)
             _migrate_v11_to_v12(connection)
+            _migrate_v12_to_v13(connection)
             return
         if version == 8:
             _migrate_v8_to_v9(connection)
             _migrate_v9_to_v10(connection)
             _migrate_v10_to_v11(connection)
             _migrate_v11_to_v12(connection)
+            _migrate_v12_to_v13(connection)
             return
         if version == 9:
             _migrate_v9_to_v10(connection)
             _migrate_v10_to_v11(connection)
             _migrate_v11_to_v12(connection)
+            _migrate_v12_to_v13(connection)
             return
         if version == 10:
             _migrate_v10_to_v11(connection)
             _migrate_v11_to_v12(connection)
+            _migrate_v12_to_v13(connection)
             return
         if version == 11:
             _migrate_v11_to_v12(connection)
+            _migrate_v12_to_v13(connection)
+            return
+        if version == 12:
+            _migrate_v12_to_v13(connection)
             return
         has_tables = connection.execute(
             "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' LIMIT 1"
@@ -1737,6 +1779,8 @@ def set_asset_account_classifications(path: str | Path, rows: list[dict], *,
             raise ValueError("asset account classification contains a duplicate account")
         if not isinstance(include_in_capital, bool):
             raise ValueError("include_in_capital must be boolean")
+        if liquidity_override is not None:
+            raise ValueError("liquidity is determined by asset type")
         seen.add(account_id)
         normalized.append((account_id, asset_type_id, liquidity_override, include_in_capital))
 

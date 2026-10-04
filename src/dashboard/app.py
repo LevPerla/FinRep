@@ -87,7 +87,6 @@ DEFAULT_YEAR = datetime.now().strftime("%Y")
 DEFAULT_MONTH = datetime.now().strftime("%m")
 DEFAULT_FX_NETWORK_ENABLED = False
 UNCLASSIFIED_ASSET_TYPE_VALUE = "__unclassified__"
-AUTOMATIC_LIQUIDITY_VALUE = "__automatic__"
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 ASSETS_FOLDER = PROJECT_ROOT / "assets"
 logger = logging.getLogger(__name__)
@@ -1896,10 +1895,6 @@ def register_callbacks(app: Dash) -> None:
                             None if row.get("asset_type_id") == UNCLASSIFIED_ASSET_TYPE_VALUE
                             else row.get("asset_type_id") or None
                         ),
-                        "liquidity_class_override_id": (
-                            None if row.get("liquidity_choice") == AUTOMATIC_LIQUIDITY_VALUE
-                            else row.get("liquidity_choice") or None
-                        ),
                         "include_in_capital": row.get("Включать в капитал"),
                     }
                     for row in (rows or [])
@@ -3290,14 +3285,13 @@ def _asset_classification_rows(locale: str = DEFAULT_LOCALE) -> list[dict]:
     from src.data.sqlite_store import asset_accounts
 
     freshness = evaluate_asset_freshness(asset_accounts(config.active_database_path()))
+    accounts = sorted(freshness["accounts"], key=lambda row: row["name"].casefold())
+    accounts.sort(key=lambda row: row["last_period"] or "", reverse=True)
     return [
         {
             "account_id": row["id"],
             "Счет": row["name"],
             "asset_type_id": row["asset_type_id"] or UNCLASSIFIED_ASSET_TYPE_VALUE,
-            "liquidity_choice": (
-                row["liquidity_class_override_id"] or AUTOMATIC_LIQUIDITY_VALUE
-            ),
             "liquidity_class_id": row["liquidity_class_id"] or "",
             "liquidity_source": row["liquidity_source"],
             "Включать в капитал": bool(row["include_in_capital"]),
@@ -3308,7 +3302,7 @@ def _asset_classification_rows(locale: str = DEFAULT_LOCALE) -> list[dict]:
             "Первый снимок": row["first_period"] or "",
             "Последний снимок": row["last_period"] or "",
         }
-        for row in freshness["accounts"]
+        for row in accounts
     ]
 
 
@@ -3353,13 +3347,11 @@ def _asset_classification_status(rows: list[dict], locale: str = DEFAULT_LOCALE)
 def _asset_classification_column_defs(
         locale: str = DEFAULT_LOCALE, *, editable: bool = True) -> list[dict]:
     if config.use_sqlite_storage():
-        from src.data.sqlite_store import asset_types, liquidity_classes
+        from src.data.sqlite_store import asset_types
 
         types = asset_types(config.active_database_path())
-        liquidity = liquidity_classes(config.active_database_path())
     else:
         types = []
-        liquidity = []
     type_labels = {
         UNCLASSIFIED_ASSET_TYPE_VALUE: report_text("Не классифицировано", locale),
         **{
@@ -3367,18 +3359,14 @@ def _asset_classification_column_defs(
             for row in types
         },
     }
-    liquidity_ids = [row["id"] for row in liquidity]
     unassigned_label = report_text("Не задана", locale)
-    suggested_label = report_text("предложено", locale)
-    manual_label = report_text("вручную", locale)
+    by_type_label = report_text("по типу", locale)
     liquidity_formatter = (
-        "params.value === '" + AUTOMATIC_LIQUIDITY_VALUE + "' "
-        f"? (params.data.liquidity_class_id ? params.data.liquidity_class_id + ' · {suggested_label}' "
-        f": '{unassigned_label}') : params.value + ' · {manual_label}'"
+        f"params.value ? params.value + ' · {by_type_label}' : '{unassigned_label}'"
     )
     columns = [
         {"field": "account_id", "hide": True},
-        {"field": "Счет", "headerName": "Счет", "flex": 1, "minWidth": 90,
+        {"field": "Счет", "headerName": "Счет", "flex": 2, "minWidth": 220,
          "tooltipField": "Счет"},
         {
             "field": "asset_type_id",
@@ -3389,22 +3377,17 @@ def _asset_classification_column_defs(
             "valueFormatter": {
                 "function": f"({json.dumps(type_labels, ensure_ascii=False)})[params.value] || params.value"
             },
-            "width": 95,
-            "minWidth": 90,
+            "flex": 1.2,
+            "minWidth": 190,
         },
         {
-            "field": "liquidity_choice",
+            "field": "liquidity_class_id",
             "headerName": "Ликвидность",
-            "editable": editable,
-            "cellEditor": "agSelectCellEditor",
-            "cellEditorParams": {
-                "values": [AUTOMATIC_LIQUIDITY_VALUE, *liquidity_ids],
-            },
+            "editable": False,
             "valueFormatter": {"function": liquidity_formatter},
-            "width": 112,
-            "minWidth": 105,
+            "flex": 0.8,
+            "minWidth": 150,
         },
-        {"field": "liquidity_class_id", "hide": True},
         {"field": "liquidity_source", "hide": True},
         {
             "field": "Включать в капитал",
@@ -3412,20 +3395,21 @@ def _asset_classification_column_defs(
             "editable": editable,
             "cellRenderer": "agCheckboxCellRenderer",
             "cellEditor": "agCheckboxCellEditor",
-            "width": 64,
-            "minWidth": 60,
+            "width": 105,
+            "minWidth": 105,
         },
         {
             "field": "Актуальность",
             "headerName": "Актуальность",
             "editable": False,
-            "width": 210,
-            "minWidth": 180,
+            "flex": 1.15,
+            "minWidth": 220,
         },
         {"field": "freshness_status", "hide": True},
-        {"field": "Снимков", "headerName": "Снимков", "width": 110},
-        {"field": "Первый снимок", "headerName": "Первый снимок", "width": 140},
-        {"field": "Последний снимок", "headerName": "Последний снимок", "width": 150},
+        {"field": "Снимков", "headerName": "Снимков", "width": 105},
+        {"field": "Первый снимок", "headerName": "Первый снимок", "width": 150},
+        {"field": "Последний снимок", "headerName": "Последний снимок", "width": 160,
+         "sort": "desc", "sortIndex": 0},
     ]
     return _localized_input_column_defs(columns, locale)
 
@@ -3818,9 +3802,9 @@ def _debt_transaction_draft_column_defs() -> list[dict]:
 def _asset_input_column_defs() -> list[dict]:
     currencies = list(config.UNIQUE_TICKERS)
     return [
-        {"field": "account", "headerName": "Счет", "editable": True, "flex": 1, "minWidth": 132},
-        {"field": "amount", "headerName": "Сумма", "editable": True, "width": 125, "minWidth": 112},
-        {"field": "currency", "headerName": "Валюта", "editable": True, "cellEditor": "agSelectCellEditor", "cellEditorParams": {"values": currencies}, "width": 78, "minWidth": 72},
+        {"field": "account", "headerName": "Счет", "editable": True, "flex": 2, "minWidth": 220},
+        {"field": "amount", "headerName": "Сумма", "editable": True, "flex": 1, "minWidth": 160},
+        {"field": "currency", "headerName": "Валюта", "editable": True, "cellEditor": "agSelectCellEditor", "cellEditorParams": {"values": currencies}, "flex": 0.7, "minWidth": 120},
         {"field": "amount_sort", "hide": True, "sort": "desc", "sortIndex": 0},
     ]
 
