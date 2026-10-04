@@ -271,6 +271,34 @@ def test_empty_input_grid_save_is_rejected(tmp_path, monkeypatch):
         common.save_input_grid_to_transactions([])
 
 
+def test_manual_grid_requires_key_financial_fields(tmp_path, monkeypatch):
+    _configure_sqlite(tmp_path, monkeypatch)
+    row = common.new_manual_grid_row()
+
+    error = common.validate_input_grid_row(row)
+
+    assert "укажи дату YYYY-MM-DD" in error
+    assert "выбери категорию" in error
+    assert "выбери поддерживаемую валюту" in error
+    assert "укажи корректную сумму" in error
+    assert "знак суммы не определён" in error
+
+
+def test_manual_grid_rejects_category_that_conflicts_with_amount_sign(
+    tmp_path, monkeypatch
+):
+    _configure_sqlite(tmp_path, monkeypatch)
+    row = common.new_manual_grid_row()
+    row.update({
+        "date": "2026-10-07", "category": "Пища", "currency": "RUB",
+        "amount": "400", "direction": "credit",
+    })
+
+    assert common.validate_input_grid_row(row) == (
+        "категория не соответствует знаку суммы"
+    )
+
+
 def test_manual_grid_save_derives_expense_direction_from_negative_amount(
         tmp_path, monkeypatch):
     database = _configure_sqlite(tmp_path, monkeypatch)
@@ -307,6 +335,7 @@ def test_sqlite_input_layout_replaces_month_preview_with_direct_save(
     assert components["transaction-grid-delete-button"].children == "Удалить строку"
     assert components["transaction-grid-paste-button"].children == "Вставить строки"
     assert components["transaction-paste-modal"].is_open is False
+    assert components["kaspi-import-grid"].dashGridOptions["rowSelection"] == "multiple"
     assert layout.children[0].style["display"] == "none"
     assert "transaction-confirm-export-button" not in components
     assert "transaction-export-preview-grid" not in components
@@ -429,19 +458,35 @@ def test_unified_grid_callback_adds_and_copies_rows(tmp_path, monkeypatch):
         "date": "2026-10-08", "category": "Прочее", "currency": "RUB",
         "amount": "50", "direction": "debit",
     })
-    copied = invoke("transaction-grid-copy-button", [source], selected=[source])
+    second_source = common.new_manual_grid_row()
+    second_source.update({
+        "date": "2026-10-09", "category": "Проценты", "currency": "RUB",
+        "amount": "75", "direction": "credit",
+    })
+    copied = invoke(
+        "transaction-grid-copy-button",
+        [source, second_source],
+        selected=[source, second_source],
+    )
     copied_rows = copied["kaspi-import-grid"]["rowData"]
-    assert len(copied_rows) == 2
-    assert copied_rows[1]["source_id"] != source["source_id"]
-    assert copied_rows[1]["amount"] == "50"
+    assert len(copied_rows) == 4
+    assert copied_rows[2]["source_id"] != source["source_id"]
+    assert copied_rows[3]["source_id"] != second_source["source_id"]
+    assert copied_rows[2]["amount"] == "50"
+    assert copied_rows[3]["amount"] == "75"
 
     not_selected = invoke("transaction-grid-delete-button", copied_rows)
     assert not_selected["kaspi-import-message"]["color"] == "warning"
-    assert "Выбери одну строку" in not_selected["kaspi-import-message"]["children"]
+    assert "Выбери хотя бы одну строку" in not_selected[
+        "kaspi-import-message"]["children"]
 
     deleted = invoke(
-        "transaction-grid-delete-button", copied_rows, selected=[copied_rows[0]]
+        "transaction-grid-delete-button",
+        copied_rows,
+        selected=[copied_rows[0], copied_rows[1]],
     )
     remaining = deleted["kaspi-import-grid"]["rowData"]
-    assert [row["source_id"] for row in remaining] == [copied_rows[1]["source_id"]]
-    assert deleted["kaspi-import-message"]["children"] == "Несохранённая строка удалена."
+    assert [row["source_id"] for row in remaining] == [
+        copied_rows[2]["source_id"], copied_rows[3]["source_id"]
+    ]
+    assert deleted["kaspi-import-message"]["children"] == "Удалено несохранённых строк: 2."

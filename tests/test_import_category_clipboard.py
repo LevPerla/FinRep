@@ -53,6 +53,11 @@ def test_unified_grid_shows_source_selection_and_manual_editors():
     assert "manual_grid" in source["valueFormatter"]["function"]
     assert date["editable"] == {"function": "params.data.source == 'manual_grid'"}
     assert amount["editable"] == {"function": "params.data.source == 'manual_grid'"}
+    assert amount["cellDataType"] == "text"
+    assert amount["cellEditor"] == "agTextCellEditor"
+    assert amount["context"] == next(
+        column for column in columns if column["field"] == "category"
+    )["context"]
 
 
 def test_pdf_rows_append_without_replacing_unsaved_manual_rows():
@@ -98,3 +103,7 @@ def test_category_clipboard_uses_native_events_without_permission_api(monkeypatc
     assert 'setDataValue("import_action", decision[0])' in script
     assert "finrepInputCellChanged" in script
     assert 'params.data.source !== "manual_grid"' in script
+    assert "colDef: params.colDef" in script
+    assert 'params.node.setDataValue("category", "")' in script
+    assert 'raw.replace(/^[+-]/, "")' in script
+    assert "params.data.amount = normalizedAmount" in script

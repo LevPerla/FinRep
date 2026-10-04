@@ -96,8 +96,18 @@ dagfuncs.finrepInputCellChanged = function (params) {
   if (params.data.direction !== direction) {
     params.node.setDataValue("direction", direction);
   }
-  if (Number(params.data.amount) !== Math.abs(amount)) {
-    params.node.setDataValue("amount", Math.abs(amount));
+  var allowedCategories = finrepCategoriesForRow({
+    colDef: params.colDef,
+    data: {direction: direction}
+  });
+  if (params.data.category && !allowedCategories.includes(params.data.category)) {
+    params.node.setDataValue("category", "");
+    params.node.setDataValue("import_action", "import");
+    params.node.setDataValue("skip_reason", "");
+  }
+  var normalizedAmount = raw.replace(/^[+-]/, "");
+  if (String(params.data.amount) !== normalizedAmount) {
+    params.data.amount = normalizedAmount;
   }
   params.api.refreshCells({rowNodes: [params.node], columns: ["amount", "category"], force: true});
 };

@@ -1377,44 +1377,46 @@ def register_callbacks(app: Dash) -> None:
         if trigger == "transaction-grid-copy-button":
             if not selected_rows:
                 message = (
-                    "Select one row to copy."
-                    if normalize_locale(locale) == "en" else "Выбери одну строку для копирования."
+                    "Select at least one row to copy."
+                    if normalize_locale(locale) == "en" else "Выбери хотя бы одну строку для копирования."
                 )
                 return no_update, no_update, message, "warning", False, no_update
-            updated = [*(rows or []), new_manual_grid_row(selected_rows[0])]
+            copies = [new_manual_grid_row(row) for row in selected_rows]
+            updated = [*(rows or []), *copies]
             message = (
-                "A copy with a new identity was added."
+                f"Copies with new identities added: {len(copies)}."
                 if normalize_locale(locale) == "en"
-                else "Добавлена копия с новым идентификатором."
+                else f"Добавлено копий с новыми идентификаторами: {len(copies)}."
             )
             return updated, [], message, "secondary", False, no_update
         if trigger == "transaction-grid-delete-button":
             if not selected_rows:
                 message = (
-                    "Select one row to delete."
-                    if normalize_locale(locale) == "en" else "Выбери одну строку для удаления."
+                    "Select at least one row to delete."
+                    if normalize_locale(locale) == "en" else "Выбери хотя бы одну строку для удаления."
                 )
                 return no_update, no_update, message, "warning", False, no_update
-            selected_key = (
-                str(selected_rows[0].get("source", "")),
-                str(selected_rows[0].get("source_id", "")),
-            )
+            selected_keys = {
+                (str(row.get("source", "")), str(row.get("source_id", "")))
+                for row in selected_rows
+            }
             updated = [
                 row for row in (rows or [])
                 if (str(row.get("source", "")), str(row.get("source_id", "")))
-                != selected_key
+                not in selected_keys
             ]
-            if len(updated) == len(rows or []):
+            removed_count = len(rows or []) - len(updated)
+            if not removed_count:
                 message = (
-                    "The selected row is no longer in the table."
+                    "The selected rows are no longer in the table."
                     if normalize_locale(locale) == "en"
-                    else "Выбранной строки уже нет в таблице."
+                    else "Выбранных строк уже нет в таблице."
                 )
                 return no_update, [], message, "warning", False, no_update
             message = (
-                "The unsaved row was deleted."
+                f"Unsaved rows deleted: {removed_count}."
                 if normalize_locale(locale) == "en"
-                else "Несохранённая строка удалена."
+                else f"Удалено несохранённых строк: {removed_count}."
             )
             return updated, [], message, "secondary", False, no_update
         if trigger == "transaction-paste-apply-button":
@@ -3010,7 +3012,7 @@ def _transaction_input_layout(
                                 "pagination": False,
                                 "suppressFieldDotNotation": True,
                                 "stopEditingWhenCellsLoseFocus": True,
-                                **({"rowSelection": "single"} if sqlite_storage else {}),
+                                **({"rowSelection": "multiple"} if sqlite_storage else {}),
                             },
                             eventListeners={
                                 "cellClicked": ["finrepCategoryCellClicked(params)"],
@@ -4234,6 +4236,11 @@ def _kaspi_import_column_defs(locale: str = DEFAULT_LOCALE) -> list[dict]:
         "kaspi-category-communication": "params.value == 'Связь'",
         "kaspi-category-other": "params.value == 'Прочее'",
     }
+    category_context = {
+        "incomeCategories": income_categories,
+        "expenseCategories": expense_categories,
+        "neutralCategories": [INTERNAL_TRANSFER_CATEGORY],
+    }
     manual_source_label = "Manual" if normalize_locale(locale) == "en" else "Вручную"
     return [
         {
@@ -4256,11 +4263,7 @@ def _kaspi_import_column_defs(locale: str = DEFAULT_LOCALE) -> list[dict]:
             "editable": True,
             "cellEditor": "agSelectCellEditor",
             "cellEditorParams": {"function": "finrepCategoryEditorParams(params)"},
-            "context": {
-                "incomeCategories": income_categories,
-                "expenseCategories": expense_categories,
-                "neutralCategories": [INTERNAL_TRANSFER_CATEGORY],
-            },
+            "context": category_context,
             "width": 190,
             "cellClassRules": category_class_rules,
         },
@@ -4275,6 +4278,9 @@ def _kaspi_import_column_defs(locale: str = DEFAULT_LOCALE) -> list[dict]:
             "headerName": "Сумма",
             "width": 120,
             "editable": {"function": "params.data.source == 'manual_grid'"},
+            "cellDataType": "text",
+            "cellEditor": "agTextCellEditor",
+            "context": category_context,
             "valueFormatter": {
                 "function": (
                     "params.data.direction == 'credit' ? '+ ' + params.value : "
