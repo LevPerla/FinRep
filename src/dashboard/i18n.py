@@ -66,7 +66,6 @@ REPORT_TEXT_EN = {
     "Покупательная способность активов": "Purchasing power of assets",
     "Номинальная стоимость активов": "Nominal asset value",
     "Состав капитала": "Capital composition",
-    "Изменение капитала после внешних потоков": "Capital change after external flows",
     "Декомпозиция изменения капитала": "Capital change decomposition",
     "Внешний поток включает активные доходы, расходы и движения по долгам. Проценты и инвестиционный результат остаются в изменении капитала; первый месяц не рассчитывается без начальной оценки.": "External flows include active income, expenses, and debt movements. Interest and investment results remain in capital change; the first month is unavailable without an opening valuation.",
     "Столбцы полностью сверяются с изменением капитала. Валютная переоценка содержит только эффект курсов на начальные валютные остатки; изменения, которые нельзя надёжно разделить без привязки операций к активам, остаются в необъяснённом остатке.": "The bars fully reconcile to the capital change. FX revaluation contains only the rate effect on opening foreign-currency balances; changes that cannot be separated reliably without linking transactions to assets remain in the unexplained residual.",
@@ -76,8 +75,6 @@ REPORT_TEXT_EN = {
     "В валюте отчёта": "In report currency",
     "Месячный снимок": "Monthly snapshot",
     "Внешний поток": "External flow",
-    "Номинальное изменение после потоков": "Nominal change after flows",
-    "Реальное изменение после потоков": "Real change after flows",
     "Валютная переоценка": "FX revaluation",
     "Переоценка и необъяснённые изменения": "Revaluation and unexplained changes",
     "Валютная структура активов": "Asset currency allocation",
@@ -193,7 +190,6 @@ REPORT_TEXT_EN = {
     "Сальдо": "Net result",
     "Капитал": "Capital",
     "Капитал cash-flow": "Cash-flow capital",
-    "Капитал по cash-flow": "Cash-flow capital",
     "Капитал по активам": "Asset-based capital",
     "Капитал по денежному потоку": "Cash-flow capital",
     "Инвестиции": "Investments",
@@ -206,13 +202,20 @@ REPORT_TEXT_EN = {
     "Денежный поток месяца": "Monthly cash flow",
     "Валютная переоценка месяца": "Monthly FX revaluation",
     "Финансовый запас по активам": "Asset-based runway",
+    "Финансовый запас по активам, месяцев": "Asset-based runway, months",
+    "Финансовый запас по активам, лет": "Asset-based runway, years",
     "Финансовый запас по денежному потоку": "Cash-flow runway",
     "Средний доход/мес": "Average monthly income",
     "Средний расход/мес": "Average monthly expenses",
-    "Цель 300 расходов": "300-expense target",
     "Чистый капитал": "Net capital",
     "Прогресс цели": "Target progress",
-    "300× расходов": "300× expenses",
+    "Прогресс от цели": "Progress toward target",
+    "Прогресс от цели (%)": "Progress toward target (%)",
+    "Прогресс цели (%)": "Target progress (%)",
+    "Период расходов": "Expense period",
+    "Статус цели": "Target status",
+    "Детали цели": "Target details",
+    "N мес расходов": "N months of expenses",
     "Активы + требования − обязательства": "Assets + receivables − liabilities",
     "Оценка на": "Valuation as of",
     "Средний расход": "Average expenses",
@@ -221,8 +224,6 @@ REPORT_TEXT_EN = {
     "Прогноз": "Forecast",
     "Отклонение": "Variance",
     "Прогресс (%)": "Progress (%)",
-    "Runway, мес.": "Runway, months",
-    "Runway, лет": "Runway, years",
     "Сценарий": "Scenario",
     "Что меняется": "Change description",
     "Пара курса": "Currency pair",
@@ -327,6 +328,9 @@ REPORT_TEXT_EN = {
     "Загрузить": "Load",
     "Добавить строку": "Add row",
     "Удалить выбранные": "Delete selected",
+    "Отправить в архив": "Archive selected",
+    "Вернуть из архива в текущий снимок": "Restore to current snapshot",
+    "Архивные счета сохраняются в истории и не проверяются на актуальность. Выбери архивный счёт в таблице, чтобы вернуть его в текущий снимок.": "Archived accounts remain in history and are excluded from freshness checks. Select an archived account in the table to restore it to the current snapshot.",
     "Применить": "Apply",
     "Добавить": "Add",
     "Новая категория": "New category",
@@ -635,7 +639,9 @@ def localize_report_datasets(datasets: dict, locale: str | None) -> dict:
             if dataset.id == "planning_goals":
                 value_columns = value_columns - {"Показатель"}
             if dataset.id in {"yearly_stats", "planning_runway"}:
-                value_columns = value_columns | {"Год", "Runway, мес.", "Runway, лет"}.intersection(display.columns)
+                value_columns = value_columns | {
+                    "Год", "Финансовый запас, мес.", "Финансовый запас, лет",
+                }.intersection(display.columns)
             if dataset.id == "cockpit_metrics":
                 value_columns = value_columns | {"Значение"}.intersection(display.columns)
             if dataset.id == "month_assets":

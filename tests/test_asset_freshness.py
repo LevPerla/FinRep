@@ -56,6 +56,21 @@ def test_missing_date_is_distinct_and_excluded_asset_does_not_warn_total():
     assert freshness_label(result["accounts"][0]) == "Дата оценки неизвестна"
 
 
+def test_archived_account_is_not_checked_for_freshness():
+    account = _account("deposit", "2020-01")
+    account.update({"active": 0, "closed_period": "2020-01"})
+
+    result = evaluate_asset_freshness([account], as_of=date(2026, 10, 3))
+
+    evaluated = result["accounts"][0]
+    assert evaluated["freshness_status"] == "archived"
+    assert evaluated["valuation_age_days"] is None
+    assert evaluated["stale_threshold_days"] is None
+    assert result["stale_count"] == 0
+    assert result["has_warning"] is False
+    assert freshness_label(evaluated) == "В архиве · 2020-01"
+
+
 def test_dashboard_freshness_uses_accounts_from_latest_complete_snapshot(monkeypatch):
     accounts = [
         _account("deposit", "2022-09"),

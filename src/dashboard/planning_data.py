@@ -16,8 +16,6 @@ from src.data.get_finance import fx_network_mode, get_actual_fx_rate, get_fx_rat
 from src.data.money import format_money_amount, parse_money_amount
 from src.model.create_tables import (
     asset_valuation_dates,
-    get_act_liabilities,
-    get_act_receivables,
     get_balance_by_month,
 )
 
@@ -27,6 +25,7 @@ GOALS_COLUMNS = [
     "target_capital",
     "target_monthly_income",
     "target_monthly_expense",
+    "target_expense_months",
     "notes",
 ]
 LEGACY_GOALS_COLUMNS = {
@@ -37,9 +36,9 @@ GOAL_LABEL_TO_COLUMN = {
     "Капитал": "target_capital",
     "Средний доход/мес": "target_monthly_income",
     "Средний расход/мес": "target_monthly_expense",
+    "N мес расходов": "target_expense_months",
 }
 FX_SHOCKS = [-20, -10, 0, 10, 20]
-FINANCIAL_INDEPENDENCE_MULTIPLIER = 300
 
 
 def build_planning_dashboard_data(
@@ -64,25 +63,17 @@ def _build_planning_dashboard_data(
     goals = _load_goals()
     goal_row = _goal_for_year_currency(goals, year, currency)
 
-    goals_progress = _goals_progress(balance, goal_row, year, currency)
-    financial_independence = _financial_independence_300x(
+    asset_runway = _asset_runway_data(
         balance,
-        currency,
-        saved_periods=_saved_cash_periods(),
         asset_freshness=_current_asset_freshness(),
+        target_months=_goal_months(goal_row.get("target_expense_months")),
     )
+    goals_progress = _goals_progress(
+        balance, goal_row, year, currency, asset_runway)
     forecast = _capital_forecast(balance, year)
-    runway = _runway(balance)
     fx_scenarios = _fx_scenarios(currency)
 
     return {
-        "planning_300x": DashboardDataset(
-            id="planning_300x",
-            title="Цель 300 расходов",
-            dataframe=financial_independence,
-            display_dataframe=_format_financial_independence(
-                financial_independence, currency),
-        ),
         "planning_goals": DashboardDataset(
             id="planning_goals",
             title="Цели года",
@@ -98,9 +89,9 @@ def _build_planning_dashboard_data(
         ),
         "planning_runway": DashboardDataset(
             id="planning_runway",
-            title="Финансовый запас по денежному потоку",
-            dataframe=runway,
-            display_dataframe=_format_runway(runway, currency),
+            title="Финансовый запас по активам",
+            dataframe=asset_runway,
+            display_dataframe=_format_runway(asset_runway, currency),
         ),
         "planning_fx_scenarios": DashboardDataset(
             id="planning_fx_scenarios",
@@ -112,36 +103,25 @@ def _build_planning_dashboard_data(
     }
 
 
-def _saved_cash_periods() -> set[str] | None:
-    if not config.use_sqlite_storage():
-        return None
-    from src.data.sqlite_store import saved_months
-
-    return set(saved_months(config.active_database_path()))
-
-
 def _current_period() -> pd.Period:
     return pd.Period(pd.Timestamp.today(), freq="M")
 
 
-def _financial_independence_300x(
+def _asset_runway_data(
     balance: pd.DataFrame,
-    currency: str,
     *,
-    saved_periods: set[str] | None = None,
     asset_freshness: dict | None = None,
+    target_months: int | None = None,
 ) -> pd.DataFrame:
     columns = [
         "Период расходов",
         "Период капитала",
         "Средний расход",
-        "Множитель",
-        "Цель",
-        "Активы",
-        "Требования",
-        "Обязательства",
-        "Чистый капитал",
-        "Прогресс (%)",
+        "Капитал по активам",
+        "Финансовый запас, мес.",
+        "Финансовый запас, лет",
+        "Цель, мес.",
+        "Прогресс от цели (%)",
         "Статус",
         "Детали",
     ]
@@ -155,11 +135,6 @@ def _financial_independence_300x(
         return pd.DataFrame(columns=columns)
     end_period = completed.max()
     window = pd.period_range(end=end_period, periods=12, freq="M")
-    known_periods = (
-        {str(period) for period in monthly.index}
-        if saved_periods is None else {str(period) for period in saved_periods}
-    )
-    missing = [str(period) for period in window if str(period) not in known_periods]
     window_label = f"{window[0]} — {window[-1]}"
 
     asset_values = pd.to_numeric(
@@ -168,37 +143,26 @@ def _financial_independence_300x(
     ).dropna()
     asset_capital = asset_values.iloc[-1] if not asset_values.empty else pd.NA
     capital_period = str(asset_values.index[-1]) if not asset_values.empty else ""
-    receivables = _debt_total(get_act_receivables(currency), "Дебиторская задолженность")
-    liabilities = _debt_total(get_act_liabilities(currency), "Кредиторская задолженность")
-    net_capital = (
-        float(asset_capital) + receivables - liabilities
-        if pd.notna(asset_capital) else pd.NA
-    )
 
-    avg_expense = target = progress = pd.NA
+    expenses = pd.to_numeric(
+        monthly.get("Расход", pd.Series(index=monthly.index, dtype=float)),
+        errors="coerce",
+    ).fillna(0.0).groupby(level=0).sum().reindex(window, fill_value=0.0)
+    avg_expense = float(expenses.sum() / 12)
+    runway_months = runway_years = progress = pd.NA
     status = "рассчитано"
     details = ""
-    if missing:
-        status = "недостаточно данных"
-        details = f"Нет сохранённых месяцев: {', '.join(missing)}"
+    if avg_expense <= 0:
+        status = "не рассчитано"
+        details = "Средний расход должен быть больше нуля"
+    elif pd.isna(asset_capital):
+        status = "нет снимка капитала"
+        details = "Нет доступной оценки активов"
     else:
-        expenses = pd.to_numeric(
-            monthly.reindex(window)["Расход"], errors="coerce")
-        if expenses.isna().any():
-            status = "недостаточно данных"
-            details = "В окне есть месяцы без суммы расходов"
-        else:
-            avg_expense = float(expenses.sum() / 12)
-            if avg_expense <= 0:
-                status = "не рассчитано"
-                details = "Средний расход должен быть больше нуля"
-            else:
-                target = avg_expense * FINANCIAL_INDEPENDENCE_MULTIPLIER
-                if pd.isna(net_capital):
-                    status = "нет снимка капитала"
-                    details = "Нет доступной оценки активов"
-                else:
-                    progress = float(net_capital) / target * 100
+        runway_months = float(asset_capital) / avg_expense
+        runway_years = runway_months / 12
+        if target_months is not None:
+            progress = runway_months / target_months * 100
 
     if asset_freshness and asset_freshness.get("has_warning"):
         stale_detail = (
@@ -213,22 +177,14 @@ def _financial_independence_300x(
         "Период расходов": window_label,
         "Период капитала": capital_period,
         "Средний расход": avg_expense,
-        "Множитель": FINANCIAL_INDEPENDENCE_MULTIPLIER,
-        "Цель": target,
-        "Активы": asset_capital,
-        "Требования": receivables,
-        "Обязательства": liabilities,
-        "Чистый капитал": net_capital,
-        "Прогресс (%)": progress,
+        "Капитал по активам": asset_capital,
+        "Финансовый запас, мес.": runway_months,
+        "Финансовый запас, лет": runway_years,
+        "Цель, мес.": target_months if target_months is not None else pd.NA,
+        "Прогресс от цели (%)": progress,
         "Статус": status,
         "Детали": details,
     }], columns=columns)
-
-
-def _debt_total(data: pd.DataFrame, column: str) -> float:
-    if data.empty or column not in data.columns:
-        return 0.0
-    return float(pd.to_numeric(data[column], errors="coerce").fillna(0.0).sum())
 
 
 def _load_goals() -> pd.DataFrame:
@@ -243,6 +199,7 @@ def _load_goals() -> pd.DataFrame:
                 "target_capital": row["target_capital"],
                 "target_monthly_income": row["target_monthly_income"],
                 "target_monthly_expense": row["target_monthly_expense"],
+                "target_expense_months": row["target_expense_months"],
                 "notes": row["notes"],
             })
         return pd.DataFrame(records, columns=GOALS_COLUMNS)
@@ -261,6 +218,8 @@ def _load_goals() -> pd.DataFrame:
     goals["currency"] = goals["currency"].astype(str).str.upper()
     for column in ["target_capital", "target_monthly_income", "target_monthly_expense"]:
         goals[column] = goals[column].map(lambda value: pd.NA if not str(value).strip() else str(value).strip())
+    goals["target_expense_months"] = goals["target_expense_months"].map(
+        lambda value: pd.NA if not str(value).strip() else str(value).strip())
     return goals
 
 
@@ -274,13 +233,15 @@ def save_goal_targets(year: str, currency: str, rows: list[dict]) -> None:
         row_index = goals[mask].index[-1]
     else:
         row_index = len(goals)
-        goals.loc[row_index, GOALS_COLUMNS] = [year, currency, pd.NA, pd.NA, pd.NA, ""]
+        goals.loc[row_index, GOALS_COLUMNS] = [
+            year, currency, pd.NA, pd.NA, pd.NA, pd.NA, ""]
 
     for row in rows:
         target_column = GOAL_LABEL_TO_COLUMN.get(str(row.get("Показатель", "")))
         if not target_column:
             continue
-        goals.loc[row_index, target_column] = _parse_goal_value(row.get("Цель"))
+        parser = _parse_goal_months if target_column == "target_expense_months" else _parse_goal_value
+        goals.loc[row_index, target_column] = parser(row.get("Цель"))
 
     goals = goals[GOALS_COLUMNS].copy(deep=True)
     goals["year"] = goals["year"].astype(str)
@@ -298,6 +259,8 @@ def save_goal_targets(year: str, currency: str, rows: list[dict]) -> None:
                                    else saved["target_monthly_income"]),
             target_monthly_expense=(None if pd.isna(saved["target_monthly_expense"])
                                     else saved["target_monthly_expense"]),
+            target_expense_months=(None if pd.isna(saved["target_expense_months"])
+                                   else saved["target_expense_months"]),
             notes=str(saved["notes"] or ""),
         )
         return
@@ -310,9 +273,26 @@ def _parse_goal_value(value):
     if value is None or pd.isna(value):
         return pd.NA
     text = str(value).strip()
-    if not text:
+    if not text or text.casefold() in {"не задано", "not set"}:
         return pd.NA
     return format_money_amount(text, field_name="goal")
+
+
+def _parse_goal_months(value):
+    if value is None or pd.isna(value):
+        return pd.NA
+    text = str(value).strip().lower().replace("мес.", "").replace("мес", "").strip()
+    if not text or text.casefold() in {"<na>", "nan", "none", "не задано", "not set"}:
+        return pd.NA
+    parsed = parse_money_amount(text, field_name="target expense months")
+    if parsed <= 0 or parsed != parsed.to_integral_value():
+        raise ValueError("Цель в месяцах должна быть положительным целым числом.")
+    return str(int(parsed))
+
+
+def _goal_months(value) -> int | None:
+    parsed = _parse_goal_months(value)
+    return None if pd.isna(parsed) else int(parsed)
 
 
 def _goal_for_year_currency(goals: pd.DataFrame, year: str, currency: str) -> pd.Series:
@@ -347,7 +327,9 @@ def _convert_goal_value(value, source_currency: str, target_currency: str):
     return format_money_amount(converted, field_name="goal")
 
 
-def _goals_progress(balance: pd.DataFrame, goal: pd.Series, year: str, currency: str) -> pd.DataFrame:
+def _goals_progress(balance: pd.DataFrame, goal: pd.Series, year: str,
+                    currency: str,
+                    asset_runway: pd.DataFrame | None = None) -> pd.DataFrame:
     current_capital = _latest_value(balance, "Капитал")
     year_balance = _year_slice(balance, year)
     actual_income = _column_sum(year_balance, "Доход")
@@ -360,6 +342,14 @@ def _goals_progress(balance: pd.DataFrame, goal: pd.Series, year: str, currency:
         ("Средний доход/мес", avg_income, _goal_number(goal.get("target_monthly_income")), "money"),
         ("Средний расход/мес", avg_expense, _goal_number(goal.get("target_monthly_expense")), "money"),
     ]
+    if asset_runway is not None and not asset_runway.empty:
+        runway = asset_runway.iloc[0]
+        rows.append((
+            "N мес расходов",
+            runway.get("Финансовый запас, мес.", pd.NA),
+            _goal_months(goal.get("target_expense_months")),
+            "months",
+        ))
     result = pd.DataFrame(rows, columns=["Показатель", "Факт", "Цель", "Тип"])
     result["Отклонение"] = result["Факт"] - result["Цель"]
     result["Прогресс (%)"] = result.apply(
@@ -421,33 +411,6 @@ def _forecast_capital_source(balance: pd.DataFrame) -> str:
     if "Капитал по активам" in balance.columns and pd.to_numeric(balance["Капитал по активам"], errors="coerce").notna().any():
         return "Капитал по активам"
     return "Капитал"
-
-
-def _runway(balance: pd.DataFrame) -> pd.DataFrame:
-    if balance.empty:
-        return pd.DataFrame(columns=["Капитал по cash-flow", "Средний расход", "Runway, мес.", "Runway, лет", "Статус"])
-
-    current_capital = _latest_value(balance, "Капитал")
-    avg_expense = float(pd.to_numeric(balance["Расход"].tail(12), errors="coerce").mean())
-    if pd.isna(avg_expense) or avg_expense <= 0:
-        runway_months = pd.NA
-        runway_years = pd.NA
-        status = "не рассчитано"
-    else:
-        runway_months = current_capital / avg_expense
-        runway_years = runway_months / 12
-        status = "рассчитано"
-    return pd.DataFrame(
-        [
-            {
-                "Капитал по cash-flow": current_capital,
-                "Средний расход": avg_expense,
-                "Runway, мес.": runway_months,
-                "Runway, лет": runway_years,
-                "Статус": status,
-            }
-        ]
-    )
 
 
 def _fx_scenarios(target_currency: str) -> pd.DataFrame:
@@ -557,29 +520,15 @@ def _format_goals_progress(data: pd.DataFrame, currency: str) -> pd.DataFrame:
     display = data.copy(deep=True)
     money_mask = display["Тип"] == "money"
     percent_mask = display["Тип"] == "percent"
+    months_mask = display["Тип"] == "months"
     for column in ["Факт", "Цель", "Отклонение"]:
         display[column] = display[column].astype(object)
         display.loc[money_mask, column] = display.loc[money_mask, column].map(lambda value: _format_money(value, currency))
         display.loc[percent_mask, column] = display.loc[percent_mask, column].map(_format_percent)
+        display.loc[months_mask, column] = display.loc[months_mask, column].map(
+            _format_months)
     display["Прогресс (%)"] = display["Прогресс (%)"].map(_format_percent)
     return display.drop(columns=["Тип"])
-
-
-def _format_financial_independence(
-        data: pd.DataFrame, currency: str) -> pd.DataFrame:
-    display = data.copy(deep=True)
-    if display.empty:
-        return display
-    for column in [
-        "Средний расход", "Цель", "Активы", "Требования", "Обязательства",
-        "Чистый капитал",
-    ]:
-        display[column] = display[column].map(
-            lambda value: _format_money(value, currency))
-    display["Множитель"] = display["Множитель"].map(
-        lambda value: f"{int(value)}×")
-    display["Прогресс (%)"] = display["Прогресс (%)"].map(_format_percent)
-    return display
 
 
 def _format_money_columns(data: pd.DataFrame, currency: str, not_money_cols: list[str]) -> pd.DataFrame:
@@ -590,11 +539,27 @@ def _format_money_columns(data: pd.DataFrame, currency: str, not_money_cols: lis
 
 def _format_runway(data: pd.DataFrame, currency: str) -> pd.DataFrame:
     display = data.copy(deep=True)
-    for column in ["Капитал по cash-flow", "Средний расход"]:
+    for column in ["Капитал по активам", "Средний расход"]:
+        if column not in display.columns:
+            continue
         display[column] = display[column].map(lambda value: _format_money(value, currency))
-    display["Runway, мес."] = display["Runway, мес."].map(lambda value: "не рассчитано" if pd.isna(value) else f"{value:,.1f} мес.".replace(",", " "))
-    display["Runway, лет"] = display["Runway, лет"].map(lambda value: "не рассчитано" if pd.isna(value) else f"{value:,.1f} лет".replace(",", " "))
+    display["Финансовый запас, мес."] = display["Финансовый запас, мес."].map(
+        lambda value: "не рассчитано" if pd.isna(value)
+        else f"{value:,.1f} мес.".replace(",", " "))
+    display["Финансовый запас, лет"] = display["Финансовый запас, лет"].map(
+        lambda value: "не рассчитано" if pd.isna(value)
+        else f"{value:,.1f} лет".replace(",", " "))
+    if "Прогресс от цели (%)" in display.columns:
+        display["Прогресс от цели (%)"] = display["Прогресс от цели (%)"].map(
+            _format_percent)
     return display
+
+
+def _format_months(value) -> str:
+    if pd.isna(value):
+        return "не задано"
+    number = float(value)
+    return str(int(number)) if number.is_integer() else f"{number:.1f}"
 
 
 def _format_fx_scenarios(data: pd.DataFrame, currency: str) -> pd.DataFrame:

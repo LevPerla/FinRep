@@ -621,12 +621,23 @@ def _migrate_annual_goals(path: Path, item: ManifestEntry, target_db: Path,
                     _optional_minor(target_db, currency, row.get(column, ""))
                     for column in ("target_capital", "target_monthly_income", "target_monthly_expense")
                 ]
+                raw_months = (row.get("target_expense_months") or "").strip()
+                target_expense_months = None
+                if raw_months:
+                    parsed_months = parse_money_amount(
+                        raw_months, field_name="target expense months")
+                    if (parsed_months <= 0
+                            or parsed_months != parsed_months.to_integral_value()):
+                        raise ValueError(
+                            "target expense months must be a positive integer")
+                    target_expense_months = int(parsed_months)
                 with connect_database(target_db, writable=True) as target:
                     target.execute("""INSERT INTO annual_goals
                         (year, currency_code, target_capital_minor, target_monthly_income_minor,
-                         target_monthly_expense_minor, notes, updated_at)
-                        VALUES (?, ?, ?, ?, ?, ?, datetime('now'))""",
-                        (year, currency, *values, row.get("notes") or ""))
+                         target_monthly_expense_minor, target_expense_months, notes, updated_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))""",
+                        (year, currency, *values, target_expense_months,
+                         row.get("notes") or ""))
             except (ValueError, sqlite3.IntegrityError) as exc:
                 _issue(audit, item.relative_path, str(row_number), "invalid_annual_goal", str(exc), True)
                 continue

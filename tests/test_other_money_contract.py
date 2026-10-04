@@ -68,6 +68,7 @@ def test_new_planning_goals_use_money_rounding_and_exact_storage(data_root):
             {"Показатель": "Капитал", "Цель": "99 999 999 999 999,99"},
             {"Показатель": "Средний доход/мес", "Цель": "2.675"},
             {"Показатель": "Средний расход/мес", "Цель": "1.005"},
+            {"Показатель": "N мес расходов", "Цель": "300"},
         ],
     )
 
@@ -75,6 +76,7 @@ def test_new_planning_goals_use_money_rounding_and_exact_storage(data_root):
     assert saved["target_capital"] == "99999999999999.99"
     assert saved["target_monthly_income"] == "2.68"
     assert saved["target_monthly_expense"] == "1.01"
+    assert saved["target_expense_months"] == "300"
 
 
 def test_saving_goal_preserves_untouched_legacy_precision(data_root):

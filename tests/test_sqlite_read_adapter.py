@@ -1,4 +1,5 @@
 from pathlib import Path
+from decimal import Decimal
 
 import pytest
 
@@ -8,10 +9,12 @@ from src.data.sqlite_migration import migrate_core_csv
 from src.data.sqlite_store import (
     add_category,
     add_cash_transaction,
+    annual_goals,
     create_debt_record,
     initialize_database,
     publish_domain_drafts,
     save_month,
+    upsert_annual_goal,
 )
 from src.data.assets_editor import ensure_asset_snapshot, read_asset_snapshot, write_asset_snapshot
 from src.dashboard.planning_data import _load_goals, save_goal_targets
@@ -94,12 +97,80 @@ def test_sqlite_asset_and_goal_ui_adapters_round_trip(tmp_path, monkeypatch):
     save_goal_targets(
         "2027", "RUB",
         [{"Показатель": "Капитал", "Цель": "1000000"},
-         {"Показатель": "Средний расход/мес", "Цель": "50000"}],
+         {"Показатель": "Средний расход/мес", "Цель": "50000"},
+         {"Показатель": "N мес расходов", "Цель": "300"}],
     )
     goals = _load_goals()
     assert len(goals) == 1
     assert str(goals.iloc[0]["target_capital"]) == "1000000.00"
     assert str(goals.iloc[0]["target_monthly_expense"]) == "50000.00"
+    assert goals.iloc[0]["target_expense_months"] == 300
+
+
+def test_dashboard_goal_cell_accepts_and_persists_expense_month_target(
+        tmp_path, monkeypatch):
+    from src.dashboard.app import create_app
+
+    database = tmp_path / "target.sqlite3"
+    initialize_database(database)
+    upsert_annual_goal(
+        database,
+        year=2026,
+        currency="RUB",
+        target_capital="10000000",
+        target_monthly_income="450000",
+        target_monthly_expense="150000",
+    )
+    monkeypatch.setenv("FINREP_STORAGE_BACKEND", "sqlite")
+    monkeypatch.setenv("FINREP_SQLITE_PATH", str(database))
+    monkeypatch.setenv("FINREP_DASH_PASSWORD", "synthetic-password")
+    monkeypatch.setenv("FINREP_DASH_SECRET_KEY", "synthetic-secret")
+
+    app = create_app()
+    client = app.server.test_client()
+    with client.session_transaction() as session:
+        session["authenticated"] = True
+        session["data_mode"] = "live"
+
+    key = next(
+        key for key, callback in app.callback_map.items()
+        if any(item["id"] == "planning_goals-grid" for item in callback["inputs"])
+    )
+    callback = app.callback_map[key]
+    values = {
+        "planning_goals-grid": {
+            "colId": "Цель",
+            "data": {"Показатель": "N мес расходов", "Цель": "150"},
+        },
+        "dashboard-year": "2026",
+        "dashboard-currency": "RUB",
+        "dashboard-refresh-token": 0,
+    }
+    assert all(item["id"] != "planning_goals-grid" for item in callback["state"])
+    payload = {
+        "output": key,
+        "outputs": {
+            "id": callback["output"].component_id,
+            "property": callback["output"].component_property,
+        },
+        "inputs": [
+            {**item, "value": values.get(item["id"])} for item in callback["inputs"]
+        ],
+        "state": [
+            {**item, "value": values.get(item["id"])}
+            for item in callback["state"]
+        ],
+        "changedPropIds": ["planning_goals-grid.cellValueChanged"],
+    }
+
+    response = client.post("/_dash-update-component", json=payload)
+
+    assert response.status_code == 200
+    saved = annual_goals(database)[0]
+    assert saved["target_expense_months"] == 150
+    assert saved["target_capital"] == Decimal("10000000.00")
+    assert saved["target_monthly_income"] == Decimal("450000.00")
+    assert saved["target_monthly_expense"] == Decimal("150000.00")
 
 
 def test_sqlite_fx_and_price_adapters_append_observations(tmp_path, monkeypatch):

@@ -15,7 +15,7 @@ from src import config
 from src.data.money import parse_money_amount
 
 
-SCHEMA_VERSION = 15
+SCHEMA_VERSION = 17
 _DIRECTIONS = {"income", "expense"}
 _DATASETS = {"cash_transactions", "asset_snapshots"}
 _ASSET_TYPES = (
@@ -292,6 +292,7 @@ _TABLES = (
         target_capital_minor INTEGER CHECK (target_capital_minor >= 0),
         target_monthly_income_minor INTEGER CHECK (target_monthly_income_minor >= 0),
         target_monthly_expense_minor INTEGER CHECK (target_monthly_expense_minor >= 0),
+        target_expense_months INTEGER CHECK (target_expense_months > 0),
         notes TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL,
         PRIMARY KEY (year, currency_code)
     ) STRICT""",
@@ -834,6 +835,69 @@ def _migrate_v14_to_v15(connection: sqlite3.Connection) -> None:
     connection.execute("PRAGMA user_version = 15")
 
 
+def _migrate_v15_to_v16(connection: sqlite3.Connection) -> None:
+    """Archive historical accounts that disappeared before the latest snapshot."""
+    now = _utc_now()
+    latest_period = connection.execute(
+        "SELECT MAX(period) FROM asset_snapshots"
+    ).fetchone()[0]
+    if latest_period is not None:
+        accounts = connection.execute(
+            """SELECT a.*, MAX(s.period) AS last_period
+            FROM asset_accounts a
+            JOIN asset_snapshots s ON s.account_id = a.id
+            WHERE a.active = 1
+            GROUP BY a.id
+            HAVING MAX(s.period) < ?""",
+            (latest_period,),
+        ).fetchall()
+        for account in accounts:
+            before = dict(account)
+            before.pop("last_period", None)
+            connection.execute(
+                """UPDATE asset_accounts SET active = 0, closed_period = ?,
+                updated_at = ? WHERE id = ?""",
+                (account["last_period"], now, account["id"]),
+            )
+            after = connection.execute(
+                "SELECT * FROM asset_accounts WHERE id = ?", (account["id"],)
+            ).fetchone()
+            connection.execute(
+                """INSERT INTO audit_events
+                (entity_type, entity_id, action, before_json, after_json, reason, occurred_at)
+                VALUES ('asset_account', ?, 'archived', ?, ?,
+                'infer archive from absence in latest historical snapshot', ?)""",
+                (
+                    account["id"],
+                    json.dumps(before, ensure_ascii=False, sort_keys=True),
+                    json.dumps(dict(after), ensure_ascii=False, sort_keys=True),
+                    now,
+                ),
+            )
+    connection.execute(
+        "INSERT INTO schema_migrations VALUES (?, ?, ?, ?)",
+        (16, "infer_historical_asset_archives", _schema_checksum(), now),
+    )
+    connection.execute("PRAGMA user_version = 16")
+
+
+def _migrate_v16_to_v17(connection: sqlite3.Connection) -> None:
+    now = _utc_now()
+    columns = {
+        row["name"] for row in connection.execute("PRAGMA table_info(annual_goals)")
+    }
+    if "target_expense_months" not in columns:
+        connection.execute(
+            "ALTER TABLE annual_goals ADD COLUMN target_expense_months INTEGER "
+            "CHECK (target_expense_months > 0)"
+        )
+    connection.execute(
+        "INSERT INTO schema_migrations VALUES (?, ?, ?, ?)",
+        (17, "annual_goal_expense_months", _schema_checksum(), now),
+    )
+    connection.execute("PRAGMA user_version = 17")
+
+
 @contextmanager
 def connect_database(path: str | Path, *, writable: bool = False):
     database_path = Path(path).resolve()
@@ -881,6 +945,8 @@ def initialize_database(path: str | Path, *, data_mode: str = "synthetic") -> No
             _migrate_v12_to_v13(connection)
             _migrate_v13_to_v14(connection)
             _migrate_v14_to_v15(connection)
+            _migrate_v15_to_v16(connection)
+            _migrate_v16_to_v17(connection)
             return
         if version == 8:
             _migrate_v8_to_v9(connection)
@@ -890,6 +956,8 @@ def initialize_database(path: str | Path, *, data_mode: str = "synthetic") -> No
             _migrate_v12_to_v13(connection)
             _migrate_v13_to_v14(connection)
             _migrate_v14_to_v15(connection)
+            _migrate_v15_to_v16(connection)
+            _migrate_v16_to_v17(connection)
             return
         if version == 9:
             _migrate_v9_to_v10(connection)
@@ -898,6 +966,8 @@ def initialize_database(path: str | Path, *, data_mode: str = "synthetic") -> No
             _migrate_v12_to_v13(connection)
             _migrate_v13_to_v14(connection)
             _migrate_v14_to_v15(connection)
+            _migrate_v15_to_v16(connection)
+            _migrate_v16_to_v17(connection)
             return
         if version == 10:
             _migrate_v10_to_v11(connection)
@@ -905,24 +975,41 @@ def initialize_database(path: str | Path, *, data_mode: str = "synthetic") -> No
             _migrate_v12_to_v13(connection)
             _migrate_v13_to_v14(connection)
             _migrate_v14_to_v15(connection)
+            _migrate_v15_to_v16(connection)
+            _migrate_v16_to_v17(connection)
             return
         if version == 11:
             _migrate_v11_to_v12(connection)
             _migrate_v12_to_v13(connection)
             _migrate_v13_to_v14(connection)
             _migrate_v14_to_v15(connection)
+            _migrate_v15_to_v16(connection)
+            _migrate_v16_to_v17(connection)
             return
         if version == 12:
             _migrate_v12_to_v13(connection)
             _migrate_v13_to_v14(connection)
             _migrate_v14_to_v15(connection)
+            _migrate_v15_to_v16(connection)
+            _migrate_v16_to_v17(connection)
             return
         if version == 13:
             _migrate_v13_to_v14(connection)
             _migrate_v14_to_v15(connection)
+            _migrate_v15_to_v16(connection)
+            _migrate_v16_to_v17(connection)
             return
         if version == 14:
             _migrate_v14_to_v15(connection)
+            _migrate_v15_to_v16(connection)
+            _migrate_v16_to_v17(connection)
+            return
+        if version == 15:
+            _migrate_v15_to_v16(connection)
+            _migrate_v16_to_v17(connection)
+            return
+        if version == 16:
+            _migrate_v16_to_v17(connection)
             return
         has_tables = connection.execute(
             "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' LIMIT 1"
@@ -2028,6 +2115,159 @@ def set_asset_account_classifications(path: str | Path, rows: list[dict], *,
     return {"submitted": len(normalized), "updated": updated}
 
 
+def archive_asset_accounts(path: str | Path, account_names: list[str], *,
+                           period: str) -> dict:
+    """Archive selected accounts from the supplied month onward."""
+    period = _period(period)
+    names = list(dict.fromkeys(
+        str(name).strip() for name in account_names if str(name).strip()
+    ))
+    if not names:
+        raise ValueError("select asset accounts to archive")
+
+    archived = 0
+    now = _utc_now()
+    with connect_database(path, writable=True) as connection:
+        for name in names:
+            account = connection.execute(
+                "SELECT * FROM asset_accounts WHERE name = ?", (name,)
+            ).fetchone()
+            if account is None:
+                raise ValueError(f"unknown asset account: {name}")
+            last_period = connection.execute(
+                "SELECT MAX(period) FROM asset_snapshots WHERE account_id = ?",
+                (account["id"],),
+            ).fetchone()[0]
+            if last_period is not None and period < last_period:
+                raise ValueError(
+                    f"archive month cannot precede the last snapshot ({last_period}): {name}"
+                )
+            if not account["active"] and account["closed_period"] == period:
+                continue
+            if not account["active"]:
+                raise ValueError(f"asset account is already archived: {name}")
+            connection.execute(
+                """UPDATE asset_accounts SET active = 0, closed_period = ?,
+                updated_at = ? WHERE id = ?""",
+                (period, now, account["id"]),
+            )
+            after = connection.execute(
+                "SELECT * FROM asset_accounts WHERE id = ?", (account["id"],)
+            ).fetchone()
+            connection.execute(
+                """INSERT INTO audit_events
+                (entity_type, entity_id, action, before_json, after_json, reason, occurred_at)
+                VALUES ('asset_account', ?, 'archived', ?, ?,
+                'archived from asset snapshot editor', ?)""",
+                (
+                    account["id"],
+                    json.dumps(dict(account), ensure_ascii=False, sort_keys=True),
+                    json.dumps(dict(after), ensure_ascii=False, sort_keys=True),
+                    now,
+                ),
+            )
+            archived += 1
+    return {"submitted": len(names), "archived": archived, "period": period}
+
+
+def restore_asset_accounts_to_snapshot(path: str | Path, account_ids: list[str], *,
+                                       period: str) -> dict:
+    """Reopen archived accounts and copy their latest values into one snapshot."""
+    period = _period(period)
+    ids = list(dict.fromkeys(
+        str(account_id).strip() for account_id in account_ids
+        if str(account_id).strip()
+    ))
+    if not ids:
+        raise ValueError("select archived asset accounts to restore")
+
+    reopened = inserted = existing = 0
+    now = _utc_now()
+    with connect_database(path, writable=True) as connection:
+        for account_id in ids:
+            account = connection.execute(
+                "SELECT * FROM asset_accounts WHERE id = ?", (account_id,)
+            ).fetchone()
+            if account is None:
+                raise ValueError("unknown asset account")
+            if account["active"]:
+                raise ValueError(f"asset account is not archived: {account['name']}")
+            latest_period = connection.execute(
+                "SELECT MAX(period) FROM asset_snapshots WHERE account_id = ?",
+                (account_id,),
+            ).fetchone()[0]
+            if latest_period is None:
+                raise ValueError(
+                    f"asset account has no valuation to restore: {account['name']}"
+                )
+            if period < latest_period:
+                raise ValueError(
+                    f"restore month cannot precede the latest snapshot ({latest_period}): "
+                    f"{account['name']}"
+                )
+            latest_rows = connection.execute(
+                """SELECT * FROM asset_snapshots
+                WHERE account_id = ? AND period = ? ORDER BY currency_code""",
+                (account_id, latest_period),
+            ).fetchall()
+            connection.execute(
+                """UPDATE asset_accounts SET active = 1, closed_period = NULL,
+                updated_at = ? WHERE id = ?""",
+                (now, account_id),
+            )
+            for snapshot in latest_rows:
+                current = connection.execute(
+                    """SELECT id FROM asset_snapshots
+                    WHERE account_id = ? AND period = ? AND currency_code = ?""",
+                    (account_id, period, snapshot["currency_code"]),
+                ).fetchone()
+                if current is not None:
+                    existing += 1
+                    continue
+                snapshot_id = hashlib.sha256(
+                    f"asset-snapshot\0{account_id}\0{period}\0{snapshot['currency_code']}".encode()
+                ).hexdigest()[:32]
+                connection.execute(
+                    """INSERT INTO asset_snapshots
+                    (id, account_id, period, currency_code, amount_minor, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        snapshot_id,
+                        account_id,
+                        period,
+                        snapshot["currency_code"],
+                        snapshot["amount_minor"],
+                        now,
+                        now,
+                    ),
+                )
+                inserted += 1
+            after = connection.execute(
+                "SELECT * FROM asset_accounts WHERE id = ?", (account_id,)
+            ).fetchone()
+            connection.execute(
+                """INSERT INTO audit_events
+                (entity_type, entity_id, action, before_json, after_json, reason, occurred_at)
+                VALUES ('asset_account', ?, 'reopened', ?, ?,
+                'restored to selected asset snapshot', ?)""",
+                (
+                    account_id,
+                    json.dumps(dict(account), ensure_ascii=False, sort_keys=True),
+                    json.dumps(dict(after), ensure_ascii=False, sort_keys=True),
+                    now,
+                ),
+            )
+            reopened += 1
+        _mark_period(connection, period, "asset_snapshots")
+    return {
+        "submitted": len(ids),
+        "reopened": reopened,
+        "inserted": inserted,
+        "existing": existing,
+        "period": period,
+    }
+
+
 def add_asset_snapshot(path: str | Path, *, snapshot_id: str, account_id: str,
                        period: str, amount, currency: str) -> None:
     if not snapshot_id:
@@ -2153,7 +2393,8 @@ def asset_snapshot_month(path: str | Path, period: str) -> list[dict]:
 
 def upsert_annual_goal(path: str | Path, *, year: int, currency: str,
                        target_capital=None, target_monthly_income=None,
-                       target_monthly_expense=None, notes: str = "") -> None:
+                       target_monthly_expense=None,
+                       target_expense_months=None, notes: str = "") -> None:
     if not 1900 <= int(year) <= 9999:
         raise ValueError("goal year is out of range")
     currency = currency.upper()
@@ -2163,16 +2404,25 @@ def upsert_annual_goal(path: str | Path, *, year: int, currency: str,
             _minor_units(connection, currency, value, allow_zero=True)
             for value in (target_capital, target_monthly_income, target_monthly_expense)
         ]
+        if target_expense_months is None or str(target_expense_months).strip() == "":
+            expense_months = None
+        else:
+            parsed_months = parse_money_amount(
+                target_expense_months, field_name="target expense months")
+            if parsed_months <= 0 or parsed_months != parsed_months.to_integral_value():
+                raise ValueError("target expense months must be a positive integer")
+            expense_months = int(parsed_months)
         connection.execute("""INSERT INTO annual_goals
             (year, currency_code, target_capital_minor, target_monthly_income_minor,
-             target_monthly_expense_minor, notes, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+             target_monthly_expense_minor, target_expense_months, notes, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(year, currency_code) DO UPDATE SET
               target_capital_minor = excluded.target_capital_minor,
               target_monthly_income_minor = excluded.target_monthly_income_minor,
               target_monthly_expense_minor = excluded.target_monthly_expense_minor,
+              target_expense_months = excluded.target_expense_months,
               notes = excluded.notes, updated_at = excluded.updated_at""",
-            (int(year), currency, *values, notes, _utc_now()))
+            (int(year), currency, *values, expense_months, notes, _utc_now()))
 
 
 def annual_goals(path: str | Path) -> list[dict]:

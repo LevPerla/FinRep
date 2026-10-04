@@ -789,17 +789,26 @@ def register_callbacks(app: Dash) -> None:
     @app.callback(
         Output("dashboard-refresh-token", "data", allow_duplicate=True),
         Input("planning_goals-grid", "cellValueChanged", allow_optional=True),
-        State("planning_goals-grid", "rowData", allow_optional=True),
         State("dashboard-year", "value"),
         State("dashboard-currency", "value"),
         State("dashboard-refresh-token", "data"),
         prevent_initial_call=True,
     )
-    def save_planning_goal_cell(cell_change, row_data, year, currency, current_token):
+    def save_planning_goal_cell(cell_change, year, currency, current_token):
         if not _ag_grid_changed_column(cell_change, "Цель"):
             raise PreventUpdate
+        events = cell_change if isinstance(cell_change, list) else [cell_change]
+        changed_rows = [
+            event.get("data")
+            for event in events
+            if isinstance(event, dict)
+            and (event.get("colId") or event.get("column") or event.get("field")) == "Цель"
+            and isinstance(event.get("data"), dict)
+        ]
+        if not changed_rows:
+            raise PreventUpdate
         config.require_writable_mode()
-        save_goal_targets(year, currency, row_data or [])
+        save_goal_targets(year, currency, changed_rows)
         clear_data_cache()
         clear_table_cache()
         clear_main_dashboard_cache()
@@ -1933,6 +1942,7 @@ def register_callbacks(app: Dash) -> None:
         Output("assets-input-grid", "rowData"),
         Output("assets-input-message", "children"),
         Output("assets-input-message", "color"),
+        Output("asset-classification-grid", "rowData", allow_duplicate=True),
         Input("assets-load-button", "n_clicks", allow_optional=True),
         Input("assets-add-row-button", "n_clicks", allow_optional=True),
         Input("assets-delete-row-button", "n_clicks", allow_optional=True),
@@ -1942,6 +1952,7 @@ def register_callbacks(app: Dash) -> None:
         State("assets-input-grid", "rowData", allow_optional=True),
         State("assets-input-grid", "selectedRows", allow_optional=True),
         State("dashboard-locale", "data"),
+        prevent_initial_call=True,
     )
     def sync_assets_snapshot(load_clicks, add_clicks, delete_clicks, apply_clicks, year, month, row_data, selected_rows, locale):
         trigger = ctx.triggered_id
@@ -1952,16 +1963,34 @@ def register_callbacks(app: Dash) -> None:
                 rows = list(row_data or [])
                 rows.append({"account": "", "amount": 0, "currency": DEFAULT_CURRENCY})
                 message = "An empty row was added. Enter the account, amount, and currency, then select Apply." if normalize_locale(locale) == "en" else "Добавлена пустая строка. Заполни счет, сумму и валюту, затем нажми Применить."
-                return rows, message, "secondary"
+                return rows, message, "secondary", no_update
 
             if trigger == "assets-delete-row-button":
-                rows = list(row_data or [])
                 if not selected_rows:
-                    raise ValueError("Выбери строки активов для удаления.")
-                selected_keys = {_asset_row_key(row) for row in selected_rows}
-                rows = [row for row in rows if _asset_row_key(row) not in selected_keys]
-                message = (f"Rows deleted: {len(selected_rows)}. Select Apply to write the changes to CSV." if normalize_locale(locale) == "en" else f"Удалено строк: {len(selected_rows)}. Нажми Применить, чтобы записать изменения в CSV.")
-                return rows, message, "warning"
+                    raise ValueError("Выбери счета активов для архивации.")
+                if not config.use_sqlite_storage():
+                    raise ValueError("Архивация активов доступна в режиме SQLite.")
+                from src.data.sqlite_store import archive_asset_accounts
+
+                result = archive_asset_accounts(
+                    config.active_database_path(),
+                    [row.get("account", "") for row in selected_rows],
+                    period=f"{int(year):04d}-{int(month):02d}",
+                )
+                clear_data_cache()
+                clear_table_cache()
+                clear_main_dashboard_cache()
+                message = (
+                    f"Archived accounts: {result['archived']}. They remain in {result['period']} history and are excluded from later snapshots."
+                    if normalize_locale(locale) == "en"
+                    else f"Отправлено в архив счетов: {result['archived']}. Они остаются в истории за {result['period']} и исключаются из следующих снимков."
+                )
+                return (
+                    _asset_input_records(year, month, locale),
+                    message,
+                    "success",
+                    _asset_classification_rows(locale),
+                )
 
             if trigger == "assets-apply-button":
                 result = write_asset_snapshot(row_data or [], year, month)
@@ -1969,29 +1998,67 @@ def register_callbacks(app: Dash) -> None:
                 clear_table_cache()
                 clear_main_dashboard_cache()
                 message = ((f"Assets saved: {result['rows']} rows. File: {result['path']}. Backup: {result['backup_path'] or 'not created'}." ) if normalize_locale(locale) == "en" else (f"Активы сохранены: {result['rows']} строк. Файл: {result['path']}. Backup: {result['backup_path'] or 'не создавался'}."))
-                return _asset_input_records(year, month, locale), message, "success"
+                return _asset_input_records(year, month, locale), message, "success", no_update
 
             message, color = _asset_input_status(year, month, locale)
-            return _asset_input_records(year, month, locale), message, color
+            return _asset_input_records(year, month, locale), message, color, no_update
         except Exception as exc:
-            return row_data or [], report_text(str(exc), locale), "danger"
+            return row_data or [], report_text(str(exc), locale), "danger", no_update
 
     @app.callback(
         Output("asset-classification-message", "children"),
         Output("asset-classification-message", "color"),
         Output("asset-classification-grid", "rowData"),
+        Output("assets-input-grid", "rowData", allow_duplicate=True),
         Input("asset-classification-save-button", "n_clicks", allow_optional=True),
+        Input("asset-account-restore-button", "n_clicks", allow_optional=True),
         State("asset-classification-grid", "rowData", allow_optional=True),
+        State("asset-classification-grid", "selectedRows", allow_optional=True),
+        State("dashboard-year", "value"),
+        State("dashboard-month", "value"),
         State("dashboard-locale", "data"),
         prevent_initial_call=True,
     )
-    def save_asset_classification(save_clicks, rows, locale):
-        if not save_clicks:
+    def save_asset_classification(save_clicks, restore_clicks, rows, selected_rows,
+                                  year, month, locale):
+        trigger = ctx.triggered_id
+        if trigger not in {
+            "asset-classification-save-button", "asset-account-restore-button"
+        }:
             raise PreventUpdate
         try:
             config.require_writable_mode()
             if not config.use_sqlite_storage():
                 raise ValueError("Классификация активов доступна в режиме SQLite.")
+            if trigger == "asset-account-restore-button":
+                archived = [
+                    row for row in (selected_rows or []) if not row.get("active", True)
+                ]
+                if not archived:
+                    raise ValueError("Выбери архивные счета для возврата.")
+                from src.data.sqlite_store import restore_asset_accounts_to_snapshot
+
+                result = restore_asset_accounts_to_snapshot(
+                    config.active_database_path(),
+                    [row.get("account_id", "") for row in archived],
+                    period=f"{int(year):04d}-{int(month):02d}",
+                )
+                clear_data_cache()
+                clear_table_cache()
+                clear_main_dashboard_cache()
+                refreshed_rows = _asset_classification_rows(locale)
+                message = (
+                    f"Restored accounts: {result['reopened']}; values copied to {result['period']}: {result['inserted']}."
+                    if normalize_locale(locale) == "en"
+                    else f"Возвращено счетов: {result['reopened']}; оценок скопировано в {result['period']}: {result['inserted']}."
+                )
+                return (
+                    message,
+                    "success",
+                    refreshed_rows,
+                    _asset_input_records(year, month, locale),
+                )
+
             from src.data.sqlite_store import set_asset_account_classifications
 
             result = set_asset_account_classifications(
@@ -2021,9 +2088,9 @@ def register_callbacks(app: Dash) -> None:
                 if normalize_locale(locale) == "en"
                 else f"Обновлено счетов: {result['updated']}. "
             )
-            return saved + status, color, refreshed_rows
+            return saved + status, color, refreshed_rows, no_update
         except Exception as exc:
-            return report_text(str(exc), locale), "danger", no_update
+            return report_text(str(exc), locale), "danger", no_update, no_update
 
 
 def _ag_grid_changed_column(change_event, column_name: str) -> bool:
@@ -2109,9 +2176,6 @@ def _main_report_layout(
             datasets["capital"], currency=currency,
             height="640px", theme=theme, locale=locale),
         _graph_section(datasets["inflation_rate"], height="520px", theme=theme, locale=locale),
-        _capital_change_after_flows_section(
-            datasets["capital_change_after_flows"],
-            height="520px", theme=theme, locale=locale),
         _capital_attribution_section(
             datasets["capital_attribution"],
             height="520px", theme=theme, locale=locale),
@@ -2494,8 +2558,6 @@ def _year_report_layout(datasets: dict[str, DashboardDataset], theme: str | None
 def _planning_report_layout(datasets: dict[str, DashboardDataset], theme: str | None, read_only: bool = False, locale: str = DEFAULT_LOCALE):
     return html.Div(
         [
-            _planning_300x_section(
-                datasets["planning_300x"], theme=theme, locale=locale),
             _grid_section(datasets["planning_goals"], height="260px", theme=theme, read_only=read_only, locale=locale),
             dbc.Row(
                 [
@@ -2508,56 +2570,6 @@ def _planning_report_layout(datasets: dict[str, DashboardDataset], theme: str | 
             _graph_section(datasets["planning_fx_scenarios"], height="360px", theme=theme, locale=locale),
         ],
         className="d-grid gap-4",
-    )
-
-
-def _planning_300x_section(
-    dataset: DashboardDataset,
-    theme: str | None = None,
-    locale: str = DEFAULT_LOCALE,
-):
-    data = dataset.display_dataframe if dataset.display_dataframe is not None else dataset.dataframe
-    if data.empty:
-        return _empty_section(dataset, locale=locale)
-    row = data.iloc[0]
-    cards = [
-        ("Средний расход/мес", row.get("Средний расход"), row.get("Период расходов")),
-        ("Цель 300 расходов", row.get("Цель"), f"{row.get('Множитель', '300×')} расходов"),
-        (
-            "Чистый капитал",
-            row.get("Чистый капитал"),
-            f"{report_text('Оценка на', locale)} {row.get('Период капитала', '')}; "
-            f"{report_text('Активы + требования − обязательства', locale)}",
-        ),
-        ("Прогресс цели", row.get("Прогресс (%)"), row.get("Статус")),
-    ]
-    return html.Section(
-        [
-            _section_header(dataset),
-            html.Div(
-                [
-                    html.Div(
-                        [
-                            html.Div(report_text(label, locale), className="finrep-cockpit-label"),
-                            html.Div(report_text(str(value), locale), className="finrep-cockpit-value"),
-                            html.Div(
-                                report_text(str(detail), locale),
-                                className="finrep-cockpit-detail",
-                            ),
-                        ],
-                        className="finrep-cockpit-card finrep-cockpit-neutral",
-                    )
-                    for label, value, detail in cards
-                ],
-                className="finrep-cockpit-grid finrep-mobile-metric-grid",
-            ),
-            dbc.Alert(
-                str(row.get("Детали")),
-                color="warning",
-                className="mt-3 mb-0 py-2",
-            ) if row.get("Детали") else None,
-        ],
-        style=_section_style(theme),
     )
 
 
@@ -2596,13 +2608,22 @@ def _runway_section(dataset: DashboardDataset, theme: str | None = None, locale:
             _section_header(dataset),
             html.Div(
                 [
-                    card(str(report_text("Финансовый запас по денежному потоку, месяцев", locale)), str(row.get("Runway, мес.", report_text("не рассчитано", locale)))),
-                    card(str(report_text("Финансовый запас по денежному потоку, лет", locale)), str(row.get("Runway, лет", report_text("не рассчитано", locale)))),
-                    card(str(report_text("Капитал по денежному потоку", locale)), str(row.get("Капитал по cash-flow", report_text("не задано", locale)))),
+                    card(str(report_text("Финансовый запас по активам, месяцев", locale)), str(row.get("Финансовый запас, мес.", report_text("не рассчитано", locale)))),
+                    card(str(report_text("Финансовый запас по активам, лет", locale)), str(row.get("Финансовый запас, лет", report_text("не рассчитано", locale)))),
+                    card(str(report_text("Капитал по активам", locale)), str(row.get("Капитал по активам", report_text("не задано", locale)))),
                     card(str(report_text("Средний расход/мес", locale)), str(row.get("Средний расход", report_text("не задано", locale)))),
+                    card(
+                        str(report_text("Прогресс от цели", locale)),
+                        str(row.get("Прогресс от цели (%)", report_text("не рассчитано", locale))),
+                    ),
                 ],
                 className="d-grid gap-3",
             ),
+            dbc.Alert(
+                str(row.get("Детали")),
+                color="warning",
+                className="mt-3 mb-0 py-2",
+            ) if row.get("Детали") else None,
         ],
         style=_section_style(theme),
     )
@@ -3450,7 +3471,7 @@ def _assets_input_layout(year: str, month: str, theme: str | None, load_records:
                                 [
                                     dbc.Button(report_text("Загрузить", locale), id="assets-load-button", color="secondary", outline=True, size="sm"),
                                     dbc.Button(report_text("Добавить строку", locale), id="assets-add-row-button", color="secondary", outline=True, size="sm", disabled=read_only),
-                                    dbc.Button(report_text("Удалить выбранные", locale), id="assets-delete-row-button", color="danger", outline=True, size="sm", disabled=read_only),
+                                    dbc.Button(report_text("Отправить в архив", locale), id="assets-delete-row-button", color="warning", outline=True, size="sm", disabled=read_only),
                                     dbc.Button(report_text("Применить", locale), id="assets-apply-button", color="primary", outline=True, size="sm", disabled=read_only),
                                 ],
                                 className="d-flex flex-wrap gap-2 finrep-assets-actions",
@@ -3499,7 +3520,7 @@ def _assets_input_layout(year: str, month: str, theme: str | None, load_records:
                                     ),
                                     html.P(
                                         report_text(
-                                            "Чтобы архивировать счёт, сними флаг «Активен» и укажи последний месяц снимка в поле «Закрыт после».",
+                                            "Архивные счета сохраняются в истории и не проверяются на актуальность. Выбери архивный счёт в таблице, чтобы вернуть его в текущий снимок.",
                                             locale,
                                         ),
                                         className="small mb-0",
@@ -3507,12 +3528,25 @@ def _assets_input_layout(year: str, month: str, theme: str | None, load_records:
                                     ),
                                 ]
                             ),
-                            dbc.Button(
-                                report_text("Сохранить классификацию", locale),
-                                id="asset-classification-save-button",
-                                color="primary",
-                                size="sm",
-                                disabled=classification_read_only,
+                            html.Div(
+                                [
+                                    dbc.Button(
+                                        report_text("Вернуть из архива в текущий снимок", locale),
+                                        id="asset-account-restore-button",
+                                        color="secondary",
+                                        outline=True,
+                                        size="sm",
+                                        disabled=classification_read_only,
+                                    ),
+                                    dbc.Button(
+                                        report_text("Сохранить классификацию", locale),
+                                        id="asset-classification-save-button",
+                                        color="primary",
+                                        size="sm",
+                                        disabled=classification_read_only,
+                                    ),
+                                ],
+                                className="d-flex flex-wrap gap-2",
                             ),
                         ],
                         className="d-flex flex-wrap justify-content-between align-items-start gap-3 mb-3 finrep-asset-classification-header",
@@ -3534,6 +3568,7 @@ def _assets_input_layout(year: str, month: str, theme: str | None, load_records:
                             dashGridOptions={
                                 "pagination": False,
                                 "suppressFieldDotNotation": True,
+                                "rowSelection": "multiple",
                                 "stopEditingWhenCellsLoseFocus": True,
                                 "undoRedoCellEditing": True,
                             },
@@ -3648,7 +3683,8 @@ def _asset_classification_column_defs(
     columns = [
         {"field": "account_id", "hide": True},
         {"field": "Счет", "headerName": "Счет", "flex": 2, "minWidth": 220,
-         "tooltipField": "Счет"},
+         "tooltipField": "Счет",
+         "checkboxSelection": {"function": "params.data && !params.data.active"}},
         {
             "field": "asset_type_id",
             "headerName": "Тип актива",
@@ -3682,16 +3718,15 @@ def _asset_classification_column_defs(
         {
             "field": "active",
             "headerName": "Активен",
-            "editable": editable,
+            "editable": False,
             "cellRenderer": "agCheckboxCellRenderer",
-            "cellEditor": "agCheckboxCellEditor",
             "width": 105,
             "minWidth": 105,
         },
         {
             "field": "closed_period",
             "headerName": "Закрыт после",
-            "editable": editable,
+            "editable": False,
             "width": 150,
             "minWidth": 150,
         },
@@ -4188,10 +4223,6 @@ def _localized_input_column_defs(column_defs: list[dict], locale: str | None) ->
     return localized
 
 
-def _asset_row_key(row: dict) -> tuple[str, str, str]:
-    return (str(row.get("account", "")), str(row.get("amount", "")), str(row.get("currency", "")))
-
-
 def _format_input_amount(value) -> str:
     text = format_money_amount(value)
     sign = "-" if text.startswith("-") else ""
@@ -4494,27 +4525,6 @@ def _capital_section(
     return section
 
 
-def _capital_change_after_flows_section(
-    dataset: DashboardDataset,
-    *,
-    height: str = "520px",
-    theme: str | None = None,
-    locale: str = DEFAULT_LOCALE,
-):
-    section = _graph_section(dataset, height=height, theme=theme, locale=locale)
-    if dataset.dataframe.empty:
-        return section
-    section.children.insert(1, html.P(
-        report_text(
-            "Внешний поток включает активные доходы, расходы и движения по долгам. Проценты и инвестиционный результат остаются в изменении капитала; первый месяц не рассчитывается без начальной оценки.",
-            locale,
-        ),
-        className="small",
-        style={"color": "var(--finrep-muted)"},
-    ))
-    return section
-
-
 def _capital_attribution_section(
     dataset: DashboardDataset,
     *,
@@ -4573,7 +4583,12 @@ def _localized_column_defs(
         if dataset.id == "planning_goals" and column_def["field"] == "Показатель":
             labels = {
                 label: report_text(label, "en")
-                for label in ("Капитал", "Средний доход/мес", "Средний расход/мес")
+                for label in (
+                    "Капитал",
+                    "Средний доход/мес",
+                    "Средний расход/мес",
+                    "N мес расходов",
+                )
             }
             definition["valueFormatter"] = {
                 "function": f"({json.dumps(labels, ensure_ascii=False)})[params.value] || params.value"

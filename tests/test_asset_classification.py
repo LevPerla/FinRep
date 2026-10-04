@@ -78,10 +78,13 @@ def test_assets_input_shows_account_classification_with_history_context(tmp_path
     assert next(column for column in grid.columnDefs if column["field"] == "Счет")["flex"] == 2
     assert type_column["minWidth"] == 190
     assert next(column for column in grid.columnDefs if column["field"] == "active")[
-        "editable"] is True
+        "editable"] is False
     assert next(
         column for column in grid.columnDefs if column["field"] == "closed_period"
-    )["headerName"] == "Закрыт после"
+    )["editable"] is False
+    assert _component(layout, "assets-delete-row-button").children == "Отправить в архив"
+    assert _component(layout, "asset-account-restore-button") is not None
+    assert grid.dashGridOptions["rowSelection"] == "multiple"
     assert next(
         column for column in grid.columnDefs if column["field"] == "Последний снимок"
     )["sort"] == "desc"

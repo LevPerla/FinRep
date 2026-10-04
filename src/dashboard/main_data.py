@@ -108,8 +108,6 @@ def _build_main_dashboard_data(
         for key in ("base_period", "status", "missing_periods", "latest_cpi_period")
         if key in real_asset_capital.attrs
     })
-    capital_change_after_flows = _capital_change_after_flows_data(
-        balance, real_asset_capital)
     capital_attribution = _capital_attribution_data(balance)
     fx_revaluation = _fx_revaluation_data(balance)
     asset_currency_allocation = _asset_currency_allocation_data(currency)
@@ -175,13 +173,6 @@ def _build_main_dashboard_data(
             id="real_asset_capital",
             title="Покупательная способность активов",
             dataframe=real_asset_capital,
-        ),
-        "capital_change_after_flows": DashboardDataset(
-            id="capital_change_after_flows",
-            title="Изменение капитала после внешних потоков",
-            dataframe=capital_change_after_flows,
-            figure=_capital_change_after_flows_figure(
-                capital_change_after_flows, currency),
         ),
         "capital_attribution": DashboardDataset(
             id="capital_attribution",
@@ -750,97 +741,6 @@ def _real_asset_capital_data(
 
 def _current_cpi_period() -> pd.Period:
     return pd.Period(pd.Timestamp.now(), freq="M")
-
-
-def _capital_change_after_flows_data(
-    balance: pd.DataFrame,
-    real_asset_capital: pd.DataFrame,
-) -> pd.DataFrame:
-    columns = [
-        "Дата",
-        "Внешний поток",
-        "Номинальное изменение после потоков",
-        "Реальное изменение после потоков",
-    ]
-    if "Капитал по активам" not in balance.columns:
-        result = pd.DataFrame(columns=columns)
-        result.attrs["status"] = "unavailable"
-        return result
-
-    passive_categories = get_income_categories()
-    passive_names = passive_categories.loc[
-        passive_categories["Класс"].eq("passive"), "Категория"
-    ].tolist()
-    passive_income = pd.Series(0.0, index=balance.index)
-    for category in passive_names:
-        if category in balance.columns:
-            passive_income = passive_income.add(
-                pd.to_numeric(balance[category], errors="coerce").fillna(0.0),
-                fill_value=0.0,
-            )
-
-    capital = pd.to_numeric(balance["Капитал по активам"], errors="coerce")
-    cash_balance = pd.to_numeric(
-        balance.get("Баланс", pd.Series(0.0, index=balance.index)), errors="coerce"
-    ).fillna(0.0)
-    external_flow = cash_balance - passive_income
-    result = pd.DataFrame({
-        "Дата": pd.to_datetime(balance.index),
-        "Внешний поток": external_flow.to_numpy(),
-        "Номинальное изменение после потоков": (
-            capital.diff() - external_flow).to_numpy(),
-    })
-
-    real_status = real_asset_capital.attrs.get("status", "unavailable")
-    deflators = real_asset_capital.attrs.get("deflators", {})
-    if real_status in {"ready", "stale"} and deflators:
-        periods = result["Дата"].dt.to_period("M").astype(str)
-        factors = pd.Series(
-            [float(deflators.get(period, float("nan"))) for period in periods],
-            index=result.index,
-        )
-        real_by_date = real_asset_capital.set_index("Дата")["Реальная стоимость"]
-        real_capital = result["Дата"].map(real_by_date)
-        result["Реальное изменение после потоков"] = (
-            real_capital.diff() - external_flow.reset_index(drop=True) * factors
-        )
-    else:
-        result["Реальное изменение после потоков"] = float("nan")
-
-    result = result[capital.notna().to_numpy()].reset_index(drop=True)
-    result.attrs["status"] = real_status
-    result.attrs["base_period"] = real_asset_capital.attrs.get("base_period", "")
-    return result[columns]
-
-
-def _capital_change_after_flows_figure(
-    data: pd.DataFrame,
-    currency: str,
-) -> go.Figure:
-    fig = go.Figure()
-    if data.empty:
-        _apply_dashboard_chart_layout(fig, "", range_slider=True)
-        return fig
-    x_dates = _month_start_dates(data)
-    traces = (
-        ("Номинальное изменение после потоков", "#6F8FB8"),
-        ("Реальное изменение после потоков", "#B08A6C"),
-    )
-    for column, color in traces:
-        values = pd.to_numeric(data[column], errors="coerce")
-        if not values.notna().any():
-            continue
-        fig.add_trace(go.Bar(
-            x=x_dates,
-            y=values,
-            name=column,
-            marker_color=color,
-            hovertemplate=f"{column}<br>%{{x|%Y-%m}}<br>%{{y:,.0f}}<extra></extra>",
-        ))
-    _apply_dashboard_chart_layout(fig, "", range_slider=True)
-    fig.update_layout(barmode="group", yaxis_title=config.UNIQUE_TICKERS[currency])
-    fig.add_hline(y=0, line_dash="dot", line_color="rgba(120,120,120,0.7)")
-    return fig
 
 
 def _capital_attribution_data(balance: pd.DataFrame) -> pd.DataFrame:

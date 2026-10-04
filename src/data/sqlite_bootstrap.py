@@ -75,7 +75,7 @@ def _upgrade_existing_database(path: Path) -> bool:
     version = _schema_version(path)
     if version == SCHEMA_VERSION:
         return False
-    if version not in {7, 8, 9, 10, 11, 12, 13}:
+    if not 7 <= version < SCHEMA_VERSION:
         raise RuntimeError(
             f"Unsupported SQLite schema version {version}; expected {SCHEMA_VERSION}")
     backup = path.with_name(f"{path.stem}.pre-v{SCHEMA_VERSION}{path.suffix}")
