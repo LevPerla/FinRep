@@ -192,7 +192,7 @@ def save_import_to_transactions(import_rows: list[dict]) -> dict:
             "pending_keys": [],
         }
 
-    stored, _ = read_transaction_drafts_snapshot()
+    stored, current_revision = read_transaction_drafts_snapshot()
     exported_keys = set(zip(
         stored.loc[stored["status"].eq("exported"), "source"].astype(str),
         stored.loc[stored["status"].eq("exported"), "source_id"].astype(str),
@@ -202,15 +202,40 @@ def save_import_to_transactions(import_rows: list[dict]) -> dict:
     ))
     rows_to_stage = actionable[
         [key not in exported_keys for key in actionable_keys]
-    ]
+    ].copy(deep=True)
+    existing_source_keys = _existing_source_keys()
+    history_duplicate_mask = rows_to_stage.apply(
+        lambda row: _source_key(row) in existing_source_keys, axis=1
+    )
+    history_duplicate_keys = set(zip(
+        rows_to_stage.loc[history_duplicate_mask, "source"].astype(str),
+        rows_to_stage.loc[history_duplicate_mask, "source_id"].astype(str),
+    ))
     stage_result = {"accepted_rows": 0, "skipped_rows": 0}
     if not rows_to_stage.empty:
+        rows_to_stage["staging_revision"] = current_revision
+        rows_to_stage["duplicate_in_source"] = history_duplicate_mask
+        rows_to_stage.loc[history_duplicate_mask, "import_action"] = "skip"
         stage_result = save_import_to_staging(rows_to_stage.to_dict("records"))
 
-    publish_result = publish_transaction_draft_rows(actionable.to_dict("records"))
+    stored_after, _ = read_transaction_drafts_snapshot()
+    stored_keys = set(zip(
+        stored_after["source"].astype(str),
+        stored_after["source_id"].astype(str),
+    ))
+    rows_to_publish = actionable[
+        [
+            key in stored_keys and key not in history_duplicate_keys
+            for key in actionable_keys
+        ]
+    ]
+    publish_result = publish_transaction_draft_rows(
+        rows_to_publish.to_dict("records"))
+    publish_result["already_published_rows"] += len(history_duplicate_keys)
     return {
         "accepted_rows": int(stage_result["accepted_rows"]),
-        "skipped_rows": int(len(incoming) - len(actionable)),
+        "skipped_rows": int(len(incoming) - len(actionable))
+        + len(history_duplicate_keys),
         **publish_result,
     }
 

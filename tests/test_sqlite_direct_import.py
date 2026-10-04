@@ -1,7 +1,13 @@
 from __future__ import annotations
 
 from src.data.importers import common
-from src.data.sqlite_store import connect_database, initialize_database
+from src.data.get import clear_data_cache
+from src.data.sqlite_store import (
+    add_cash_transaction,
+    append_cash_drafts,
+    connect_database,
+    initialize_database,
+)
 
 
 def _configure_sqlite(tmp_path, monkeypatch):
@@ -77,6 +83,73 @@ def test_pending_import_stays_in_staging(tmp_path, monkeypatch):
         assert connection.execute(
             "SELECT status FROM transaction_drafts"
         ).fetchone()[0] == "draft"
+
+
+def test_direct_save_rechecks_history_without_requesting_preview(
+        tmp_path, monkeypatch):
+    database = _configure_sqlite(tmp_path, monkeypatch)
+    preview = common.import_frame_from_rows(
+        [{
+            "date": "2026-10-02",
+            "signed_amount": -50,
+            "currency": "RUB",
+            "details": "Already saved elsewhere",
+        }],
+        statement_id="stale-history",
+    )
+    add_cash_transaction(
+        database,
+        transaction_id="existing-transaction",
+        occurred_on="2026-10-02",
+        flow_direction="expense",
+        category_id="expense.other",
+        amount="50",
+        currency="RUB",
+        comment="Already saved elsewhere",
+    )
+    clear_data_cache()
+
+    result = common.save_import_to_transactions(preview.to_dict("records"))
+
+    assert result["published_rows"] == 0
+    assert result["already_published_rows"] == 1
+    assert result["skipped_rows"] == 1
+    with connect_database(database) as connection:
+        assert connection.execute(
+            "SELECT count(*) FROM cash_transactions").fetchone()[0] == 1
+
+
+def test_direct_save_uses_current_staging_revision(tmp_path, monkeypatch):
+    database = _configure_sqlite(tmp_path, monkeypatch)
+    preview = common.import_frame_from_rows(
+        [{
+            "date": "2026-10-03",
+            "signed_amount": -75,
+            "currency": "RUB",
+            "details": "Fresh direct save",
+        }],
+        statement_id="stale-revision",
+    )
+    append_cash_drafts(
+        database,
+        rows=[{
+            "origin_kind": "manual",
+            "origin_key": "unrelated-draft",
+            "occurred_on": "2026-10-01",
+            "flow_direction": "expense",
+            "category_id": "expense.other",
+            "amount": "1",
+            "currency": "RUB",
+            "comment": "Unrelated draft",
+        }],
+    )
+
+    result = common.save_import_to_transactions(preview.to_dict("records"))
+
+    assert result["published_rows"] == 1
+    with connect_database(database) as connection:
+        assert connection.execute(
+            "SELECT count(*) FROM cash_transactions").fetchone()[0] == 1
 
 
 def test_sqlite_input_layout_replaces_month_preview_with_direct_save(
