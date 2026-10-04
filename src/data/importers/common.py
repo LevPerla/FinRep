@@ -38,9 +38,13 @@ def import_frame_from_rows(
     if data.empty:
         return _empty_import_frame()
     data["is_internal_transfer"] = data["details"].map(is_internal_transfer)
-    history_categories = _history_category_lookup()
+    category_directions = _category_direction_map()
+    history_categories = _history_category_lookup(category_directions)
     data["category"] = data.apply(
-        lambda row: categorize(row["details"], row["signed_amount"], history_categories), axis=1
+        lambda row: categorize(
+            row["details"], row["signed_amount"], history_categories, category_directions
+        ),
+        axis=1,
     )
     data["amount"] = data["signed_amount"].abs()
     data["direction"] = data["signed_amount"].map(
@@ -112,13 +116,20 @@ def save_import_to_staging(import_rows: list[dict], path: str | Path | None = No
     accepted = incoming[~duplicate_mask].copy(deep=True)
     if accepted.empty:
         return {"accepted_rows": 0, "skipped_rows": int(len(incoming))}
-    invalid_credit_category = (
-        accepted["direction"].astype(str).str.lower().eq("credit")
-        & ~accepted["category"].astype(str).isin(config.NOT_COST_COLS)
+    directions = accepted["direction"].astype(str).str.lower()
+    direction_map = _category_direction_map()
+    category_directions = accepted["category"].map(
+        lambda category: _category_direction(category, direction_map)
     )
+    invalid_credit_category = directions.eq("credit") & category_directions.ne("income")
     if invalid_credit_category.any():
         raise ValueError(
             "Банковское поступление нельзя сохранить как расход: выбери «Сбережения», «Доход» или другую категорию поступления."
+        )
+    invalid_debit_category = directions.eq("debit") & category_directions.ne("expense")
+    if invalid_debit_category.any():
+        raise ValueError(
+            "Банковский расход нельзя сохранить как доход: выбери расходную категорию."
         )
 
     draft_rows = accepted[DRAFT_COLUMNS].copy(deep=True)
@@ -149,17 +160,25 @@ def _as_bool_series(values: pd.Series) -> pd.Series:
     return values.astype(str).str.lower().isin({"true", "1", "yes"})
 
 
-def categorize(details: str, amount: float, history_categories: dict[str, str] | None = None) -> str:
+def categorize(
+    details: str,
+    amount: float,
+    history_categories: dict | None = None,
+    category_directions: dict[str, str] | None = None,
+) -> str:
     if is_internal_transfer(details):
         return INTERNAL_TRANSFER_CATEGORY
-    history_category = (history_categories or {}).get(_normalize_text(_clean_comment(details)))
+    direction = "income" if amount > 0 else "expense"
+    comment_key = _normalize_text(_clean_comment(details))
+    history_category = (history_categories or {}).get((comment_key, direction))
+    if not history_category:
+        history_category = (history_categories or {}).get(comment_key)
     if history_category:
-        return _category_for_direction(history_category, amount)
+        return _category_for_direction(history_category, amount, category_directions)
     rules = _load_rules()
     normalized = _normalize_text(details)
     for _, rule in rules.iterrows():
         direction_scope = str(rule.get("direction_scope", "any"))
-        direction = "income" if amount > 0 else "expense"
         if direction_scope not in {"", "any", direction}:
             continue
         pattern = _normalize_text(rule.get("pattern", ""))
@@ -173,18 +192,52 @@ def categorize(details: str, amount: float, history_categories: dict[str, str] |
         )
         if matched:
             return _category_for_direction(
-                str(rule.get("category", DEFAULT_EXPENSE_CATEGORY)), amount
+                str(rule.get("category", DEFAULT_EXPENSE_CATEGORY)),
+                amount,
+                category_directions,
             )
     return DEFAULT_INCOME_CATEGORY if amount > 0 else DEFAULT_EXPENSE_CATEGORY
 
 
-def _category_for_direction(category: str, signed_amount: float) -> str:
-    if signed_amount > 0 and category not in config.NOT_COST_COLS:
-        return "Сбережения"
+def _category_for_direction(
+    category: str,
+    signed_amount: float,
+    category_directions: dict[str, str] | None = None,
+) -> str:
+    category_direction = _category_direction(category, category_directions)
+    if signed_amount > 0 and category_direction == "expense":
+        return "Прочие доходы" if config.use_sqlite_storage() else "Сбережения"
+    if signed_amount < 0 and category_direction == "income":
+        return DEFAULT_EXPENSE_CATEGORY
     return category
 
 
-def _history_category_lookup() -> dict[str, str]:
+def _category_direction(
+    category: str, category_directions: dict[str, str] | None = None
+) -> str:
+    label = str(category).strip()
+    return (category_directions or _category_direction_map()).get(label, "expense")
+
+
+def _category_direction_map() -> dict[str, str]:
+    result = {
+        "Доход": "income",
+        "Сбережения": "income",
+        **{label: "income" for label in config.INCOME_CATEGORY_LABELS},
+    }
+    if config.use_sqlite_storage():
+        try:
+            from src.data.sqlite_store import categories
+
+            for row in categories(config.active_database_path(), include_internal=True):
+                result[str(row["id"])] = str(row["direction"])
+                result[str(row["name_ru"])] = str(row["direction"])
+        except Exception:
+            pass
+    return result
+
+
+def _history_category_lookup(category_directions: dict[str, str] | None = None) -> dict:
     try:
         transactions = get_transactions()
     except Exception:
@@ -197,11 +250,23 @@ def _history_category_lookup() -> dict[str, str]:
     history = history[history["Комментарий"].notna() & history["Категория"].notna()]
     history["__comment"] = history["Комментарий"].map(_normalize_text)
     history["__category"] = history["Категория"].astype(str).str.strip()
+    direction_map = category_directions or _category_direction_map()
+    history["__direction"] = history["__category"].map(
+        lambda category: _category_direction(category, direction_map)
+    )
     history["__date"] = pd.to_datetime(history["Дата"], errors="coerce")
     history = history[history["__comment"].ne("") & history["__category"].ne("")]
     history = history.sort_values("__date", ascending=False, kind="mergesort")
-    history = history.drop_duplicates("__comment", keep="first")
-    return dict(zip(history["__comment"], history["__category"]))
+    latest = history.drop_duplicates("__comment", keep="first")
+    latest_by_direction = history.drop_duplicates(
+        ["__comment", "__direction"], keep="first"
+    )
+    result = dict(zip(latest["__comment"], latest["__category"]))
+    result.update({
+        (row["__comment"], row["__direction"]): row["__category"]
+        for _, row in latest_by_direction.iterrows()
+    })
+    return result
 
 
 def _load_rules() -> pd.DataFrame:

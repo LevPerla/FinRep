@@ -1229,8 +1229,10 @@ def _sqlite_cash_draft_payload(row: pd.Series | dict) -> dict:
     if explicit_direction is None:
         raise ValueError("Некорректное направление операции.")
     if explicit_direction != direction:
-        direction = explicit_direction
-        category_id = "income.other" if direction == "income" else "expense.other"
+        operation_label = "поступлению" if explicit_direction == "income" else "расходу"
+        raise ValueError(
+            f"Категория {label!r} не соответствует банковскому {operation_label}."
+        )
     return {
         "occurred_on": str(row.get("date", "")), "flow_direction": direction,
         "category_id": category_id, "amount": row.get("amount"),

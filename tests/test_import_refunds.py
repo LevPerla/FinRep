@@ -91,6 +91,18 @@ def test_credit_cannot_be_saved_in_expense_category(import_data):
     assert staging.read_transaction_drafts().empty
 
 
+def test_expense_cannot_be_saved_in_income_category(import_data):
+    with patch.object(common, "get_transactions", return_value=pd.DataFrame()):
+        preview = _preview(-40, "expense")
+    rows = preview.to_dict("records")
+    rows[0]["category"] = "Прочие доходы"
+
+    with pytest.raises(ValueError, match="нельзя сохранить как доход"):
+        common.save_import_to_staging(rows)
+
+    assert staging.read_transaction_drafts().empty
+
+
 def test_expense_and_refund_have_net_cash_effect_of_minus_sixty(import_data):
     expense = _preview(-100, "expense")
     common.save_import_to_staging(expense.to_dict("records"))

@@ -46,6 +46,7 @@ from src.data.staging import (
     prepare_monthly_transaction_export,
     read_monthly_transaction_csv,
     read_transaction_drafts,
+    read_transaction_drafts_snapshot,
 )
 from src.data.sqlite_bootstrap import ensure_default_live_database
 from src.dashboard.expense_data import build_expense_dashboard_data
@@ -953,6 +954,8 @@ def register_callbacks(app: Dash) -> None:
                                  _cpi_refresh_result: dict | None,
                                  transaction_save_result: dict | None,
                                  crypto_status: dict | None):
+        if ctx.triggered_id == "transaction-save-result":
+            raise PreventUpdate
         fx_network_enabled = ctx.triggered_id == "refresh-fx-rates" and not config.is_test_mode()
 
         def finish(content):
@@ -1478,6 +1481,9 @@ def register_callbacks(app: Dash) -> None:
         Output("transaction-export-message", "color"),
         Output("transaction-export-preview-state", "data"),
         Output("transaction-save-result", "data"),
+        Output("kaspi-import-grid", "rowData", allow_duplicate=True),
+        Output("transaction-import-period", "options", allow_duplicate=True),
+        Output("transaction-import-period", "value", allow_duplicate=True),
         Input("transaction-preview-export-button", "n_clicks", allow_optional=True),
         Input("transaction-confirm-export-button", "n_clicks", allow_optional=True),
         State("dashboard-currency", "value"),
@@ -1524,6 +1530,16 @@ def register_callbacks(app: Dash) -> None:
                     result["exported_rows"],
                     preview_state.get("import_summary"),
                 )
+                saved_period = f"{year}-{str(month).zfill(2)}"
+                remaining_import_rows = [
+                    dict(row) for row in (import_rows or [])
+                    if pd.to_datetime(row.get("date"), errors="coerce").strftime("%Y-%m")
+                    != saved_period
+                ]
+                _, staging_revision = read_transaction_drafts_snapshot()
+                for row in remaining_import_rows:
+                    row["staging_revision"] = staging_revision
+                period_options, period_value = _import_period_selection(remaining_import_rows)
                 return (
                     _dataframe_records(preview),
                     _localized_input_column_defs(_simple_column_defs(preview), locale),
@@ -1531,6 +1547,9 @@ def register_callbacks(app: Dash) -> None:
                     "success",
                     None,
                     save_result,
+                    remaining_import_rows,
+                    period_options,
+                    period_value,
                 )
 
             import_result = None
@@ -1544,12 +1563,17 @@ def register_callbacks(app: Dash) -> None:
                     raise ValueError("Выбранный период не соответствует строкам текущей выписки.")
                 year, month = import_period.split("-", 1)
                 config.require_writable_mode()
-                import_result = save_import_to_staging(import_rows)
+                selected_import_rows = [
+                    row for row in import_rows
+                    if pd.to_datetime(row.get("date"), errors="coerce").strftime("%Y-%m")
+                    == import_period
+                ]
+                import_result = save_import_to_staging(selected_import_rows)
 
             preview, preview_state = prepare_monthly_transaction_export(year, month)
             if import_result is not None:
                 preview_state["import_summary"] = _transaction_import_summary(
-                    import_rows, import_result
+                    selected_import_rows, import_result
                 )
             message = str(report_text(f"Preview построен для {year}-{str(month).zfill(2)}.", locale))
             if import_result is not None:
@@ -1564,6 +1588,16 @@ def register_callbacks(app: Dash) -> None:
                 message += (" The monthly CSV has not changed yet."
                             if normalize_locale(locale) == "en"
                             else " Месячный CSV ещё не изменён.")
+            refreshed_import_rows = no_update
+            period_options = no_update
+            period_value = no_update
+            if import_rows:
+                _, staging_revision = read_transaction_drafts_snapshot()
+                refreshed_import_rows = [dict(row) for row in import_rows]
+                for row in refreshed_import_rows:
+                    row["staging_revision"] = staging_revision
+                period_options, _automatic_period = _import_period_selection(refreshed_import_rows)
+                period_value = import_period
             return (
                 _dataframe_records(preview),
                 _localized_input_column_defs(_simple_column_defs(preview), locale),
@@ -1571,6 +1605,9 @@ def register_callbacks(app: Dash) -> None:
                 "secondary",
                 preview_state,
                 no_update,
+                refreshed_import_rows,
+                period_options,
+                period_value,
             )
         except Exception as exc:
             if trigger == "transaction-confirm-export-button" and preview_rows:
@@ -1582,9 +1619,31 @@ def register_callbacks(app: Dash) -> None:
                     "danger",
                     preview_state,
                     no_update,
+                    no_update,
+                    no_update,
+                    no_update,
                 )
             empty = pd.DataFrame()
-            return [], _localized_input_column_defs(_simple_column_defs(empty), locale), report_text(str(exc), locale), "danger", preview_state, no_update
+            return (
+                [],
+                _localized_input_column_defs(_simple_column_defs(empty), locale),
+                report_text(str(exc), locale),
+                "danger",
+                preview_state,
+                no_update,
+                no_update,
+                no_update,
+                no_update,
+            )
+
+    @app.callback(
+        Output("transaction-save-result-panel", "children"),
+        Input("transaction-save-result", "data"),
+        State("dashboard-locale", "data"),
+        prevent_initial_call=True,
+    )
+    def render_transaction_save_result(result, locale):
+        return _transaction_save_result_panel(result, locale)
 
     @app.callback(
         Output("active-receivable-debts-grid", "rowData"),
@@ -3727,12 +3786,24 @@ def _kaspi_import_column_defs() -> list[dict]:
     if config.use_sqlite_storage():
         from src.data.sqlite_store import categories as category_registry
 
-        categories = [
-            row["name_ru"] for row in category_registry(config.active_database_path())
+        category_rows = [
+            row for row in category_registry(config.active_database_path())
             if row["active"] and row["parent_id"] is None
+        ]
+        income_categories = [
+            row["name_ru"] for row in category_rows if row["direction"] == "income"
+        ]
+        expense_categories = [
+            row["name_ru"] for row in category_rows if row["direction"] == "expense"
         ]
     else:
         categories = [option["value"] for option in _transaction_category_options()]
+        income_categories = [
+            category for category in categories if category in config.NOT_COST_COLS
+        ]
+        expense_categories = [
+            category for category in categories if category not in config.NOT_COST_COLS
+        ]
     category_class_rules = {
         "finrep-category-selected": (
             "params.api.__finrepCategorySelection && "
@@ -3747,7 +3818,20 @@ def _kaspi_import_column_defs() -> list[dict]:
         "kaspi-category-other": "params.value == 'Прочее'",
     }
     return [
-        {"field": "category", "headerName": "Категория", "editable": True, "cellEditor": "agSelectCellEditor", "cellEditorParams": {"values": categories}, "width": 190, "sort": "asc", "cellClassRules": category_class_rules},
+        {
+            "field": "category",
+            "headerName": "Категория",
+            "editable": True,
+            "cellEditor": "agSelectCellEditor",
+            "cellEditorParams": {"function": "finrepCategoryEditorParams(params)"},
+            "context": {
+                "incomeCategories": income_categories,
+                "expenseCategories": expense_categories,
+            },
+            "width": 190,
+            "sort": "asc",
+            "cellClassRules": category_class_rules,
+        },
         {"field": "date", "headerName": "Дата", "width": 120, "sort": "asc", "sortIndex": 1},
         {
             "field": "amount",

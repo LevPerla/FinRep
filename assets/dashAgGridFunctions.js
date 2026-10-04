@@ -11,6 +11,17 @@ function finrepRefreshCategoryCells(api) {
   api.refreshCells({columns: ["category"], force: true});
 }
 
+function finrepCategoriesForRow(params) {
+  var categoryContext = params.colDef?.context || {};
+  return params.data?.direction === "credit"
+    ? (categoryContext.incomeCategories || [])
+    : (categoryContext.expenseCategories || []);
+}
+
+dagfuncs.finrepCategoryEditorParams = function (params) {
+  return {values: finrepCategoriesForRow(params)};
+};
+
 dagfuncs.finrepCategorySelectionReset = function (params) {
   params.api.__finrepCategorySelection = new Set();
   params.api.__finrepCategoryAnchor = null;
@@ -76,8 +87,7 @@ function finrepPasteCategory(event) {
   var category = String(event.clipboardData.getData("text/plain") || "")
     .split(/[\t\r\n]/, 1)[0]
     .trim();
-  var editorParams = context.column.getColDef().cellEditorParams || {};
-  var categories = editorParams.values || [];
+  var categories = finrepCategoriesForRow(context);
   if (!category || !categories.includes(category)) {
     return;
   }
@@ -88,7 +98,11 @@ function finrepPasteCategory(event) {
     selection.add(context.node.id);
   }
   context.api.forEachNode(function (node) {
-    if (selection.has(node.id)) {
+    var nodeParams = {
+      colDef: context.column.getColDef(),
+      data: node.data
+    };
+    if (selection.has(node.id) && finrepCategoriesForRow(nodeParams).includes(category)) {
       node.setDataValue("category", category);
     }
   });
