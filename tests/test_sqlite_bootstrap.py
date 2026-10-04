@@ -182,7 +182,7 @@ def test_v7_database_is_backed_up_and_upgraded_without_guessing_asset_types(
             "SELECT asset_type_id, include_in_capital FROM asset_accounts"
         ).fetchone() == (None, 1)
         assert connection.execute("SELECT COUNT(*) FROM asset_snapshots").fetchone()[0] == 1
-        assert connection.execute("SELECT COUNT(*) FROM asset_types").fetchone()[0] == 8
+        assert connection.execute("SELECT COUNT(*) FROM asset_types").fetchone()[0] == 9
         assert connection.execute("SELECT COUNT(*) FROM liquidity_classes").fetchone()[0] == 4
         assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
     with sqlite3.connect(backup) as connection:

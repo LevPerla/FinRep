@@ -285,6 +285,97 @@ def append_transaction_draft_rows(
         }
 
 
+def publish_transaction_draft_rows(rows: list[dict]) -> dict:
+    """Publish selected SQLite cash drafts without a month-level Preview."""
+    config.require_writable_mode()
+    if not config.use_sqlite_storage():
+        raise ValueError("Прямое сохранение транзакций доступно только в SQLite.")
+    if not rows:
+        return {
+            "published_rows": 0,
+            "already_published_rows": 0,
+            "pending_rows": 0,
+            "published_keys": [],
+            "pending_keys": [],
+        }
+
+    from src.data.sqlite_store import (
+        StorageRevisionConflict,
+        publish_transaction_draft_preview,
+        transaction_drafts_snapshot,
+    )
+
+    incoming = _normalize_drafts(pd.DataFrame(rows, dtype=object))
+    stored_rows, revision = transaction_drafts_snapshot(config.active_database_path())
+    stored_by_key = {
+        (str(row["origin_kind"]), str(row["origin_key"])): row
+        for row in stored_rows
+    }
+    requested_keys = list(zip(
+        incoming["source"].astype(str), incoming["source_id"].astype(str)
+    ))
+    if len(requested_keys) != len(set(requested_keys)):
+        raise ValueError("Импорт содержит повторяющиеся идентификаторы операций.")
+
+    updates = []
+    draft_ids = []
+    published_keys = []
+    pending_keys = []
+    already_published = 0
+    for row, key in zip(incoming.to_dict("records"), requested_keys):
+        stored = stored_by_key.get(key)
+        if stored is None:
+            raise ValueError("Операция отсутствует в staging: повтори сохранение.")
+        if stored["draft_kind"] != "cash":
+            raise ValueError("Черновик не является денежной транзакцией.")
+        if stored["status"] == "exported":
+            already_published += 1
+            published_keys.append(key)
+            continue
+        if stored["status"] not in {"draft", "ready"}:
+            raise ValueError("Операция больше не доступна для сохранения.")
+        if stored["bank_status"] == "pending":
+            pending_keys.append(key)
+            continue
+        update = _sqlite_cash_draft_payload(row)
+        update.update({"id": stored["id"], "row_version": stored["row_version"]})
+        updates.append(update)
+        draft_ids.append(stored["id"])
+        published_keys.append(key)
+
+    published_rows = 0
+    if updates:
+        identity = {
+            "draft_ids": sorted(draft_ids),
+            "rows": sorted(updates, key=lambda row: row["id"]),
+        }
+        operation_key = "publish-import-" + sha256(json.dumps(
+            identity, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        ).encode()).hexdigest()
+        try:
+            result = publish_transaction_draft_preview(
+                config.active_database_path(),
+                rows=updates,
+                draft_ids=draft_ids,
+                expected_revision=revision,
+                operation_key=operation_key,
+            )
+        except StorageRevisionConflict as exc:
+            raise DraftRevisionConflict(
+                "Staging изменился во время сохранения: повтори операцию."
+            ) from exc
+        published_rows = int(result["published_rows"])
+        _clear_transaction_report_caches()
+
+    return {
+        "published_rows": published_rows,
+        "already_published_rows": already_published,
+        "pending_rows": len(pending_keys),
+        "published_keys": published_keys,
+        "pending_keys": pending_keys,
+    }
+
+
 def update_transaction_draft(source: str, source_id: str, updates: dict, path: str | Path | None = None) -> pd.DataFrame:
     config.require_writable_mode()
     if path is None and config.use_sqlite_storage():
@@ -1229,8 +1320,10 @@ def _sqlite_cash_draft_payload(row: pd.Series | dict) -> dict:
     if explicit_direction is None:
         raise ValueError("Некорректное направление операции.")
     if explicit_direction != direction:
-        direction = explicit_direction
-        category_id = "income.other" if direction == "income" else "expense.other"
+        operation_label = "поступлению" if explicit_direction == "income" else "расходу"
+        raise ValueError(
+            f"Категория {label!r} не соответствует банковскому {operation_label}."
+        )
     return {
         "occurred_on": str(row.get("date", "")), "flow_direction": direction,
         "category_id": category_id, "amount": row.get("amount"),

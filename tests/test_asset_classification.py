@@ -53,7 +53,7 @@ def test_assets_input_shows_account_classification_with_history_context(tmp_path
     assert row["account_id"] == "account-1"
     assert row["Счет"] == "Основной счёт"
     assert row["asset_type_id"] == "__unclassified__"
-    assert row["liquidity_choice"] == "__automatic__"
+    assert "liquidity_choice" not in row
     assert row["liquidity_class_id"] == ""
     assert row["liquidity_source"] == "unclassified"
     assert row["Включать в капитал"] is True
@@ -67,10 +67,39 @@ def test_assets_input_shows_account_classification_with_history_context(tmp_path
     assert type_column["editable"] is True
     assert type_column["cellEditorParams"]["values"][0] == "__unclassified__"
     assert "deposit" in type_column["cellEditorParams"]["values"]
+    assert "cash" in type_column["cellEditorParams"]["values"]
     liquidity_column = next(
-        column for column in grid.columnDefs if column["field"] == "liquidity_choice")
-    assert liquidity_column["cellEditorParams"]["values"] == [
-        "__automatic__", "A1", "A2", "A3", "A4"]
+        column for column in grid.columnDefs if column["field"] == "liquidity_class_id")
+    assert liquidity_column["editable"] is False
+    assert "cellEditorParams" not in liquidity_column
+    assert next(column for column in grid.columnDefs if column["field"] == "Счет")["flex"] == 2
+    assert type_column["minWidth"] == 190
+    assert next(
+        column for column in grid.columnDefs if column["field"] == "Последний снимок"
+    )["sort"] == "desc"
+    snapshot_columns = {column["field"]: column for column in snapshot_grid.columnDefs}
+    assert [column["field"] for column in snapshot_grid.columnDefs[:4]] == [
+        "account", "asset_type", "amount", "currency"]
+    assert snapshot_columns["account"]["flex"] == 2
+    assert snapshot_columns["asset_type"]["editable"] is False
+    assert snapshot_columns["account"]["cellClassRules"] == snapshot_columns[
+        "asset_type"]["cellClassRules"]
+    assert set(snapshot_columns["asset_type"]["cellClassRules"]) == {
+        "finrep-asset-kind-cash",
+        "finrep-asset-kind-cash-account",
+        "finrep-asset-kind-deposit",
+        "finrep-asset-kind-bond",
+        "finrep-asset-kind-equity",
+        "finrep-asset-kind-fund",
+        "finrep-asset-kind-crypto",
+        "finrep-asset-kind-real-estate",
+        "finrep-asset-kind-other",
+        "finrep-asset-kind-unclassified",
+    }
+    assert snapshot_columns["amount"]["flex"] == 1
+    assert snapshot_columns["currency"]["flex"] == 0.7
+    assert snapshot_grid.rowData[0]["asset_type"] == "Не классифицировано"
+    assert snapshot_grid.rowData[0]["asset_type_id"] == "__unclassified__"
     assert "Не классифицировано: 1" in message.children
     assert "Ликвидность не задана: 1" in message.children
     assert "Устаревших оценок: 0" in message.children
@@ -105,7 +134,6 @@ def test_asset_classification_callback_saves_all_rows_and_refreshes_capital(
             "account_id": "account-1",
             "Счет": "Основной счёт",
             "asset_type_id": "deposit",
-            "liquidity_choice": "A2",
             "liquidity_class_id": "",
             "liquidity_source": "unclassified",
             "Включать в капитал": False,
@@ -137,7 +165,47 @@ def test_asset_classification_callback_saves_all_rows_and_refreshes_capital(
     assert "Обновлено счетов: 1" in result["asset-classification-message"]["children"]
     account = asset_accounts(database)[0]
     assert account["asset_type_id"] == "deposit"
-    assert account["liquidity_class_override_id"] == "A2"
-    assert account["liquidity_class_id"] == "A2"
-    assert account["liquidity_source"] == "manual"
+    assert account["liquidity_class_override_id"] is None
+    assert account["liquidity_class_id"] == "A1"
+    assert account["liquidity_source"] == "suggested"
     assert account["include_in_capital"] == 0
+
+
+def test_asset_classification_rows_sort_by_latest_snapshot_descending(
+        tmp_path, monkeypatch):
+    from src.dashboard.app import _asset_classification_rows
+
+    database = tmp_path / "finrep.sqlite3"
+    initialize_database(database)
+    for account_id, name, period in [
+        ("old", "Старый", "2024-01"),
+        ("new-b", "Бета", "2026-02"),
+        ("new-a", "Альфа", "2026-02"),
+    ]:
+        add_asset_account(database, account_id, name)
+        add_asset_snapshot(
+            database, snapshot_id=f"snapshot-{account_id}", account_id=account_id,
+            period=period, amount="100", currency="RUB")
+    add_asset_account(database, "empty", "Без снимка")
+    _use_live_sqlite(monkeypatch, database)
+
+    rows = _asset_classification_rows("ru")
+
+    assert [row["account_id"] for row in rows] == ["new-a", "new-b", "old", "empty"]
+
+
+def test_asset_input_records_show_localized_type_from_account_classification(
+        tmp_path, monkeypatch):
+    from src.dashboard.app import _asset_input_records
+
+    database = tmp_path / "finrep.sqlite3"
+    initialize_database(database)
+    add_asset_account(database, "cash", "Кошелёк", asset_type_id="cash")
+    add_asset_snapshot(
+        database, snapshot_id="snapshot-cash", account_id="cash",
+        period="2026-09", amount="100", currency="RUB")
+    _use_live_sqlite(monkeypatch, database)
+
+    assert _asset_input_records("2026", "09", "ru")[0]["asset_type"] == "Наличные"
+    assert _asset_input_records("2026", "09", "en")[0]["asset_type"] == "Cash"
+    assert _asset_input_records("2026", "09", "ru")[0]["asset_type_id"] == "cash"

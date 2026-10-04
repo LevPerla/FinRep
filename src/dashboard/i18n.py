@@ -329,6 +329,7 @@ REPORT_TEXT_EN = {
     "Период Preview": "Preview period",
     "Выбери месяц выписки": "Select statement month",
     "Сохранить месяц": "Save month",
+    "Сохранить транзакции": "Save transactions",
     "Проверь импорт выше и нажми Preview. Без загруженной выписки используется выбранный период отчёта. Данные месяца изменятся только после нажатия «Сохранить месяц».": "Review the import above and select Preview. Without an uploaded statement, the selected report period is used. Monthly data changes only after you select Save month.",
     "Заполни дату, категорию, валюту и сумму.": "Enter the date, category, currency, and amount.",
     "Черновик добавлен.": "Draft added.",

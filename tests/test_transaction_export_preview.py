@@ -204,7 +204,7 @@ def test_multi_month_import_requires_period_before_any_write(export_paths, monke
     assert _snapshot(drafts.parents[1]) == before
 
 
-def test_import_preview_uses_statement_period_and_stages_all_rows(export_paths, monkeypatch):
+def test_import_preview_stages_selected_period_and_keeps_remaining_rows(export_paths, monkeypatch):
     drafts, transactions = export_paths
     _, revision = staging.read_transaction_drafts_snapshot(drafts)
     import_rows = [
@@ -229,7 +229,7 @@ def test_import_preview_uses_statement_period_and_stages_all_rows(export_paths, 
     assert "2026-02" in result["transaction-export-message"]["children"]
     assert result["transaction-export-preview-state"]["data"]["year"] == "2026"
     assert result["transaction-export-preview-state"]["data"]["month"] == "02"
-    assert set(staging.read_transaction_drafts(drafts)["source_id"]) == {"JAN", "FEB"}
+    assert set(staging.read_transaction_drafts(drafts)["source_id"]) == {"FEB"}
 
     confirm = _callback_request(
         app,
@@ -252,6 +252,13 @@ def test_import_preview_uses_statement_period_and_stages_all_rows(export_paths, 
     assert saved_result["exported_rows"] == 1
     assert staging.monthly_transaction_csv_path("2026", "02", transactions).exists()
     assert not staging.monthly_transaction_csv_path("2025", "12", transactions).exists()
+    remaining_rows = confirm_result["kaspi-import-grid"]["rowData"]
+    assert [row["source_id"] for row in remaining_rows] == ["JAN"]
+    assert confirm_result["transaction-import-period"]["options"] == [
+        {"label": "2026-01", "value": "2026-01"}
+    ]
+    assert confirm_result["transaction-import-period"]["value"] == "2026-01"
+    assert remaining_rows[0]["staging_revision"] == staging.read_transaction_drafts_snapshot(drafts)[1]
 
 
 def test_stale_preview_rejects_new_draft_without_writing_or_exporting(export_paths):

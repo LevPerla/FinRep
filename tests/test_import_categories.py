@@ -29,6 +29,36 @@ def test_category_comes_from_latest_transaction_with_same_comment():
     assert data.iloc[0]["category"] == "Досуг"
 
 
+def test_category_comes_from_latest_transaction_with_same_comment_and_direction():
+    history = pd.DataFrame(
+        [
+            {"Дата": "2026-01-10", "Категория": "Транспорт", "Комментарий": "Transfer Ivan"},
+            {"Дата": "2026-03-20", "Категория": "Прочие доходы", "Комментарий": "Transfer Ivan"},
+        ]
+    )
+
+    with patch.object(common, "get_transactions", return_value=history):
+        expense = common.import_frame_from_rows(
+            [{
+                "date": "2026-07-19",
+                "signed_amount": -500.0,
+                "currency": "RUB",
+                "details": "Transfer Ivan",
+            }]
+        )
+        income = common.import_frame_from_rows(
+            [{
+                "date": "2026-07-20",
+                "signed_amount": 500.0,
+                "currency": "RUB",
+                "details": "Transfer Ivan",
+            }]
+        )
+
+    assert expense.iloc[0]["category"] == "Транспорт"
+    assert income.iloc[0]["category"] == "Прочие доходы"
+
+
 def test_category_falls_back_to_import_rules_without_history_match(tmp_path, monkeypatch):
     rules_path = tmp_path / "import_rules" / "categories.csv"
     rules_path.parent.mkdir(parents=True)

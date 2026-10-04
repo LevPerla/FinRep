@@ -38,14 +38,16 @@ from src.data.importers.bank_pdf import (
     BankPdfError,
     parse_bank_upload_contents,
 )
-from src.data.importers.common import save_import_to_staging
+from src.data.importers.common import save_import_to_staging, save_import_to_transactions
 from src.data.money import format_money_amount
 from src.data.staging import (
     append_transaction_draft_rows,
     export_monthly_transaction_drafts,
     prepare_monthly_transaction_export,
+    publish_transaction_draft_rows,
     read_monthly_transaction_csv,
     read_transaction_drafts,
+    read_transaction_drafts_snapshot,
 )
 from src.data.sqlite_bootstrap import ensure_default_live_database
 from src.dashboard.expense_data import build_expense_dashboard_data
@@ -85,7 +87,6 @@ DEFAULT_YEAR = datetime.now().strftime("%Y")
 DEFAULT_MONTH = datetime.now().strftime("%m")
 DEFAULT_FX_NETWORK_ENABLED = False
 UNCLASSIFIED_ASSET_TYPE_VALUE = "__unclassified__"
-AUTOMATIC_LIQUIDITY_VALUE = "__automatic__"
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 ASSETS_FOLDER = PROJECT_ROOT / "assets"
 logger = logging.getLogger(__name__)
@@ -953,6 +954,8 @@ def register_callbacks(app: Dash) -> None:
                                  _cpi_refresh_result: dict | None,
                                  transaction_save_result: dict | None,
                                  crypto_status: dict | None):
+        if ctx.triggered_id == "transaction-save-result":
+            raise PreventUpdate
         fx_network_enabled = ctx.triggered_id == "refresh-fx-rates" and not config.is_test_mode()
 
         def finish(content):
@@ -1256,7 +1259,7 @@ def register_callbacks(app: Dash) -> None:
                     f"внутренние переводы {internal_count}."
                 )
             period_options, period_value = _import_period_selection(data)
-            if len(period_options) > 1:
+            if len(period_options) > 1 and not config.use_sqlite_storage():
                 message += " The statement contains multiple months — select a period before Preview." if normalize_locale(locale) == "en" else " Выписка содержит несколько месяцев — выбери период перед Preview."
             return (
                 _dataframe_records(data),
@@ -1284,6 +1287,43 @@ def register_callbacks(app: Dash) -> None:
                 [],
                 None,
             )
+
+    @app.callback(
+        Output("kaspi-import-grid", "rowData", allow_duplicate=True),
+        Output("kaspi-import-message", "children", allow_duplicate=True),
+        Output("kaspi-import-message", "color", allow_duplicate=True),
+        Input("transaction-save-import-button", "n_clicks", allow_optional=True),
+        State("kaspi-import-grid", "rowData", allow_optional=True),
+        State("dashboard-locale", "data"),
+        prevent_initial_call=True,
+    )
+    def save_reviewed_import(save_clicks, import_rows, locale):
+        if not save_clicks:
+            raise PreventUpdate
+        try:
+            config.require_writable_mode()
+            result = save_import_to_transactions(import_rows or [])
+            pending_keys = {tuple(key) for key in result["pending_keys"]}
+            remaining_rows = [
+                row for row in (import_rows or [])
+                if (str(row.get("source", "")), str(row.get("source_id", "")))
+                in pending_keys
+            ]
+            if normalize_locale(locale) == "en":
+                message = (
+                    f"Saved transactions: {result['published_rows']}; "
+                    f"already saved: {result['already_published_rows']}; "
+                    f"pending left in staging: {result['pending_rows']}."
+                )
+            else:
+                message = (
+                    f"Сохранено транзакций: {result['published_rows']}; "
+                    f"уже были сохранены: {result['already_published_rows']}; "
+                    f"pending осталось в staging: {result['pending_rows']}."
+                )
+            return remaining_rows, message, "success"
+        except Exception as exc:
+            return no_update, report_text(str(exc), locale), "danger"
 
     @app.callback(
         Output("transaction-input-message", "children"),
@@ -1318,27 +1358,30 @@ def register_callbacks(app: Dash) -> None:
             config.require_writable_mode()
             if not input_date or not input_category or not input_currency or input_amount in {None, ""}:
                 raise ValueError("Заполни дату, категорию, валюту и сумму.")
-            result = append_transaction_draft_rows(
-                pd.DataFrame(
-                    [
-                        {
-                            "date": input_date,
-                            "category": input_category,
-                            "currency": input_currency,
-                            "amount": input_amount,
-                            "comment": input_comment or "",
-                            "source": "manual",
-                            "source_id": f"manual:{next_add_request_id}",
-                            "status": "draft",
-                        }
-                    ]
+            draft_row = {
+                "date": input_date,
+                "category": input_category,
+                "currency": input_currency,
+                "amount": input_amount,
+                "comment": input_comment or "",
+                "source": "manual",
+                "source_id": f"manual:{next_add_request_id}",
+                "status": "draft",
+            }
+            result = append_transaction_draft_rows(pd.DataFrame([draft_row]))
+            if config.use_sqlite_storage():
+                published = publish_transaction_draft_rows([draft_row])
+                message = (
+                    "Транзакция сохранена."
+                    if published["published_rows"]
+                    else "Транзакция уже была сохранена."
                 )
-            )
-            message = (
-                "Черновик добавлен."
-                if result["accepted_rows"]
-                else "Черновик уже был добавлен; повтор не создан."
-            )
+            else:
+                message = (
+                    "Черновик добавлен."
+                    if result["accepted_rows"]
+                    else "Черновик уже был добавлен; повтор не создан."
+                )
             return report_text(message, locale), "success", None, "", uuid4().hex
         except Exception as exc:
             return report_text(str(exc), locale), "danger", no_update, no_update, next_add_request_id
@@ -1478,6 +1521,9 @@ def register_callbacks(app: Dash) -> None:
         Output("transaction-export-message", "color"),
         Output("transaction-export-preview-state", "data"),
         Output("transaction-save-result", "data"),
+        Output("kaspi-import-grid", "rowData", allow_duplicate=True),
+        Output("transaction-import-period", "options", allow_duplicate=True),
+        Output("transaction-import-period", "value", allow_duplicate=True),
         Input("transaction-preview-export-button", "n_clicks", allow_optional=True),
         Input("transaction-confirm-export-button", "n_clicks", allow_optional=True),
         State("dashboard-currency", "value"),
@@ -1524,6 +1570,16 @@ def register_callbacks(app: Dash) -> None:
                     result["exported_rows"],
                     preview_state.get("import_summary"),
                 )
+                saved_period = f"{year}-{str(month).zfill(2)}"
+                remaining_import_rows = [
+                    dict(row) for row in (import_rows or [])
+                    if pd.to_datetime(row.get("date"), errors="coerce").strftime("%Y-%m")
+                    != saved_period
+                ]
+                _, staging_revision = read_transaction_drafts_snapshot()
+                for row in remaining_import_rows:
+                    row["staging_revision"] = staging_revision
+                period_options, period_value = _import_period_selection(remaining_import_rows)
                 return (
                     _dataframe_records(preview),
                     _localized_input_column_defs(_simple_column_defs(preview), locale),
@@ -1531,6 +1587,9 @@ def register_callbacks(app: Dash) -> None:
                     "success",
                     None,
                     save_result,
+                    remaining_import_rows,
+                    period_options,
+                    period_value,
                 )
 
             import_result = None
@@ -1544,12 +1603,17 @@ def register_callbacks(app: Dash) -> None:
                     raise ValueError("Выбранный период не соответствует строкам текущей выписки.")
                 year, month = import_period.split("-", 1)
                 config.require_writable_mode()
-                import_result = save_import_to_staging(import_rows)
+                selected_import_rows = [
+                    row for row in import_rows
+                    if pd.to_datetime(row.get("date"), errors="coerce").strftime("%Y-%m")
+                    == import_period
+                ]
+                import_result = save_import_to_staging(selected_import_rows)
 
             preview, preview_state = prepare_monthly_transaction_export(year, month)
             if import_result is not None:
                 preview_state["import_summary"] = _transaction_import_summary(
-                    import_rows, import_result
+                    selected_import_rows, import_result
                 )
             message = str(report_text(f"Preview построен для {year}-{str(month).zfill(2)}.", locale))
             if import_result is not None:
@@ -1564,6 +1628,16 @@ def register_callbacks(app: Dash) -> None:
                 message += (" The monthly CSV has not changed yet."
                             if normalize_locale(locale) == "en"
                             else " Месячный CSV ещё не изменён.")
+            refreshed_import_rows = no_update
+            period_options = no_update
+            period_value = no_update
+            if import_rows:
+                _, staging_revision = read_transaction_drafts_snapshot()
+                refreshed_import_rows = [dict(row) for row in import_rows]
+                for row in refreshed_import_rows:
+                    row["staging_revision"] = staging_revision
+                period_options, _automatic_period = _import_period_selection(refreshed_import_rows)
+                period_value = import_period
             return (
                 _dataframe_records(preview),
                 _localized_input_column_defs(_simple_column_defs(preview), locale),
@@ -1571,6 +1645,9 @@ def register_callbacks(app: Dash) -> None:
                 "secondary",
                 preview_state,
                 no_update,
+                refreshed_import_rows,
+                period_options,
+                period_value,
             )
         except Exception as exc:
             if trigger == "transaction-confirm-export-button" and preview_rows:
@@ -1582,9 +1659,31 @@ def register_callbacks(app: Dash) -> None:
                     "danger",
                     preview_state,
                     no_update,
+                    no_update,
+                    no_update,
+                    no_update,
                 )
             empty = pd.DataFrame()
-            return [], _localized_input_column_defs(_simple_column_defs(empty), locale), report_text(str(exc), locale), "danger", preview_state, no_update
+            return (
+                [],
+                _localized_input_column_defs(_simple_column_defs(empty), locale),
+                report_text(str(exc), locale),
+                "danger",
+                preview_state,
+                no_update,
+                no_update,
+                no_update,
+                no_update,
+            )
+
+    @app.callback(
+        Output("transaction-save-result-panel", "children"),
+        Input("transaction-save-result", "data"),
+        State("dashboard-locale", "data"),
+        prevent_initial_call=True,
+    )
+    def render_transaction_save_result(result, locale):
+        return _transaction_save_result_panel(result, locale)
 
     @app.callback(
         Output("active-receivable-debts-grid", "rowData"),
@@ -1762,10 +1861,10 @@ def register_callbacks(app: Dash) -> None:
                 clear_table_cache()
                 clear_main_dashboard_cache()
                 message = ((f"Assets saved: {result['rows']} rows. File: {result['path']}. Backup: {result['backup_path'] or 'not created'}." ) if normalize_locale(locale) == "en" else (f"Активы сохранены: {result['rows']} строк. Файл: {result['path']}. Backup: {result['backup_path'] or 'не создавался'}."))
-                return _asset_input_records(year, month), message, "success"
+                return _asset_input_records(year, month, locale), message, "success"
 
             message, color = _asset_input_status(year, month, locale)
-            return _asset_input_records(year, month), message, color
+            return _asset_input_records(year, month, locale), message, color
         except Exception as exc:
             return row_data or [], report_text(str(exc), locale), "danger"
 
@@ -1795,10 +1894,6 @@ def register_callbacks(app: Dash) -> None:
                         "asset_type_id": (
                             None if row.get("asset_type_id") == UNCLASSIFIED_ASSET_TYPE_VALUE
                             else row.get("asset_type_id") or None
-                        ),
-                        "liquidity_class_override_id": (
-                            None if row.get("liquidity_choice") == AUTOMATIC_LIQUIDITY_VALUE
-                            else row.get("liquidity_choice") or None
                         ),
                         "include_in_capital": row.get("Включать в капитал"),
                     }
@@ -2572,6 +2667,7 @@ def _transaction_input_layout(
     category_options = _transaction_category_options(locale)
     currency_options = [{"label": ticker, "value": ticker} for ticker in config.UNIQUE_TICKERS]
     month_value = f"{year}-{str(month).zfill(2)}"
+    sqlite_storage = config.use_sqlite_storage()
     upload_limit_label = BANK_PDF_UPLOAD_LIMIT_LABEL
     if normalize_locale(locale) == "en":
         upload_limit_label = upload_limit_label.replace(" и ", " and ").replace(" страниц", " pages")
@@ -2662,8 +2758,23 @@ def _transaction_input_layout(
                     ),
                     dbc.Alert(id="kaspi-import-message", children=report_text("Операции из PDF появятся здесь. Дубли среди черновиков и сохранённых операций будут пропущены.", locale), color="secondary", is_open=True, className="my-3 py-2"),
                     html.Div(
-                        report_text("Категории: клик — одна ячейка, Shift+клик — диапазон, Ctrl/Cmd+клик — несколько; Ctrl/Cmd+C и Ctrl/Cmd+V — копировать и вставить.", locale),
-                        className="small opacity-75 mb-2",
+                        [
+                            html.Div(
+                                report_text("Категории: клик — одна ячейка, Shift+клик — диапазон, Ctrl/Cmd+клик — несколько; Ctrl/Cmd+C и Ctrl/Cmd+V — копировать и вставить.", locale),
+                                className="small opacity-75",
+                            ),
+                            *(
+                                [dbc.Button(
+                                    report_text("Сохранить транзакции", locale),
+                                    id="transaction-save-import-button",
+                                    color="primary",
+                                    className="ms-auto flex-shrink-0",
+                                    disabled=read_only,
+                                )]
+                                if sqlite_storage else []
+                            ),
+                        ],
+                        className="d-flex flex-wrap align-items-center justify-content-between gap-2 mb-2",
                     ),
                     html.Div(
                         dag.AgGrid(
@@ -2680,6 +2791,17 @@ def _transaction_input_layout(
                             style=_ag_grid_style("420px"),
                         ),
                         className="finrep-import-grid-shell",
+                    ),
+                    *(
+                        [
+                            dcc.Dropdown(
+                                id="transaction-import-period",
+                                options=[],
+                                value=None,
+                                style={"display": "none"},
+                            ),
+                        ]
+                        if sqlite_storage else []
                     ),
                 ],
                 style=_section_style(theme),
@@ -2738,7 +2860,7 @@ def _transaction_input_layout(
                     ),
                 ],
                 style=_section_style(theme),
-            ),
+            ) if not sqlite_storage else None,
         ],
         className="d-grid gap-4 pt-3",
     )
@@ -3043,7 +3165,7 @@ def _debt_input_layout(currency: str, theme: str | None, include_create: bool = 
 
 
 def _assets_input_layout(year: str, month: str, theme: str | None, load_records: bool = True, read_only: bool = False, locale: str = DEFAULT_LOCALE):
-    records = _asset_input_records(year, month) if load_records else []
+    records = _asset_input_records(year, month, locale) if load_records else []
     message, message_color = _asset_input_status(year, month, locale)
     classification_rows = _asset_classification_rows(locale) if load_records else []
     classification_message, classification_color = _asset_classification_status(
@@ -3163,14 +3285,13 @@ def _asset_classification_rows(locale: str = DEFAULT_LOCALE) -> list[dict]:
     from src.data.sqlite_store import asset_accounts
 
     freshness = evaluate_asset_freshness(asset_accounts(config.active_database_path()))
+    accounts = sorted(freshness["accounts"], key=lambda row: row["name"].casefold())
+    accounts.sort(key=lambda row: row["last_period"] or "", reverse=True)
     return [
         {
             "account_id": row["id"],
             "Счет": row["name"],
             "asset_type_id": row["asset_type_id"] or UNCLASSIFIED_ASSET_TYPE_VALUE,
-            "liquidity_choice": (
-                row["liquidity_class_override_id"] or AUTOMATIC_LIQUIDITY_VALUE
-            ),
             "liquidity_class_id": row["liquidity_class_id"] or "",
             "liquidity_source": row["liquidity_source"],
             "Включать в капитал": bool(row["include_in_capital"]),
@@ -3181,7 +3302,7 @@ def _asset_classification_rows(locale: str = DEFAULT_LOCALE) -> list[dict]:
             "Первый снимок": row["first_period"] or "",
             "Последний снимок": row["last_period"] or "",
         }
-        for row in freshness["accounts"]
+        for row in accounts
     ]
 
 
@@ -3226,13 +3347,11 @@ def _asset_classification_status(rows: list[dict], locale: str = DEFAULT_LOCALE)
 def _asset_classification_column_defs(
         locale: str = DEFAULT_LOCALE, *, editable: bool = True) -> list[dict]:
     if config.use_sqlite_storage():
-        from src.data.sqlite_store import asset_types, liquidity_classes
+        from src.data.sqlite_store import asset_types
 
         types = asset_types(config.active_database_path())
-        liquidity = liquidity_classes(config.active_database_path())
     else:
         types = []
-        liquidity = []
     type_labels = {
         UNCLASSIFIED_ASSET_TYPE_VALUE: report_text("Не классифицировано", locale),
         **{
@@ -3240,18 +3359,14 @@ def _asset_classification_column_defs(
             for row in types
         },
     }
-    liquidity_ids = [row["id"] for row in liquidity]
     unassigned_label = report_text("Не задана", locale)
-    suggested_label = report_text("предложено", locale)
-    manual_label = report_text("вручную", locale)
+    by_type_label = report_text("по типу", locale)
     liquidity_formatter = (
-        "params.value === '" + AUTOMATIC_LIQUIDITY_VALUE + "' "
-        f"? (params.data.liquidity_class_id ? params.data.liquidity_class_id + ' · {suggested_label}' "
-        f": '{unassigned_label}') : params.value + ' · {manual_label}'"
+        f"params.value ? params.value + ' · {by_type_label}' : '{unassigned_label}'"
     )
     columns = [
         {"field": "account_id", "hide": True},
-        {"field": "Счет", "headerName": "Счет", "flex": 1, "minWidth": 90,
+        {"field": "Счет", "headerName": "Счет", "flex": 2, "minWidth": 220,
          "tooltipField": "Счет"},
         {
             "field": "asset_type_id",
@@ -3262,22 +3377,17 @@ def _asset_classification_column_defs(
             "valueFormatter": {
                 "function": f"({json.dumps(type_labels, ensure_ascii=False)})[params.value] || params.value"
             },
-            "width": 95,
-            "minWidth": 90,
+            "flex": 1.2,
+            "minWidth": 190,
         },
         {
-            "field": "liquidity_choice",
+            "field": "liquidity_class_id",
             "headerName": "Ликвидность",
-            "editable": editable,
-            "cellEditor": "agSelectCellEditor",
-            "cellEditorParams": {
-                "values": [AUTOMATIC_LIQUIDITY_VALUE, *liquidity_ids],
-            },
+            "editable": False,
             "valueFormatter": {"function": liquidity_formatter},
-            "width": 112,
-            "minWidth": 105,
+            "flex": 0.8,
+            "minWidth": 150,
         },
-        {"field": "liquidity_class_id", "hide": True},
         {"field": "liquidity_source", "hide": True},
         {
             "field": "Включать в капитал",
@@ -3285,20 +3395,21 @@ def _asset_classification_column_defs(
             "editable": editable,
             "cellRenderer": "agCheckboxCellRenderer",
             "cellEditor": "agCheckboxCellEditor",
-            "width": 64,
-            "minWidth": 60,
+            "width": 105,
+            "minWidth": 105,
         },
         {
             "field": "Актуальность",
             "headerName": "Актуальность",
             "editable": False,
-            "width": 210,
-            "minWidth": 180,
+            "flex": 1.15,
+            "minWidth": 220,
         },
         {"field": "freshness_status", "hide": True},
-        {"field": "Снимков", "headerName": "Снимков", "width": 110},
-        {"field": "Первый снимок", "headerName": "Первый снимок", "width": 140},
-        {"field": "Последний снимок", "headerName": "Последний снимок", "width": 150},
+        {"field": "Снимков", "headerName": "Снимков", "width": 105},
+        {"field": "Первый снимок", "headerName": "Первый снимок", "width": 150},
+        {"field": "Последний снимок", "headerName": "Последний снимок", "width": 160,
+         "sort": "desc", "sortIndex": 0},
     ]
     return _localized_input_column_defs(columns, locale)
 
@@ -3551,10 +3662,41 @@ def _transaction_save_result_panel(result: dict | None, locale: str = DEFAULT_LO
     return dbc.Alert(children, color="success", className="mb-3")
 
 
-def _asset_input_records(year: str, month: str) -> list[dict]:
+def _asset_input_records(
+        year: str, month: str, locale: str = DEFAULT_LOCALE) -> list[dict]:
     data = read_asset_snapshot(year, month).copy(deep=True)
     if data.empty:
         return []
+    type_by_account = {}
+    if config.use_sqlite_storage():
+        from src.data.sqlite_store import asset_accounts
+
+        english = normalize_locale(locale) == "en"
+        type_by_account = {
+            row["name"]: {
+                "id": row["asset_type_id"],
+                "label": (
+                    row["asset_type_name_en"] if english else row["asset_type_name_ru"]
+                ),
+            }
+            for row in asset_accounts(config.active_database_path())
+            if row["asset_type_id"]
+        }
+    unclassified = report_text("Не классифицировано", locale)
+    data.insert(
+        1,
+        "asset_type_id",
+        data["account"].map(
+            lambda account: type_by_account.get(account, {}).get(
+                "id", UNCLASSIFIED_ASSET_TYPE_VALUE)),
+    )
+    data.insert(
+        2,
+        "asset_type",
+        data["account"].map(
+            lambda account: type_by_account.get(account, {}).get(
+                "label", unclassified)),
+    )
     data["amount_sort"] = data["amount"]
     data = data.sort_values("amount_sort", ascending=False, kind="mergesort")
     data["amount_sort"] = range(len(data), 0, -1)
@@ -3690,10 +3832,27 @@ def _debt_transaction_draft_column_defs() -> list[dict]:
 
 def _asset_input_column_defs() -> list[dict]:
     currencies = list(config.UNIQUE_TICKERS)
+    asset_type_class_rules = {
+        f"finrep-asset-kind-{asset_type_id.replace('_', '-')}": (
+            f"params.data && params.data.asset_type_id == '{asset_type_id}'"
+        )
+        for asset_type_id in (
+            "cash", "cash_account", "deposit", "bond", "equity", "fund",
+            "crypto", "real_estate", "other",
+        )
+    }
+    asset_type_class_rules["finrep-asset-kind-unclassified"] = (
+        "params.data && params.data.account && "
+        "(!params.data.asset_type_id || "
+        f"params.data.asset_type_id == '{UNCLASSIFIED_ASSET_TYPE_VALUE}')"
+    )
     return [
-        {"field": "account", "headerName": "Счет", "editable": True, "flex": 1, "minWidth": 132},
-        {"field": "amount", "headerName": "Сумма", "editable": True, "width": 125, "minWidth": 112},
-        {"field": "currency", "headerName": "Валюта", "editable": True, "cellEditor": "agSelectCellEditor", "cellEditorParams": {"values": currencies}, "width": 78, "minWidth": 72},
+        {"field": "account", "headerName": "Счет", "editable": True, "flex": 2,
+         "minWidth": 220, "cellClassRules": asset_type_class_rules},
+        {"field": "asset_type", "headerName": "Тип актива", "editable": False,
+         "flex": 1.2, "minWidth": 190, "cellClassRules": asset_type_class_rules},
+        {"field": "amount", "headerName": "Сумма", "editable": True, "flex": 1, "minWidth": 160},
+        {"field": "currency", "headerName": "Валюта", "editable": True, "cellEditor": "agSelectCellEditor", "cellEditorParams": {"values": currencies}, "flex": 0.7, "minWidth": 120},
         {"field": "amount_sort", "hide": True, "sort": "desc", "sortIndex": 0},
     ]
 
@@ -3727,12 +3886,24 @@ def _kaspi_import_column_defs() -> list[dict]:
     if config.use_sqlite_storage():
         from src.data.sqlite_store import categories as category_registry
 
-        categories = [
-            row["name_ru"] for row in category_registry(config.active_database_path())
+        category_rows = [
+            row for row in category_registry(config.active_database_path())
             if row["active"] and row["parent_id"] is None
+        ]
+        income_categories = [
+            row["name_ru"] for row in category_rows if row["direction"] == "income"
+        ]
+        expense_categories = [
+            row["name_ru"] for row in category_rows if row["direction"] == "expense"
         ]
     else:
         categories = [option["value"] for option in _transaction_category_options()]
+        income_categories = [
+            category for category in categories if category in config.NOT_COST_COLS
+        ]
+        expense_categories = [
+            category for category in categories if category not in config.NOT_COST_COLS
+        ]
     category_class_rules = {
         "finrep-category-selected": (
             "params.api.__finrepCategorySelection && "
@@ -3747,7 +3918,20 @@ def _kaspi_import_column_defs() -> list[dict]:
         "kaspi-category-other": "params.value == 'Прочее'",
     }
     return [
-        {"field": "category", "headerName": "Категория", "editable": True, "cellEditor": "agSelectCellEditor", "cellEditorParams": {"values": categories}, "width": 190, "sort": "asc", "cellClassRules": category_class_rules},
+        {
+            "field": "category",
+            "headerName": "Категория",
+            "editable": True,
+            "cellEditor": "agSelectCellEditor",
+            "cellEditorParams": {"function": "finrepCategoryEditorParams(params)"},
+            "context": {
+                "incomeCategories": income_categories,
+                "expenseCategories": expense_categories,
+            },
+            "width": 190,
+            "sort": "asc",
+            "cellClassRules": category_class_rules,
+        },
         {"field": "date", "headerName": "Дата", "width": 120, "sort": "asc", "sortIndex": 1},
         {
             "field": "amount",

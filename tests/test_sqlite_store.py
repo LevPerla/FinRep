@@ -108,7 +108,7 @@ def test_asset_account_classification_preserves_history_and_controls_capital(tmp
         period="2026-09", amount="123.45", currency="RUB")
 
     assert {row["id"] for row in asset_types(database)} == {
-        "cash_account", "deposit", "bond", "equity", "fund", "crypto",
+        "cash", "cash_account", "deposit", "bond", "equity", "fund", "crypto",
         "real_estate", "other",
     }
     assert [row["id"] for row in liquidity_classes(database)] == ["A1", "A2", "A3", "A4"]
@@ -118,15 +118,14 @@ def test_asset_account_classification_preserves_history_and_controls_capital(tmp
 
     set_asset_account_classification(
         database, "cash-1", asset_type_id="deposit", include_in_capital=False,
-        liquidity_class_override_id="A2",
         reason="Счёт исключён из согласованного капитала")
     _get_assets_sqlite_cached.cache_clear()
 
     account = asset_accounts(database)[0]
     assert account["asset_type_id"] == "deposit"
-    assert account["liquidity_class_override_id"] == "A2"
-    assert account["liquidity_class_id"] == "A2"
-    assert account["liquidity_source"] == "manual"
+    assert account["liquidity_class_override_id"] is None
+    assert account["liquidity_class_id"] == "A1"
+    assert account["liquidity_source"] == "suggested"
     assert account["include_in_capital"] == 0
     assert [row["id"] for row in asset_snapshots(database)] == ["snapshot-1"]
     assert _get_assets_sqlite_cached(str(database)).empty
@@ -138,10 +137,51 @@ def test_asset_account_classification_preserves_history_and_controls_capital(tmp
 
     set_asset_account_classification(
         database, "cash-1", asset_type_id="real_estate", include_in_capital=True,
-        liquidity_class_override_id="A2", reason="Тип уточнён")
+        reason="Тип уточнён")
     account = asset_accounts(database)[0]
-    assert account["liquidity_class_id"] == "A2"
-    assert account["liquidity_source"] == "manual"
+    assert account["liquidity_class_id"] == "A4"
+    assert account["liquidity_source"] == "suggested"
+
+    with pytest.raises(ValueError, match="liquidity is determined by asset type"):
+        set_asset_account_classification(
+            database, "cash-1", asset_type_id="real_estate",
+            include_in_capital=True, liquidity_class_override_id="A2",
+            reason="Ручная ликвидность запрещена")
+
+
+def test_v12_upgrade_adds_cash_and_replaces_manual_liquidity_with_type_defaults(
+        tmp_path):
+    database = tmp_path / "synthetic.sqlite3"
+    initialize_database(database)
+    add_asset_account(
+        database, "property", "Квартира", asset_type_id="real_estate")
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "UPDATE asset_accounts SET liquidity_class_override_id = 'A2' "
+            "WHERE id = 'property'")
+        connection.execute(
+            "DELETE FROM asset_type_liquidity_defaults "
+            "WHERE asset_type_id NOT IN ('cash_account', 'deposit', 'real_estate')")
+        connection.execute("DELETE FROM asset_types WHERE id = 'cash'")
+        connection.execute("DELETE FROM schema_migrations WHERE version = 13")
+        connection.execute("PRAGMA user_version = 12")
+
+    initialize_database(database)
+
+    account = asset_accounts(database)[0]
+    assert account["liquidity_class_override_id"] is None
+    assert account["liquidity_class_id"] == "A4"
+    assert "cash" in {row["id"] for row in asset_types(database)}
+    with sqlite3.connect(database) as connection:
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
+        defaults = dict(connection.execute(
+            "SELECT asset_type_id, liquidity_class_id "
+            "FROM asset_type_liquidity_defaults").fetchall())
+    assert defaults == {
+        "cash": "A1", "cash_account": "A1", "deposit": "A1",
+        "bond": "A2", "equity": "A2", "fund": "A2", "crypto": "A2",
+        "real_estate": "A4", "other": "A3",
+    }
 
 
 def test_asset_account_classification_batch_is_atomic_and_skips_unchanged_rows(tmp_path):
