@@ -13,13 +13,56 @@ function finrepRefreshCategoryCells(api) {
 
 function finrepCategoriesForRow(params) {
   var categoryContext = params.colDef?.context || {};
-  return params.data?.direction === "credit"
+  var directional = params.data?.direction === "credit"
     ? (categoryContext.incomeCategories || [])
     : (categoryContext.expenseCategories || []);
+  var neutral = categoryContext.neutralCategories || [];
+  return directional.concat(neutral.filter(function (category) {
+    return !directional.includes(category);
+  }));
 }
 
 dagfuncs.finrepCategoryEditorParams = function (params) {
   return {values: finrepCategoriesForRow(params)};
+};
+
+function finrepTruthy(value) {
+  return value === true || ["true", "1", "yes"].includes(
+    String(value || "").toLowerCase()
+  );
+}
+
+function finrepRestoreImportDecision(data) {
+  if (finrepTruthy(data.duplicate_in_staging)) {
+    return ["skip", "duplicate_in_staging"];
+  }
+  if (finrepTruthy(data.duplicate_in_source)) {
+    return ["review", "possible_duplicate"];
+  }
+  if (finrepTruthy(data.possible_pending_match)) {
+    return ["review", "possible_pending_match"];
+  }
+  if (String(data.replaces_source_id || "")) {
+    return ["import", "replaces_pending"];
+  }
+  return ["import", ""];
+}
+
+dagfuncs.finrepCategoryCellChanged = function (params) {
+  if (!params.column || params.column.getColId() !== "category" || !params.node) {
+    return;
+  }
+  var neutral = params.colDef?.context?.neutralCategories || [];
+  var decision = neutral.includes(params.newValue)
+    ? ["skip", "internal_transfer"]
+    : finrepRestoreImportDecision(params.data || {});
+  params.node.setDataValue("import_action", decision[0]);
+  params.node.setDataValue("skip_reason", decision[1]);
+  params.api.refreshCells({
+    rowNodes: [params.node],
+    columns: ["category", "import_action", "skip_reason"],
+    force: true
+  });
 };
 
 dagfuncs.finrepCategorySelectionReset = function (params) {

@@ -38,7 +38,11 @@ from src.data.importers.bank_pdf import (
     BankPdfError,
     parse_bank_upload_contents,
 )
-from src.data.importers.common import save_import_to_staging, save_import_to_transactions
+from src.data.importers.common import (
+    INTERNAL_TRANSFER_CATEGORY,
+    save_import_to_staging,
+    save_import_to_transactions,
+)
 from src.data.money import format_money_amount
 from src.data.staging import (
     append_transaction_draft_rows,
@@ -2785,6 +2789,7 @@ def _transaction_input_layout(
                             dashGridOptions={"pagination": False, "suppressFieldDotNotation": True, "stopEditingWhenCellsLoseFocus": True},
                             eventListeners={
                                 "cellClicked": ["finrepCategoryCellClicked(params)"],
+                                "cellValueChanged": ["finrepCategoryCellChanged(params)"],
                                 "rowDataUpdated": ["finrepCategorySelectionReset(params)"],
                             },
                             className=f"{_ag_grid_class_name(theme)} finrep-import-grid",
@@ -3936,12 +3941,12 @@ def _kaspi_import_column_defs() -> list[dict]:
             "context": {
                 "incomeCategories": income_categories,
                 "expenseCategories": expense_categories,
+                "neutralCategories": [INTERNAL_TRANSFER_CATEGORY],
             },
             "width": 190,
-            "sort": "asc",
             "cellClassRules": category_class_rules,
         },
-        {"field": "date", "headerName": "Дата", "width": 120, "sort": "asc", "sortIndex": 1},
+        {"field": "date", "headerName": "Дата", "width": 120},
         {
             "field": "amount",
             "headerName": "Сумма",
@@ -3956,7 +3961,7 @@ def _kaspi_import_column_defs() -> list[dict]:
         {"field": "import_action", "headerName": "Действие", "editable": True, "cellEditor": "agSelectCellEditor", "cellEditorParams": {"values": ["import", "skip"]}, "width": 120, "cellClassRules": {"text-warning": "params.value == 'review'"}},
         {"field": "currency", "headerName": "Валюта", "width": 100},
         {"field": "direction", "headerName": "Направление", "hide": True},
-        {"field": "bank_status", "headerName": "Статус банка", "width": 130},
+        {"field": "bank_status", "headerName": "Статус банка", "hide": True},
         {"field": "comment", "headerName": "Комментарий", "editable": True, "flex": 1, "minWidth": 220},
         {"field": "skip_reason", "headerName": "Причина skip", "width": 170},
         {"field": "duplicate_in_source", "headerName": "Дубль в CSV", "width": 130},

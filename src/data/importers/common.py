@@ -110,9 +110,10 @@ def save_import_to_staging(import_rows: list[dict], path: str | Path | None = No
         in current_draft_keys,
         axis=1,
     )
+    neutral_mask = incoming["category"].astype(str).eq(INTERNAL_TRANSFER_CATEGORY)
     duplicate_mask = duplicate_mask | incoming["skip_reason"].astype(str).eq(
         "internal_transfer"
-    )
+    ) | neutral_mask
     duplicate_mask = duplicate_mask | actions.eq("skip")
     accepted = incoming[~duplicate_mask].copy(deep=True)
     if accepted.empty:
@@ -180,6 +181,7 @@ def save_import_to_transactions(import_rows: list[dict]) -> dict:
     actionable = incoming[
         actions.eq("import")
         & ~incoming["skip_reason"].astype(str).eq("internal_transfer")
+        & ~incoming["category"].astype(str).eq(INTERNAL_TRANSFER_CATEGORY)
     ].copy(deep=True)
     if actionable.empty:
         return {
@@ -258,7 +260,12 @@ def categorize(
     if not history_category:
         history_category = (history_categories or {}).get(comment_key)
     if history_category:
-        return _category_for_direction(history_category, amount, category_directions)
+        category = _category_for_direction(
+            history_category, amount, category_directions)
+        if (config.use_sqlite_storage() and amount > 0
+                and category in {"Доход", "Сбережения"}):
+            return _income_category(details)
+        return category
     rules = _load_rules()
     normalized = _normalize_text(details)
     for _, rule in rules.iterrows():
@@ -275,12 +282,28 @@ def categorize(
                                                        flags=re.IGNORECASE) is not None))
         )
         if matched:
-            return _category_for_direction(
+            category = _category_for_direction(
                 str(rule.get("category", DEFAULT_EXPENSE_CATEGORY)),
                 amount,
                 category_directions,
             )
-    return DEFAULT_INCOME_CATEGORY if amount > 0 else DEFAULT_EXPENSE_CATEGORY
+            if (config.use_sqlite_storage() and amount > 0
+                    and category in {"Доход", "Сбережения"}):
+                return _income_category(details)
+            return category
+    return _income_category(details) if amount > 0 else DEFAULT_EXPENSE_CATEGORY
+
+
+def _income_category(details: str) -> str:
+    if not config.use_sqlite_storage():
+        return DEFAULT_INCOME_CATEGORY
+    from src.dashboard.income_sources import classify_income_comment
+
+    source = classify_income_comment(_clean_comment(details))
+    return {
+        "salary": "Зарплата",
+        "deposit_interest": "Проценты",
+    }.get(source, "Прочие доходы")
 
 
 def _category_for_direction(

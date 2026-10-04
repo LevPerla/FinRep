@@ -152,6 +152,31 @@ def test_direct_save_uses_current_staging_revision(tmp_path, monkeypatch):
             "SELECT count(*) FROM cash_transactions").fetchone()[0] == 1
 
 
+def test_neutral_category_is_skipped_even_if_client_action_is_import(
+        tmp_path, monkeypatch):
+    database = _configure_sqlite(tmp_path, monkeypatch)
+    preview = common.import_frame_from_rows(
+        [{
+            "date": "2026-10-04",
+            "signed_amount": -100,
+            "currency": "RUB",
+            "details": "Unrecognized transfer",
+        }],
+        statement_id="manual-neutral",
+    )
+    rows = preview.to_dict("records")
+    rows[0].update(
+        category="Внутренний перевод", import_action="import", skip_reason="")
+
+    result = common.save_import_to_transactions(rows)
+
+    assert result["published_rows"] == 0
+    assert result["skipped_rows"] == 1
+    with connect_database(database) as connection:
+        assert connection.execute(
+            "SELECT count(*) FROM cash_transactions").fetchone()[0] == 0
+
+
 def test_sqlite_input_layout_replaces_month_preview_with_direct_save(
     tmp_path, monkeypatch
 ):
