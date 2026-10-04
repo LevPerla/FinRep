@@ -1900,6 +1900,8 @@ def register_callbacks(app: Dash) -> None:
                             else row.get("asset_type_id") or None
                         ),
                         "include_in_capital": row.get("Включать в капитал"),
+                        "active": row.get("active"),
+                        "closed_period": row.get("closed_period") or None,
                     }
                     for row in (rows or [])
                 ],
@@ -3234,6 +3236,14 @@ def _assets_input_layout(year: str, month: str, theme: str | None, load_records:
                                         className="small mb-0",
                                         style={"color": "var(--finrep-muted)"},
                                     ),
+                                    html.P(
+                                        report_text(
+                                            "Чтобы архивировать счёт, сними флаг «Активен» и укажи последний месяц снимка в поле «Закрыт после».",
+                                            locale,
+                                        ),
+                                        className="small mb-0",
+                                        style={"color": "var(--finrep-muted)"},
+                                    ),
                                 ]
                             ),
                             dbc.Button(
@@ -3300,6 +3310,8 @@ def _asset_classification_rows(locale: str = DEFAULT_LOCALE) -> list[dict]:
             "liquidity_class_id": row["liquidity_class_id"] or "",
             "liquidity_source": row["liquidity_source"],
             "Включать в капитал": bool(row["include_in_capital"]),
+            "active": bool(row["active"]),
+            "closed_period": row["closed_period"] or "",
             "Актуальность": freshness_label(
                 row, locale=normalize_locale(locale)),
             "freshness_status": row["freshness_status"],
@@ -3320,13 +3332,16 @@ def _asset_classification_status(rows: list[dict], locale: str = DEFAULT_LOCALE)
         for row in rows
     )
     excluded = sum(not row.get("Включать в капитал", True) for row in rows)
+    archived = sum(not row.get("active", True) for row in rows)
     liquidity_unclassified = sum(not row.get("liquidity_class_id") for row in rows)
     stale = sum(
         row.get("freshness_status") == "stale" and row.get("Включать в капитал", True)
+        and row.get("active", True)
         for row in rows
     )
     missing_date = sum(
         row.get("freshness_status") == "missing" and row.get("Включать в капитал", True)
+        and row.get("active", True)
         for row in rows
     )
     if normalize_locale(locale) == "en":
@@ -3334,14 +3349,14 @@ def _asset_classification_status(rows: list[dict], locale: str = DEFAULT_LOCALE)
             f"Accounts: {total}. Unclassified: {unclassified}. "
             f"Liquidity unassigned: {liquidity_unclassified}. "
             f"Stale valuations: {stale}. Unknown valuation date: {missing_date}. "
-            f"Excluded from capital: {excluded}."
+            f"Archived: {archived}. Excluded from capital: {excluded}."
         )
     else:
         message = (
             f"Счетов: {total}. Не классифицировано: {unclassified}. "
             f"Ликвидность не задана: {liquidity_unclassified}. "
             f"Устаревших оценок: {stale}. Без даты оценки: {missing_date}. "
-            f"Исключено из капитала: {excluded}."
+            f"В архиве: {archived}. Исключено из капитала: {excluded}."
         )
     return (
         message,
@@ -3402,6 +3417,22 @@ def _asset_classification_column_defs(
             "cellEditor": "agCheckboxCellEditor",
             "width": 105,
             "minWidth": 105,
+        },
+        {
+            "field": "active",
+            "headerName": "Активен",
+            "editable": editable,
+            "cellRenderer": "agCheckboxCellRenderer",
+            "cellEditor": "agCheckboxCellEditor",
+            "width": 105,
+            "minWidth": 105,
+        },
+        {
+            "field": "closed_period",
+            "headerName": "Закрыт после",
+            "editable": editable,
+            "width": 150,
+            "minWidth": 150,
         },
         {
             "field": "Актуальность",

@@ -232,6 +232,92 @@ def test_asset_account_classification_batch_is_atomic_and_skips_unchanged_rows(t
         ).fetchone()[0] == 2
 
 
+def test_archived_asset_account_preserves_history_and_blocks_new_snapshots(tmp_path):
+    database = tmp_path / "synthetic.sqlite3"
+    initialize_database(database)
+    add_asset_account(database, "account-1", "Закрытый счёт")
+    add_asset_snapshot(
+        database, snapshot_id="snapshot-1", account_id="account-1",
+        period="2026-02", amount="100", currency="RUB")
+
+    result = set_asset_account_classifications(
+        database,
+        [{"account_id": "account-1", "asset_type_id": "cash_account",
+          "include_in_capital": True, "active": False,
+          "closed_period": "2026-02"}],
+        reason="account closed",
+    )
+
+    assert result == {"submitted": 1, "updated": 1}
+    account = asset_accounts(database)[0]
+    assert account["active"] == 0
+    assert account["closed_period"] == "2026-02"
+    assert [row["period"] for row in asset_snapshots(database)] == ["2026-02"]
+    with pytest.raises(sqlite3.IntegrityError, match="closed for this period"):
+        add_asset_snapshot(
+            database, snapshot_id="snapshot-2", account_id="account-1",
+            period="2026-03", amount="90", currency="RUB")
+    with connect_database(database) as connection:
+        assert connection.execute(
+            "SELECT action FROM audit_events WHERE entity_id = 'account-1'"
+        ).fetchone()[0] == "archived"
+
+
+def test_asset_account_reopen_is_explicit_and_audited(tmp_path):
+    database = tmp_path / "synthetic.sqlite3"
+    initialize_database(database)
+    add_asset_account(database, "account-1", "Счёт")
+    add_asset_snapshot(
+        database, snapshot_id="snapshot-1", account_id="account-1",
+        period="2026-02", amount="100", currency="RUB")
+    set_asset_account_classifications(
+        database,
+        [{"account_id": "account-1", "asset_type_id": None,
+          "include_in_capital": True, "active": False,
+          "closed_period": "2026-02"}],
+        reason="account closed",
+    )
+
+    set_asset_account_classifications(
+        database,
+        [{"account_id": "account-1", "asset_type_id": None,
+          "include_in_capital": True, "active": True,
+          "closed_period": None}],
+        reason="account reopened",
+    )
+    add_asset_snapshot(
+        database, snapshot_id="snapshot-2", account_id="account-1",
+        period="2026-03", amount="90", currency="RUB")
+
+    account = asset_accounts(database)[0]
+    assert account["active"] == 1
+    assert account["closed_period"] is None
+    with connect_database(database) as connection:
+        assert [row[0] for row in connection.execute(
+            "SELECT action FROM audit_events WHERE entity_id = 'account-1' ORDER BY id"
+        ).fetchall()] == ["archived", "reopened"]
+
+
+def test_asset_account_cannot_close_before_its_last_snapshot(tmp_path):
+    database = tmp_path / "synthetic.sqlite3"
+    initialize_database(database)
+    add_asset_account(database, "account-1", "Счёт")
+    add_asset_snapshot(
+        database, snapshot_id="snapshot-1", account_id="account-1",
+        period="2026-03", amount="100", currency="RUB")
+
+    with pytest.raises(ValueError, match="cannot precede the last snapshot"):
+        set_asset_account_classifications(
+            database,
+            [{"account_id": "account-1", "asset_type_id": None,
+              "include_in_capital": True, "active": False,
+              "closed_period": "2026-02"}],
+            reason="invalid closure",
+        )
+
+    assert asset_accounts(database)[0]["active"] == 1
+
+
 def test_user_category_lifecycle_preserves_historical_assignment(tmp_path):
     database = tmp_path / "synthetic.sqlite3"
     initialize_database(database)

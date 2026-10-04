@@ -7,6 +7,7 @@ from src.data.sqlite_store import (
     add_asset_snapshot,
     asset_accounts,
     initialize_database,
+    set_asset_account_classifications,
 )
 
 
@@ -57,6 +58,8 @@ def test_assets_input_shows_account_classification_with_history_context(tmp_path
     assert row["liquidity_class_id"] == ""
     assert row["liquidity_source"] == "unclassified"
     assert row["Включать в капитал"] is True
+    assert row["active"] is True
+    assert row["closed_period"] == ""
     assert row["freshness_status"] == "fresh"
     assert row["Актуальность"].startswith("Актуально · ")
     assert row["Снимков"] == 1
@@ -74,6 +77,11 @@ def test_assets_input_shows_account_classification_with_history_context(tmp_path
     assert "cellEditorParams" not in liquidity_column
     assert next(column for column in grid.columnDefs if column["field"] == "Счет")["flex"] == 2
     assert type_column["minWidth"] == 190
+    assert next(column for column in grid.columnDefs if column["field"] == "active")[
+        "editable"] is True
+    assert next(
+        column for column in grid.columnDefs if column["field"] == "closed_period"
+    )["headerName"] == "Закрыт после"
     assert next(
         column for column in grid.columnDefs if column["field"] == "Последний снимок"
     )["sort"] == "desc"
@@ -137,6 +145,8 @@ def test_asset_classification_callback_saves_all_rows_and_refreshes_capital(
             "liquidity_class_id": "",
             "liquidity_source": "unclassified",
             "Включать в капитал": False,
+            "active": True,
+            "closed_period": "",
             "Снимков": 0,
             "Первый снимок": "",
             "Последний снимок": "",
@@ -209,3 +219,31 @@ def test_asset_input_records_show_localized_type_from_account_classification(
     assert _asset_input_records("2026", "09", "ru")[0]["asset_type"] == "Наличные"
     assert _asset_input_records("2026", "09", "en")[0]["asset_type"] == "Cash"
     assert _asset_input_records("2026", "09", "ru")[0]["asset_type_id"] == "cash"
+
+
+def test_archived_account_is_not_carried_into_a_later_snapshot_template(
+        tmp_path, monkeypatch):
+    from src.data.assets_editor import read_asset_snapshot
+
+    database = tmp_path / "finrep.sqlite3"
+    initialize_database(database)
+    add_asset_account(database, "closed", "Закрытый счёт", asset_type_id="cash_account")
+    add_asset_account(database, "open", "Открытый счёт", asset_type_id="cash_account")
+    for account_id, name in [("closed", "Закрытый счёт"), ("open", "Открытый счёт")]:
+        add_asset_snapshot(
+            database, snapshot_id=f"snapshot-{account_id}", account_id=account_id,
+            period="2026-02", amount="100", currency="RUB")
+    set_asset_account_classifications(
+        database,
+        [{"account_id": "closed", "asset_type_id": "cash_account",
+          "include_in_capital": True, "active": False,
+          "closed_period": "2026-02"}],
+        reason="account closed",
+    )
+    _use_live_sqlite(monkeypatch, database)
+
+    historical = read_asset_snapshot("2026", "02")
+    future_template = read_asset_snapshot("2026", "03")
+
+    assert set(historical["account"]) == {"Закрытый счёт", "Открытый счёт"}
+    assert future_template["account"].tolist() == ["Открытый счёт"]

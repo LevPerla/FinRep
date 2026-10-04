@@ -15,7 +15,7 @@ from src import config
 from src.data.money import parse_money_amount
 
 
-SCHEMA_VERSION = 14
+SCHEMA_VERSION = 15
 _DIRECTIONS = {"income", "expense"}
 _DATASETS = {"cash_transactions", "asset_snapshots"}
 _ASSET_TYPES = (
@@ -165,7 +165,11 @@ _TABLES = (
         created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
         asset_type_id TEXT REFERENCES asset_types(id) ON DELETE RESTRICT,
         liquidity_class_override_id TEXT REFERENCES liquidity_classes(id) ON DELETE RESTRICT,
-        include_in_capital INTEGER NOT NULL DEFAULT 1 CHECK (include_in_capital IN (0, 1))
+        include_in_capital INTEGER NOT NULL DEFAULT 1 CHECK (include_in_capital IN (0, 1)),
+        closed_period TEXT CHECK (closed_period IS NULL OR
+          (length(closed_period) = 7 AND closed_period GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]')),
+        CHECK ((active = 1 AND closed_period IS NULL)
+          OR (active = 0 AND closed_period IS NOT NULL))
     ) STRICT""",
     """CREATE TABLE asset_snapshots (
         id TEXT PRIMARY KEY,
@@ -466,6 +470,27 @@ _INDEXES_AND_TRIGGERS = (
     BEGIN SELECT RAISE(ABORT, 'audit events are append-only'); END""",
     """CREATE TRIGGER audit_no_delete BEFORE DELETE ON audit_events
     BEGIN SELECT RAISE(ABORT, 'audit events are append-only'); END""",
+    """CREATE TRIGGER IF NOT EXISTS asset_account_archive_insert BEFORE INSERT ON asset_accounts
+    WHEN NOT ((NEW.active = 1 AND NEW.closed_period IS NULL)
+      OR (NEW.active = 0 AND NEW.closed_period IS NOT NULL))
+    BEGIN SELECT RAISE(ABORT, 'asset account archive state is inconsistent'); END""",
+    """CREATE TRIGGER IF NOT EXISTS asset_account_archive_update
+    BEFORE UPDATE OF active, closed_period ON asset_accounts
+    WHEN NOT ((NEW.active = 1 AND NEW.closed_period IS NULL)
+      OR (NEW.active = 0 AND NEW.closed_period IS NOT NULL))
+      OR (NEW.closed_period IS NOT NULL AND EXISTS (
+        SELECT 1 FROM asset_snapshots s
+        WHERE s.account_id = NEW.id AND s.period > NEW.closed_period))
+    BEGIN SELECT RAISE(ABORT, 'asset account closure precedes an existing snapshot'); END""",
+    """CREATE TRIGGER IF NOT EXISTS archived_asset_snapshot_insert BEFORE INSERT ON asset_snapshots
+    WHEN EXISTS (SELECT 1 FROM asset_accounts a WHERE a.id = NEW.account_id
+      AND a.closed_period IS NOT NULL AND NEW.period > a.closed_period)
+    BEGIN SELECT RAISE(ABORT, 'asset account is closed for this period'); END""",
+    """CREATE TRIGGER IF NOT EXISTS archived_asset_snapshot_update
+    BEFORE UPDATE OF account_id, period ON asset_snapshots
+    WHEN EXISTS (SELECT 1 FROM asset_accounts a WHERE a.id = NEW.account_id
+      AND a.closed_period IS NOT NULL AND NEW.period > a.closed_period)
+    BEGIN SELECT RAISE(ABORT, 'asset account is closed for this period'); END""",
     "CREATE UNIQUE INDEX IF NOT EXISTS uq_asset_account_name ON asset_accounts(name)",
 )
 
@@ -499,7 +524,7 @@ _VIEWS = (
       COALESCE(a.liquidity_class_override_id, d.liquidity_class_id) AS liquidity_class_id,
       CASE WHEN a.liquidity_class_override_id IS NOT NULL THEN 'manual'
         WHEN d.liquidity_class_id IS NOT NULL THEN 'suggested' ELSE 'unclassified' END AS liquidity_source,
-      a.include_in_capital,
+      a.include_in_capital, a.active, a.closed_period,
       s.currency_code, s.amount_minor, s.row_version
     FROM asset_snapshots s JOIN asset_accounts a ON a.id = s.account_id
     LEFT JOIN asset_type_liquidity_defaults d ON d.asset_type_id = a.asset_type_id""",
@@ -782,6 +807,33 @@ def _migrate_v13_to_v14(connection: sqlite3.Connection) -> None:
     connection.execute("PRAGMA user_version = 14")
 
 
+def _migrate_v14_to_v15(connection: sqlite3.Connection) -> None:
+    now = _utc_now()
+    connection.execute("DROP VIEW v_asset_snapshots")
+    account_columns = {
+        row["name"] for row in connection.execute("PRAGMA table_info(asset_accounts)")
+    }
+    if "closed_period" not in account_columns:
+        connection.execute(
+            "ALTER TABLE asset_accounts ADD COLUMN closed_period TEXT "
+            "CHECK (closed_period IS NULL OR (length(closed_period) = 7 AND "
+            "closed_period GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]'))"
+        )
+    connection.execute(
+        """UPDATE asset_accounts SET closed_period = COALESCE(
+          (SELECT MAX(s.period) FROM asset_snapshots s WHERE s.account_id = asset_accounts.id),
+          substr(created_at, 1, 7)) WHERE active = 0"""
+    )
+    connection.execute(_VIEWS[3])
+    for statement in _INDEXES_AND_TRIGGERS[-5:-1]:
+        connection.execute(statement)
+    connection.execute(
+        "INSERT INTO schema_migrations VALUES (?, ?, ?, ?)",
+        (15, "asset_account_archive", _schema_checksum(), now),
+    )
+    connection.execute("PRAGMA user_version = 15")
+
+
 @contextmanager
 def connect_database(path: str | Path, *, writable: bool = False):
     database_path = Path(path).resolve()
@@ -828,6 +880,7 @@ def initialize_database(path: str | Path, *, data_mode: str = "synthetic") -> No
             _migrate_v11_to_v12(connection)
             _migrate_v12_to_v13(connection)
             _migrate_v13_to_v14(connection)
+            _migrate_v14_to_v15(connection)
             return
         if version == 8:
             _migrate_v8_to_v9(connection)
@@ -836,6 +889,7 @@ def initialize_database(path: str | Path, *, data_mode: str = "synthetic") -> No
             _migrate_v11_to_v12(connection)
             _migrate_v12_to_v13(connection)
             _migrate_v13_to_v14(connection)
+            _migrate_v14_to_v15(connection)
             return
         if version == 9:
             _migrate_v9_to_v10(connection)
@@ -843,24 +897,32 @@ def initialize_database(path: str | Path, *, data_mode: str = "synthetic") -> No
             _migrate_v11_to_v12(connection)
             _migrate_v12_to_v13(connection)
             _migrate_v13_to_v14(connection)
+            _migrate_v14_to_v15(connection)
             return
         if version == 10:
             _migrate_v10_to_v11(connection)
             _migrate_v11_to_v12(connection)
             _migrate_v12_to_v13(connection)
             _migrate_v13_to_v14(connection)
+            _migrate_v14_to_v15(connection)
             return
         if version == 11:
             _migrate_v11_to_v12(connection)
             _migrate_v12_to_v13(connection)
             _migrate_v13_to_v14(connection)
+            _migrate_v14_to_v15(connection)
             return
         if version == 12:
             _migrate_v12_to_v13(connection)
             _migrate_v13_to_v14(connection)
+            _migrate_v14_to_v15(connection)
             return
         if version == 13:
             _migrate_v13_to_v14(connection)
+            _migrate_v14_to_v15(connection)
+            return
+        if version == 14:
+            _migrate_v14_to_v15(connection)
             return
         has_tables = connection.execute(
             "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' LIMIT 1"
@@ -1815,7 +1877,7 @@ def asset_accounts(path: str | Path) -> list[dict]:
             CASE WHEN a.liquidity_class_override_id IS NOT NULL THEN 'manual'
               WHEN d.liquidity_class_id IS NOT NULL THEN 'suggested'
               ELSE 'unclassified' END AS liquidity_source,
-            a.include_in_capital, a.created_at, a.updated_at,
+            a.include_in_capital, a.closed_period, a.created_at, a.updated_at,
             COUNT(s.id) AS snapshot_count, MIN(s.period) AS first_period,
             MAX(s.period) AS last_period
             FROM asset_accounts a LEFT JOIN asset_types t ON t.id = a.asset_type_id
@@ -1823,7 +1885,7 @@ def asset_accounts(path: str | Path) -> list[dict]:
             LEFT JOIN asset_snapshots s ON s.account_id = a.id
             GROUP BY a.id, a.name, a.active, a.asset_type_id, t.name_ru, t.name_en,
               a.liquidity_class_override_id, d.liquidity_class_id,
-              a.include_in_capital, a.created_at, a.updated_at
+              a.include_in_capital, a.closed_period, a.created_at, a.updated_at
             ORDER BY a.name, a.id""").fetchall()
     return [dict(row) for row in rows]
 
@@ -1857,16 +1919,35 @@ def set_asset_account_classifications(path: str | Path, rows: list[dict], *,
         liquidity_override = str(
             row.get("liquidity_class_override_id") or "").strip() or None
         include_in_capital = row.get("include_in_capital")
+        active = row.get("active")
+        closed_period = str(row.get("closed_period") or "").strip() or None
         if not account_id:
             raise ValueError("asset account ID is required")
         if account_id in seen:
             raise ValueError("asset account classification contains a duplicate account")
         if not isinstance(include_in_capital, bool):
             raise ValueError("include_in_capital must be boolean")
+        if active is not None and not isinstance(active, bool):
+            raise ValueError("active must be boolean")
+        if active is True and closed_period is not None:
+            raise ValueError("active asset account cannot have a closed period")
+        if active is False and closed_period is None:
+            raise ValueError("closed period is required for an archived asset account")
+        if active is None and closed_period is not None:
+            raise ValueError("active is required when closed period is supplied")
+        if closed_period is not None:
+            _period(closed_period)
         if liquidity_override is not None:
             raise ValueError("liquidity is determined by asset type")
         seen.add(account_id)
-        normalized.append((account_id, asset_type_id, liquidity_override, include_in_capital))
+        normalized.append({
+            "account_id": account_id,
+            "asset_type_id": asset_type_id,
+            "liquidity_override": liquidity_override,
+            "include_in_capital": include_in_capital,
+            "active": active,
+            "closed_period": closed_period,
+        })
 
     updated = 0
     with connect_database(path, writable=True) as connection:
@@ -1879,7 +1960,10 @@ def set_asset_account_classifications(path: str | Path, rows: list[dict], *,
                 "SELECT id FROM liquidity_classes WHERE active = 1").fetchall()
         }
         current = {}
-        for account_id, asset_type_id, liquidity_override, _include in normalized:
+        for item in normalized:
+            account_id = item["account_id"]
+            asset_type_id = item["asset_type_id"]
+            liquidity_override = item["liquidity_override"]
             account = connection.execute(
                 "SELECT * FROM asset_accounts WHERE id = ?", (account_id,)
             ).fetchone()
@@ -1893,26 +1977,51 @@ def set_asset_account_classifications(path: str | Path, rows: list[dict], *,
             current[account_id] = account
 
         now = _utc_now()
-        for account_id, asset_type_id, liquidity_override, include_in_capital in normalized:
+        for item in normalized:
+            account_id = item["account_id"]
+            asset_type_id = item["asset_type_id"]
+            liquidity_override = item["liquidity_override"]
+            include_in_capital = item["include_in_capital"]
             before = current[account_id]
             included = int(include_in_capital)
+            active = before["active"] if item["active"] is None else int(item["active"])
+            closed_period = (
+                before["closed_period"] if item["active"] is None
+                else item["closed_period"]
+            )
+            last_snapshot = connection.execute(
+                "SELECT MAX(period) FROM asset_snapshots WHERE account_id = ?",
+                (account_id,),
+            ).fetchone()[0]
+            if closed_period is not None and last_snapshot is not None and closed_period < last_snapshot:
+                raise ValueError(
+                    f"closed period cannot precede the last snapshot ({last_snapshot})"
+                )
             if (before["asset_type_id"], before["liquidity_class_override_id"],
-                    before["include_in_capital"]) == (
-                    asset_type_id, liquidity_override, included):
+                    before["include_in_capital"], before["active"],
+                    before["closed_period"]) == (
+                    asset_type_id, liquidity_override, included, active, closed_period):
                 continue
             connection.execute(
                 """UPDATE asset_accounts SET asset_type_id = ?,
                   liquidity_class_override_id = ?, include_in_capital = ?,
-                  updated_at = ? WHERE id = ?""",
-                (asset_type_id, liquidity_override, included, now, account_id),
+                  active = ?, closed_period = ?, updated_at = ? WHERE id = ?""",
+                (asset_type_id, liquidity_override, included, active, closed_period,
+                 now, account_id),
             )
             after = connection.execute(
                 "SELECT * FROM asset_accounts WHERE id = ?", (account_id,)
             ).fetchone()
+            action = "classification_changed"
+            if before["active"] and not active:
+                action = "archived"
+            elif not before["active"] and active:
+                action = "reopened"
             connection.execute("""INSERT INTO audit_events
                 (entity_type, entity_id, action, before_json, after_json, reason, occurred_at)
-                VALUES ('asset_account', ?, 'classification_changed', ?, ?, ?, ?)""",
-                (account_id, json.dumps(dict(before), ensure_ascii=False, sort_keys=True),
+                VALUES ('asset_account', ?, ?, ?, ?, ?, ?)""",
+                (account_id, action,
+                 json.dumps(dict(before), ensure_ascii=False, sort_keys=True),
                  json.dumps(dict(after), ensure_ascii=False, sort_keys=True),
                  reason.strip(), now))
             updated += 1
@@ -1969,7 +2078,7 @@ def replace_asset_snapshot_month(path: str | Path, *, period: str,
         wanted = set()
         for account_name, currency, amount in normalized:
             accounts = connection.execute(
-                "SELECT id FROM asset_accounts WHERE name = ? ORDER BY id",
+                "SELECT id, active, closed_period FROM asset_accounts WHERE name = ? ORDER BY id",
                 (account_name,),
             ).fetchall()
             if len(accounts) > 1:
@@ -1977,7 +2086,12 @@ def replace_asset_snapshot_month(path: str | Path, *, period: str,
                     f"multiple asset accounts have the same name: {account_name}"
                 )
             if accounts:
-                account_id = accounts[0]["id"]
+                account = accounts[0]
+                account_id = account["id"]
+                if account["closed_period"] is not None and period > account["closed_period"]:
+                    raise ValueError(
+                        f"asset account is archived after {account['closed_period']}: {account_name}"
+                    )
             else:
                 account_id = hashlib.sha256(
                     f"asset-account\0{account_name}".encode()).hexdigest()[:32]
