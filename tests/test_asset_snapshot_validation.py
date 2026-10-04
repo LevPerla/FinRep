@@ -8,6 +8,7 @@ from flask import Flask, session
 from src import config
 from src.data import assets_editor
 from src.data.assets_editor import read_asset_snapshot, write_asset_snapshot
+from src.data.sqlite_store import initialize_database, replace_asset_snapshot_month
 
 
 @pytest.fixture
@@ -158,6 +159,24 @@ def test_asset_input_marks_previous_snapshot_as_unsaved(assets_root):
     assert "Применить" in message
     assert color == "warning"
     assert not (assets_root / "2026" / "2026_02.csv").exists()
+
+
+def test_asset_input_status_reads_saved_month_from_sqlite(tmp_path, monkeypatch):
+    database = tmp_path / "finrep.sqlite3"
+    monkeypatch.setenv("FINREP_STORAGE_BACKEND", "sqlite")
+    monkeypatch.setenv("FINREP_SQLITE_PATH", str(database))
+    initialize_database(database)
+    replace_asset_snapshot_month(
+        database,
+        period="2026-10",
+        rows=[{"account": "Cash", "amount": "10", "currency": "RUB"}],
+    )
+    from src.dashboard.app import _asset_input_status
+
+    message, color = _asset_input_status("2026", "10")
+
+    assert message == "Загружен сохранённый снимок активов за 2026-10."
+    assert color == "secondary"
 
 
 def test_month_report_explains_missing_asset_snapshot(assets_root):

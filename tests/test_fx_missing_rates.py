@@ -110,6 +110,34 @@ def test_fx_scenario_uses_latest_asset_snapshot_date(monkeypatch):
     assert all(as_of_date == pd.Timestamp("2026-06-30") for _, _, as_of_date in calls)
 
 
+def test_fx_scenario_uses_today_for_current_asset_month(monkeypatch):
+    assets = pd.DataFrame(
+        [
+            {"Год": "2026", "Месяц": "10", "Валюта": "RUB", "Значение": 1000.0},
+            {"Год": "2026", "Месяц": "10", "Валюта": "EUR", "Значение": 100.0},
+        ]
+    )
+    calls = []
+
+    def rate_as_of(from_currency, to_currency, as_of_date):
+        calls.append((from_currency, to_currency, pd.Timestamp(as_of_date)))
+        return 100.0
+
+    monkeypatch.setattr(planning_data, "get_assets", lambda: assets)
+    monkeypatch.setattr(
+        planning_data,
+        "asset_valuation_dates",
+        lambda frame: pd.Series(pd.Timestamp("2026-10-04"), index=frame.index),
+    )
+    monkeypatch.setattr(planning_data, "get_fx_rate_as_of", rate_as_of)
+
+    result = planning_data._fx_scenarios("RUB")
+
+    assert not result.empty
+    assert calls
+    assert all(as_of_date == pd.Timestamp("2026-10-04") for _, _, as_of_date in calls)
+
+
 def test_conversion_summary_marks_missing_rate_unavailable(monkeypatch):
     transactions = pd.DataFrame(
         [{"Валюта": "USD", "Значение": 100.0}]

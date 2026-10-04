@@ -3706,6 +3706,15 @@ def _asset_input_records(
 
 def _asset_input_status(year: str, month: str, locale: str = DEFAULT_LOCALE) -> tuple[str, str]:
     period = f"{int(year):04d}-{int(month):02d}"
+    if config.use_sqlite_storage():
+        from src.data.sqlite_store import saved_asset_months
+
+        if period in saved_asset_months(config.active_database_path()):
+            message = (f"Saved asset snapshot for {period} loaded."
+                       if normalize_locale(locale) == "en"
+                       else f"Загружен сохранённый снимок активов за {period}.")
+            return message, "secondary"
+
     target = asset_snapshot_path(year, month)
     if target.exists():
         message = f"Saved asset snapshot for {period} loaded. File: {target}" if normalize_locale(locale) == "en" else f"Загружен сохранённый снимок активов за {period}. Файл: {target}"
