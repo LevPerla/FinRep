@@ -15,7 +15,7 @@ from src import config
 from src.data.money import parse_money_amount
 
 
-SCHEMA_VERSION = 13
+SCHEMA_VERSION = 14
 _DIRECTIONS = {"income", "expense"}
 _DATASETS = {"cash_transactions", "asset_snapshots"}
 _ASSET_TYPES = (
@@ -466,6 +466,7 @@ _INDEXES_AND_TRIGGERS = (
     BEGIN SELECT RAISE(ABORT, 'audit events are append-only'); END""",
     """CREATE TRIGGER audit_no_delete BEFORE DELETE ON audit_events
     BEGIN SELECT RAISE(ABORT, 'audit events are append-only'); END""",
+    "CREATE UNIQUE INDEX IF NOT EXISTS uq_asset_account_name ON asset_accounts(name)",
 )
 
 _VIEWS = (
@@ -707,6 +708,80 @@ def _migrate_v12_to_v13(connection: sqlite3.Connection) -> None:
     connection.execute("PRAGMA user_version = 13")
 
 
+def _migrate_v13_to_v14(connection: sqlite3.Connection) -> None:
+    now = _utc_now()
+    duplicate_names = connection.execute(
+        """SELECT name FROM asset_accounts
+        GROUP BY name HAVING COUNT(*) > 1 ORDER BY name"""
+    ).fetchall()
+    for duplicate_name in duplicate_names:
+        name = duplicate_name["name"]
+        accounts = connection.execute(
+            """SELECT a.*, COUNT(s.id) AS snapshot_count
+            FROM asset_accounts a
+            LEFT JOIN asset_snapshots s ON s.account_id = a.id
+            WHERE a.name = ?
+            GROUP BY a.id
+            ORDER BY snapshot_count DESC, a.asset_type_id IS NULL,
+              a.created_at, a.id""",
+            (name,),
+        ).fetchall()
+        asset_type_ids = {row["asset_type_id"] for row in accounts
+                          if row["asset_type_id"] is not None}
+        liquidity_ids = {row["liquidity_class_override_id"] for row in accounts
+                         if row["liquidity_class_override_id"] is not None}
+        if len(asset_type_ids) > 1 or len(liquidity_ids) > 1:
+            raise ValueError(f"conflicting classifications for asset account: {name}")
+
+        canonical = accounts[0]
+        canonical_id = canonical["id"]
+        if canonical["asset_type_id"] is None and asset_type_ids:
+            connection.execute(
+                "UPDATE asset_accounts SET asset_type_id = ?, updated_at = ? WHERE id = ?",
+                (next(iter(asset_type_ids)), now, canonical_id),
+            )
+        if canonical["liquidity_class_override_id"] is None and liquidity_ids:
+            connection.execute(
+                """UPDATE asset_accounts
+                SET liquidity_class_override_id = ?, updated_at = ? WHERE id = ?""",
+                (next(iter(liquidity_ids)), now, canonical_id),
+            )
+
+        for duplicate in accounts[1:]:
+            duplicate_id = duplicate["id"]
+            conflict = connection.execute(
+                """SELECT 1 FROM asset_snapshots duplicate
+                JOIN asset_snapshots canonical
+                  ON canonical.account_id = ?
+                 AND canonical.period = duplicate.period
+                 AND canonical.currency_code = duplicate.currency_code
+                WHERE duplicate.account_id = ? LIMIT 1""",
+                (canonical_id, duplicate_id),
+            ).fetchone()
+            if conflict is not None:
+                raise ValueError(f"conflicting snapshots for asset account: {name}")
+            connection.execute(
+                "UPDATE asset_snapshots SET account_id = ?, updated_at = ? WHERE account_id = ?",
+                (canonical_id, now, duplicate_id),
+            )
+            connection.execute(
+                """INSERT INTO audit_events
+                (entity_type, entity_id, action, before_json, after_json, reason, occurred_at)
+                VALUES ('asset_account', ?, 'merged', ?, ?,
+                  'merge duplicate account names during schema migration', ?)""",
+                (duplicate_id, json.dumps(dict(duplicate), sort_keys=True),
+                 json.dumps({"merged_into": canonical_id}, sort_keys=True), now),
+            )
+            connection.execute("DELETE FROM asset_accounts WHERE id = ?", (duplicate_id,))
+
+    connection.execute(_INDEXES_AND_TRIGGERS[-1])
+    connection.execute(
+        "INSERT INTO schema_migrations VALUES (?, ?, ?, ?)",
+        (14, "unique_asset_account_names", _schema_checksum(), now),
+    )
+    connection.execute("PRAGMA user_version = 14")
+
+
 @contextmanager
 def connect_database(path: str | Path, *, writable: bool = False):
     database_path = Path(path).resolve()
@@ -752,6 +827,7 @@ def initialize_database(path: str | Path, *, data_mode: str = "synthetic") -> No
             _migrate_v10_to_v11(connection)
             _migrate_v11_to_v12(connection)
             _migrate_v12_to_v13(connection)
+            _migrate_v13_to_v14(connection)
             return
         if version == 8:
             _migrate_v8_to_v9(connection)
@@ -759,24 +835,32 @@ def initialize_database(path: str | Path, *, data_mode: str = "synthetic") -> No
             _migrate_v10_to_v11(connection)
             _migrate_v11_to_v12(connection)
             _migrate_v12_to_v13(connection)
+            _migrate_v13_to_v14(connection)
             return
         if version == 9:
             _migrate_v9_to_v10(connection)
             _migrate_v10_to_v11(connection)
             _migrate_v11_to_v12(connection)
             _migrate_v12_to_v13(connection)
+            _migrate_v13_to_v14(connection)
             return
         if version == 10:
             _migrate_v10_to_v11(connection)
             _migrate_v11_to_v12(connection)
             _migrate_v12_to_v13(connection)
+            _migrate_v13_to_v14(connection)
             return
         if version == 11:
             _migrate_v11_to_v12(connection)
             _migrate_v12_to_v13(connection)
+            _migrate_v13_to_v14(connection)
             return
         if version == 12:
             _migrate_v12_to_v13(connection)
+            _migrate_v13_to_v14(connection)
+            return
+        if version == 13:
+            _migrate_v13_to_v14(connection)
             return
         has_tables = connection.execute(
             "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' LIMIT 1"
@@ -1884,17 +1968,23 @@ def replace_asset_snapshot_month(path: str | Path, *, period: str,
         existing = {(row["account_id"], row["currency_code"]): row for row in existing_rows}
         wanted = set()
         for account_name, currency, amount in normalized:
-            account_id = hashlib.sha256(
-                f"asset-account\0{account_name}".encode()).hexdigest()[:32]
-            account = connection.execute(
-                "SELECT name FROM asset_accounts WHERE id = ?", (account_id,)).fetchone()
-            if account is None:
+            accounts = connection.execute(
+                "SELECT id FROM asset_accounts WHERE name = ? ORDER BY id",
+                (account_name,),
+            ).fetchall()
+            if len(accounts) > 1:
+                raise ValueError(
+                    f"multiple asset accounts have the same name: {account_name}"
+                )
+            if accounts:
+                account_id = accounts[0]["id"]
+            else:
+                account_id = hashlib.sha256(
+                    f"asset-account\0{account_name}".encode()).hexdigest()[:32]
                 connection.execute("""INSERT INTO asset_accounts
                     (id, name, active, created_at, updated_at)
                     VALUES (?, ?, 1, ?, ?)""",
                     (account_id, account_name, now, now))
-            elif account["name"] != account_name:
-                raise ValueError("asset account identity collision")
             key = (account_id, currency)
             wanted.add(key)
             amount_minor = _minor_units(connection, currency, amount, allow_zero=True)
