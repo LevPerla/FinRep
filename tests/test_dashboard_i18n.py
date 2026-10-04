@@ -294,8 +294,12 @@ def test_data_entry_grid_translation_changes_headers_only():
     assert [column["field"] for column in localized_import] == [column["field"] for column in raw_import]
     assert localized_import[0]["cellEditorParams"] == raw_import[0]["cellEditorParams"]
     assert [column["field"] for column in localized_assets] == [column["field"] for column in raw_assets]
-    assert localized_assets[2]["cellEditorParams"] == raw_assets[2]["cellEditorParams"]
+    localized_currency = next(
+        column for column in localized_assets if column["field"] == "currency")
+    raw_currency = next(column for column in raw_assets if column["field"] == "currency")
+    assert localized_currency["cellEditorParams"] == raw_currency["cellEditorParams"]
     assert localized_assets[0]["headerName"] == "Account"
+    assert localized_assets[1]["headerName"] == "Asset type"
 
 
 def test_report_empty_states_switch_language_without_changing_route_values():

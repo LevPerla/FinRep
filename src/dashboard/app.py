@@ -1861,10 +1861,10 @@ def register_callbacks(app: Dash) -> None:
                 clear_table_cache()
                 clear_main_dashboard_cache()
                 message = ((f"Assets saved: {result['rows']} rows. File: {result['path']}. Backup: {result['backup_path'] or 'not created'}." ) if normalize_locale(locale) == "en" else (f"Активы сохранены: {result['rows']} строк. Файл: {result['path']}. Backup: {result['backup_path'] or 'не создавался'}."))
-                return _asset_input_records(year, month), message, "success"
+                return _asset_input_records(year, month, locale), message, "success"
 
             message, color = _asset_input_status(year, month, locale)
-            return _asset_input_records(year, month), message, color
+            return _asset_input_records(year, month, locale), message, color
         except Exception as exc:
             return row_data or [], report_text(str(exc), locale), "danger"
 
@@ -3165,7 +3165,7 @@ def _debt_input_layout(currency: str, theme: str | None, include_create: bool = 
 
 
 def _assets_input_layout(year: str, month: str, theme: str | None, load_records: bool = True, read_only: bool = False, locale: str = DEFAULT_LOCALE):
-    records = _asset_input_records(year, month) if load_records else []
+    records = _asset_input_records(year, month, locale) if load_records else []
     message, message_color = _asset_input_status(year, month, locale)
     classification_rows = _asset_classification_rows(locale) if load_records else []
     classification_message, classification_color = _asset_classification_status(
@@ -3662,10 +3662,41 @@ def _transaction_save_result_panel(result: dict | None, locale: str = DEFAULT_LO
     return dbc.Alert(children, color="success", className="mb-3")
 
 
-def _asset_input_records(year: str, month: str) -> list[dict]:
+def _asset_input_records(
+        year: str, month: str, locale: str = DEFAULT_LOCALE) -> list[dict]:
     data = read_asset_snapshot(year, month).copy(deep=True)
     if data.empty:
         return []
+    type_by_account = {}
+    if config.use_sqlite_storage():
+        from src.data.sqlite_store import asset_accounts
+
+        english = normalize_locale(locale) == "en"
+        type_by_account = {
+            row["name"]: {
+                "id": row["asset_type_id"],
+                "label": (
+                    row["asset_type_name_en"] if english else row["asset_type_name_ru"]
+                ),
+            }
+            for row in asset_accounts(config.active_database_path())
+            if row["asset_type_id"]
+        }
+    unclassified = report_text("Не классифицировано", locale)
+    data.insert(
+        1,
+        "asset_type_id",
+        data["account"].map(
+            lambda account: type_by_account.get(account, {}).get(
+                "id", UNCLASSIFIED_ASSET_TYPE_VALUE)),
+    )
+    data.insert(
+        2,
+        "asset_type",
+        data["account"].map(
+            lambda account: type_by_account.get(account, {}).get(
+                "label", unclassified)),
+    )
     data["amount_sort"] = data["amount"]
     data = data.sort_values("amount_sort", ascending=False, kind="mergesort")
     data["amount_sort"] = range(len(data), 0, -1)
@@ -3801,8 +3832,25 @@ def _debt_transaction_draft_column_defs() -> list[dict]:
 
 def _asset_input_column_defs() -> list[dict]:
     currencies = list(config.UNIQUE_TICKERS)
+    asset_type_class_rules = {
+        f"finrep-asset-kind-{asset_type_id.replace('_', '-')}": (
+            f"params.data && params.data.asset_type_id == '{asset_type_id}'"
+        )
+        for asset_type_id in (
+            "cash", "cash_account", "deposit", "bond", "equity", "fund",
+            "crypto", "real_estate", "other",
+        )
+    }
+    asset_type_class_rules["finrep-asset-kind-unclassified"] = (
+        "params.data && params.data.account && "
+        "(!params.data.asset_type_id || "
+        f"params.data.asset_type_id == '{UNCLASSIFIED_ASSET_TYPE_VALUE}')"
+    )
     return [
-        {"field": "account", "headerName": "Счет", "editable": True, "flex": 2, "minWidth": 220},
+        {"field": "account", "headerName": "Счет", "editable": True, "flex": 2,
+         "minWidth": 220, "cellClassRules": asset_type_class_rules},
+        {"field": "asset_type", "headerName": "Тип актива", "editable": False,
+         "flex": 1.2, "minWidth": 190, "cellClassRules": asset_type_class_rules},
         {"field": "amount", "headerName": "Сумма", "editable": True, "flex": 1, "minWidth": 160},
         {"field": "currency", "headerName": "Валюта", "editable": True, "cellEditor": "agSelectCellEditor", "cellEditorParams": {"values": currencies}, "flex": 0.7, "minWidth": 120},
         {"field": "amount_sort", "hide": True, "sort": "desc", "sortIndex": 0},

@@ -621,6 +621,30 @@ body {
 .finrep-theme-dark .kaspi-category-communication { color: #b9ecff !important; }
 .finrep-theme-dark .kaspi-category-other { color: #ffc4c4 !important; }
 
+.finrep-ag-grid .ag-cell[class*="finrep-asset-kind-"] {
+  font-weight: 600;
+}
+.finrep-asset-kind-cash { background-color: rgba(75, 181, 106, 0.22) !important; color: #1f5d37 !important; }
+.finrep-asset-kind-cash-account { background-color: rgba(64, 156, 255, 0.20) !important; color: #225f9f !important; }
+.finrep-asset-kind-deposit { background-color: rgba(56, 189, 248, 0.20) !important; color: #0d6687 !important; }
+.finrep-asset-kind-bond { background-color: rgba(255, 185, 80, 0.22) !important; color: #8a5312 !important; }
+.finrep-asset-kind-equity { background-color: rgba(123, 104, 238, 0.20) !important; color: #4638a8 !important; }
+.finrep-asset-kind-fund { background-color: rgba(214, 112, 184, 0.20) !important; color: #833b70 !important; }
+.finrep-asset-kind-crypto { background-color: rgba(244, 133, 51, 0.22) !important; color: #8a4710 !important; }
+.finrep-asset-kind-real-estate { background-color: rgba(160, 123, 76, 0.22) !important; color: #694719 !important; }
+.finrep-asset-kind-other { background-color: rgba(150, 150, 150, 0.20) !important; color: #5b5b5b !important; }
+.finrep-asset-kind-unclassified { background-color: rgba(239, 120, 120, 0.18) !important; color: #8a3030 !important; }
+.finrep-theme-dark .finrep-asset-kind-cash { color: #b8f4c6 !important; }
+.finrep-theme-dark .finrep-asset-kind-cash-account { color: #b9ddff !important; }
+.finrep-theme-dark .finrep-asset-kind-deposit { color: #b9ecff !important; }
+.finrep-theme-dark .finrep-asset-kind-bond { color: #ffdca3 !important; }
+.finrep-theme-dark .finrep-asset-kind-equity { color: #d1c8ff !important; }
+.finrep-theme-dark .finrep-asset-kind-fund { color: #f5c4e7 !important; }
+.finrep-theme-dark .finrep-asset-kind-crypto { color: #ffd0a6 !important; }
+.finrep-theme-dark .finrep-asset-kind-real-estate { color: #e8c99d !important; }
+.finrep-theme-dark .finrep-asset-kind-other { color: #d0d0d0 !important; }
+.finrep-theme-dark .finrep-asset-kind-unclassified { color: #ffc4c4 !important; }
+
 .finrep-theme-dark .finrep-native-input,
 .finrep-theme-dark .finrep-native-input.form-control,
 .finrep-theme-dark input.form-control,
