@@ -22,6 +22,19 @@ def test_category_column_has_multi_cell_selection_rule():
     assert category_column["field"] == "category"
     assert "finrep-category-selected" in category_column["cellClassRules"]
     assert category_column["editable"] is True
+    assert category_column["context"]["neutralCategories"] == ["Внутренний перевод"]
+    assert "sort" not in category_column
+
+
+def test_import_grid_hides_bank_status_and_has_no_sort_priority_numbers():
+    columns = _kaspi_import_column_defs()
+    date_column = next(column for column in columns if column["field"] == "date")
+    bank_status_column = next(
+        column for column in columns if column["field"] == "bank_status")
+
+    assert "sort" not in date_column
+    assert "sortIndex" not in date_column
+    assert bank_status_column["hide"] is True
 
 
 def test_import_amount_column_displays_bank_direction_as_sign():
@@ -52,3 +65,7 @@ def test_category_clipboard_uses_native_events_without_permission_api(monkeypatc
     assert 'addEventListener("copy"' in script
     assert 'addEventListener("paste"' in script
     assert "event.clipboardData" in script
+    assert "finrepCategoryCellChanged(params)" in grid.eventListeners[
+        "cellValueChanged"]
+    assert "neutralCategories" in script
+    assert 'setDataValue("import_action", decision[0])' in script

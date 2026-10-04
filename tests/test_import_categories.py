@@ -83,4 +83,28 @@ def test_category_rules_are_read_from_sqlite_backend(tmp_path, monkeypatch):
     monkeypatch.setenv("FINREP_SQLITE_PATH", str(database))
 
     assert common.categorize("Cafe near home", -500.0, {}) == "Пища"
-    assert common.categorize("Cafe refund", 500.0, {}) == "Доход"
+    assert common.categorize("Cafe refund", 500.0, {}) == "Прочие доходы"
+
+
+def test_positive_transactions_receive_concrete_income_categories(
+        tmp_path, monkeypatch):
+    database = tmp_path / "target.sqlite3"
+    initialize_database(database)
+    monkeypatch.setenv("FINREP_STORAGE_BACKEND", "sqlite")
+    monkeypatch.setenv("FINREP_SQLITE_PATH", str(database))
+
+    data = common.import_frame_from_rows([
+        {"date": "2026-10-01", "signed_amount": 100, "currency": "RUB",
+         "details": "Salary"},
+        {"date": "2026-10-02", "signed_amount": 10, "currency": "RUB",
+         "details": "Проценты"},
+        {"date": "2026-10-03", "signed_amount": 5, "currency": "RUB",
+         "details": "Cashback"},
+    ])
+
+    categories = dict(zip(data["comment"], data["category"]))
+    assert categories == {
+        "Salary": "Зарплата",
+        "Проценты": "Проценты",
+        "Cashback": "Прочие доходы",
+    }
