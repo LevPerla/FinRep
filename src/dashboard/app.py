@@ -1245,6 +1245,7 @@ def register_callbacks(app: Dash) -> None:
         Output("kaspi-import-message", "color"),
         Output("transaction-import-period", "options"),
         Output("transaction-import-period", "value"),
+        Output("bank-statement-balance", "data"),
         Input("kaspi-upload", "contents", allow_optional=True),
         State("kaspi-upload", "filename", allow_optional=True),
         State("dashboard-locale", "data"),
@@ -1284,6 +1285,7 @@ def register_callbacks(app: Dash) -> None:
                 "secondary",
                 period_options,
                 period_value,
+                data.attrs.get("statement_balance"),
             )
         except BankPdfError as exc:
             logger.warning(
@@ -1292,7 +1294,7 @@ def register_callbacks(app: Dash) -> None:
                 type(exc).__name__,
                 exc_info=True,
             )
-            return no_update, no_update, f"{display_filename}: {report_text(str(exc), locale)}", "danger", no_update, no_update
+            return no_update, no_update, f"{display_filename}: {report_text(str(exc), locale)}", "danger", no_update, no_update, None
         except Exception:
             logger.exception("Unexpected bank PDF import failure: filename=%r", display_filename)
             return (
@@ -1302,7 +1304,139 @@ def register_callbacks(app: Dash) -> None:
                 "danger",
                 no_update,
                 no_update,
+                None,
             )
+
+    @app.callback(
+        Output("bank-statement-balance-panel", "style"),
+        Output("bank-statement-balance-summary", "children"),
+        Output("bank-statement-asset-account", "options"),
+        Output("bank-statement-asset-account", "value"),
+        Input("bank-statement-balance", "data"),
+        Input("dashboard-locale", "data"),
+    )
+    def show_statement_balance(balance, locale):
+        if not balance or not config.use_sqlite_storage():
+            return {"display": "none"}, "", [], None
+        from src.data.sqlite_store import asset_accounts
+
+        options = [
+            {"label": row["name"], "value": row["id"]}
+            for row in asset_accounts(config.active_database_path())
+            if row["active"]
+        ]
+        account = str(balance.get("account_id", ""))
+        masked_account = f"…{account[-4:]}" if account else ""
+        amount = _format_input_amount(balance["balance"])
+        if normalize_locale(locale) == "en":
+            summary = (
+                f"Statement balance {amount} {balance['currency']} as of "
+                f"{balance['as_of_date']} ({masked_account}). Select an asset account "
+                "to save it as a monthly snapshot."
+            )
+        else:
+            summary = (
+                f"Остаток по выписке: {amount} {balance['currency']} на "
+                f"{balance['as_of_date']} ({masked_account}). Выбери актив, чтобы "
+                "сохранить его в месячный снимок."
+            )
+        return {"display": "block"}, summary, options, None
+
+    @app.callback(
+        Output("bank-statement-balance-comparison", "children"),
+        Input("bank-statement-asset-account", "value"),
+        State("bank-statement-balance", "data"),
+        State("dashboard-locale", "data"),
+    )
+    def compare_statement_balance(account_id, balance, locale):
+        if not account_id or not balance or not config.use_sqlite_storage():
+            return ""
+        from src.data.sqlite_store import asset_snapshot_month
+
+        period = str(balance["as_of_date"])[:7]
+        current = next((
+            row for row in asset_snapshot_month(config.active_database_path(), period)
+            if row["account_id"] == account_id
+            and row["currency_code"] == balance["currency"]
+        ), None)
+        new_value = _format_input_amount(balance["balance"])
+        if current is None:
+            return (
+                f"No saved {balance['currency']} value for {period}; new value: {new_value}."
+                if normalize_locale(locale) == "en"
+                else f"За {period} нет сохранённого значения в {balance['currency']}; новое: {new_value}."
+            )
+        old_value = _format_input_amount(current["amount"])
+        return (
+            f"Current: {old_value} → statement: {new_value} {balance['currency']}."
+            if normalize_locale(locale) == "en"
+            else f"Сейчас: {old_value} → по выписке: {new_value} {balance['currency']}."
+        )
+
+    @app.callback(
+        Output("bank-statement-balance-message", "children"),
+        Output("bank-statement-balance-message", "color"),
+        Output("bank-statement-balance-message", "is_open"),
+        Input("bank-statement-balance-apply", "n_clicks"),
+        State("bank-statement-balance", "data"),
+        State("bank-statement-asset-account", "value"),
+        State("dashboard-locale", "data"),
+        prevent_initial_call=True,
+    )
+    def apply_statement_balance(clicks, balance, account_id, locale):
+        if not clicks:
+            raise PreventUpdate
+        try:
+            config.require_writable_mode()
+            if not config.use_sqlite_storage():
+                raise ValueError(
+                    "Statement balances can only be saved in SQLite."
+                    if normalize_locale(locale) == "en"
+                    else "Остаток из выписки можно сохранить только в SQLite."
+                )
+            if not balance or not account_id:
+                raise ValueError(
+                    "Select an asset account for the statement balance."
+                    if normalize_locale(locale) == "en"
+                    else "Выбери актив для остатка из выписки."
+                )
+            from src.data.sqlite_store import upsert_asset_snapshot
+
+            result = upsert_asset_snapshot(
+                config.active_database_path(),
+                account_id=account_id,
+                period=str(balance["as_of_date"])[:7],
+                amount=balance["balance"],
+                currency=balance["currency"],
+                reason="statement closing balance",
+            )
+            clear_data_cache()
+            clear_table_cache()
+            clear_main_dashboard_cache()
+            amount = _format_input_amount(balance["balance"])
+            action = {
+                "inserted": "создан",
+                "updated": "обновлён",
+                "unchanged": "уже совпадал",
+            }[result["action"]]
+            if normalize_locale(locale) == "en":
+                action = {
+                    "inserted": "created",
+                    "updated": "updated",
+                    "unchanged": "already matched",
+                }[result["action"]]
+                message = (
+                    f"Asset snapshot {action}: {result['account']}, "
+                    f"{result['period']}, {amount} {result['currency']}."
+                )
+            else:
+                message = (
+                    f"Снимок актива {action}: {result['account']}, "
+                    f"{result['period']}, {amount} {result['currency']}."
+                )
+            return message, "success", True
+        except Exception as exc:
+            return report_text(str(exc), locale), "danger", True
 
     @app.callback(
         Output("kaspi-import-grid", "rowData", allow_duplicate=True),
@@ -2951,6 +3085,7 @@ def _transaction_input_layout(
                         )]
                         if sqlite_storage else []
                     ),
+                    dcc.Store(id="bank-statement-balance"),
                     dcc.Upload(
                         id="kaspi-upload",
                         children=html.Div(
@@ -2990,6 +3125,71 @@ def _transaction_input_layout(
                         color="secondary",
                         is_open=True,
                         className="my-3 py-2",
+                    ),
+                    html.Div(
+                        [
+                            html.Div(
+                                id="bank-statement-balance-summary",
+                                className="small mb-2",
+                            ),
+                            dbc.Row(
+                                [
+                                    dbc.Col(
+                                        [
+                                            dbc.Label(
+                                                report_text("Актив", locale),
+                                                html_for="bank-statement-asset-account",
+                                                className="small mb-1",
+                                            ),
+                                            dcc.Dropdown(
+                                                id="bank-statement-asset-account",
+                                                options=[],
+                                                value=None,
+                                                placeholder=(
+                                                    "Select asset account"
+                                                    if normalize_locale(locale) == "en"
+                                                    else "Выбери счёт актива"
+                                                ),
+                                                className="dash-dropdown",
+                                            ),
+                                        ],
+                                        xs=12,
+                                        md=8,
+                                    ),
+                                    dbc.Col(
+                                        dbc.Button(
+                                            (
+                                                "Apply balance"
+                                                if normalize_locale(locale) == "en"
+                                                else "Применить остаток"
+                                            ),
+                                            id="bank-statement-balance-apply",
+                                            color="primary",
+                                            className="w-100",
+                                            disabled=read_only,
+                                        ),
+                                        xs=12,
+                                        md=4,
+                                        className="d-flex align-items-end",
+                                    ),
+                                ],
+                                className="g-2",
+                            ),
+                            html.Div(
+                                id="bank-statement-balance-comparison",
+                                className="small mt-2",
+                            ),
+                            dbc.Alert(
+                                id="bank-statement-balance-message",
+                                children="",
+                                color="secondary",
+                                is_open=False,
+                                className="mt-2 mb-0 py-2",
+                            ),
+                        ],
+                        id="bank-statement-balance-panel",
+                        style={"display": "none"},
+                        className="mb-3 p-3 border rounded",
                     ),
                     html.Div(
                         [

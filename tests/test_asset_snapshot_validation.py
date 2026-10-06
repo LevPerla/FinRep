@@ -8,7 +8,14 @@ from flask import Flask, session
 from src import config
 from src.data import assets_editor
 from src.data.assets_editor import read_asset_snapshot, write_asset_snapshot
-from src.data.sqlite_store import initialize_database, replace_asset_snapshot_month
+from src.data.sqlite_store import (
+    add_asset_account,
+    add_asset_snapshot,
+    asset_snapshot_month,
+    initialize_database,
+    replace_asset_snapshot_month,
+    upsert_asset_snapshot,
+)
 
 
 @pytest.fixture
@@ -177,6 +184,45 @@ def test_asset_input_status_reads_saved_month_from_sqlite(tmp_path, monkeypatch)
 
     assert message == "Загружен сохранённый снимок активов за 2026-10."
     assert color == "secondary"
+
+
+def test_statement_balance_updates_only_selected_asset_and_retry_is_idempotent(tmp_path):
+    database = tmp_path / "finrep.sqlite3"
+    initialize_database(database)
+    add_asset_account(database, "cash", "Cash")
+    add_asset_account(database, "deposit", "Deposit")
+    add_asset_snapshot(
+        database,
+        snapshot_id="cash-snapshot",
+        account_id="cash",
+        period="2026-08",
+        amount="100",
+        currency="KZT",
+    )
+
+    first = upsert_asset_snapshot(
+        database,
+        account_id="deposit",
+        period="2026-08",
+        amount="40150.55",
+        currency="KZT",
+        reason="statement closing balance",
+    )
+    retry = upsert_asset_snapshot(
+        database,
+        account_id="deposit",
+        period="2026-08",
+        amount="40150.55",
+        currency="KZT",
+        reason="statement closing balance",
+    )
+
+    assert first["action"] == "inserted"
+    assert retry["action"] == "unchanged"
+    assert {
+        (row["account_name"], row["amount"])
+        for row in asset_snapshot_month(database, "2026-08")
+    } == {("Cash", Decimal("100")), ("Deposit", Decimal("40150.55"))}
 
 
 def test_month_report_explains_missing_asset_snapshot(assets_root):
