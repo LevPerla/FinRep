@@ -4,6 +4,7 @@ import pandas as pd
 
 from src import config
 from src.data.importers import common, kaspi_pdf
+from src.data.importers.kaspi_pdf import _statement_balance_from_text
 
 
 def test_parse_kaspi_bytes_returns_common_import_contract(tmp_path, monkeypatch):
@@ -33,3 +34,18 @@ def test_parse_kaspi_bytes_returns_common_import_contract(tmp_path, monkeypatch)
     assert row["status"] == "draft"
     assert row["import_action"] == "import"
     assert len(row["source_id"]) == 64
+
+
+def test_kaspi_gold_statement_balance_metadata():
+    text = (
+        "Kaspi Gold\nbalance statement for the period from 27.09.26 to 04.10.26\n"
+        "Card number: *0000\nAccount number:KZ00722C000000000000\nCurrency: KZT\n"
+        "Card balance 04.10.26: + 211 923,85 ₸"
+    )
+
+    assert _statement_balance_from_text(text) == {
+        "statement_account_id": "KZ00722C000000000000",
+        "statement_balance": "211923.85",
+        "statement_balance_date": "2026-10-04",
+        "currency": "KZT",
+    }
