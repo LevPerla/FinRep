@@ -39,7 +39,9 @@ def test_parse_ozon_statement_exposes_outgoing_balance(tmp_path, monkeypatch):
     ]]
     last_page = Mock()
     last_page.extract_text.return_value = "Outgoing balance: RUR 1 234.56"
-    last_page.extract_tables.return_value = []
+    last_page.extract_tables.return_value = [[
+        ["29.09.2026 12:00:00", "2", "Continuation transfer", "- RUR 50.00", "- RUR 50.00"],
+    ]]
     opened = Mock()
     opened.__enter__ = Mock(return_value=Mock(pages=[first_page, last_page]))
     opened.__exit__ = Mock(return_value=False)
@@ -48,6 +50,8 @@ def test_parse_ozon_statement_exposes_outgoing_balance(tmp_path, monkeypatch):
     with patch.object(common, "get_transactions", return_value=pd.DataFrame()):
         result = ozon_pdf.parse_ozon_pdf_bytes(b"synthetic-ozon-pdf")
 
+    assert len(result) == 2
+    assert "Continuation transfer" in set(result["details"])
     assert result.attrs["statement_balance"] == {
         "account_id": "40817810000000000001",
         "balance": "1234.56",

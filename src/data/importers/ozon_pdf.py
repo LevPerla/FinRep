@@ -56,8 +56,12 @@ def _extract_rows_from_pdf(pdf_source) -> list[dict]:
             raise ValueError("PDF не похож на выписку Ozon Банка.")
         for page in pdf.pages:
             for table in page.extract_tables():
-                if table and _is_transactions_table(table[0]):
+                if not table:
+                    continue
+                if _is_transactions_table(table[0]):
                     rows.extend(_rows_from_table(table[2:]))
+                elif rows:
+                    rows.extend(_rows_from_table(table))
     balance = _statement_balance_from_text("\n".join(page_texts))
     if rows and balance:
         for row in rows:
