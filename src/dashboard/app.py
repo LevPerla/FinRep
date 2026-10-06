@@ -351,6 +351,7 @@ def create_layout():
             dcc.Store(id="cpi-refresh-result"),
             dcc.Store(id="cpi-base-period"),
             dcc.Store(id="transaction-save-result", storage_type="memory"),
+            dcc.Store(id="bank-statement-balance", storage_type="memory"),
             dcc.Store(
                 id="transaction-add-request-id",
                 data=uuid4().hex,
@@ -1312,12 +1313,19 @@ def register_callbacks(app: Dash) -> None:
         Output("bank-statement-balance-summary", "children"),
         Output("bank-statement-asset-account", "options"),
         Output("bank-statement-asset-account", "value"),
+        Output("bank-statement-period-message", "children"),
+        Output("bank-statement-period-message", "color"),
+        Output("bank-statement-period-message", "is_open"),
+        Output("bank-statement-balance-apply", "disabled"),
         Input("bank-statement-balance", "data"),
         Input("dashboard-locale", "data"),
+        Input("dashboard-year", "value"),
+        Input("dashboard-month", "value"),
+        State("bank-statement-asset-account", "value", allow_optional=True),
     )
-    def show_statement_balance(balance, locale):
+    def show_statement_balance(balance, locale, year, month, current_account_id):
         if not balance or not config.use_sqlite_storage():
-            return {"display": "none"}, "", [], None
+            return {"display": "none"}, "", [], None, "", "secondary", False, True
         from src.data.sqlite_store import asset_accounts
 
         options = [
@@ -1325,6 +1333,13 @@ def register_callbacks(app: Dash) -> None:
             for row in asset_accounts(config.active_database_path())
             if row["active"]
         ]
+        option_values = {option["value"] for option in options}
+        selected_account_id = (
+            current_account_id
+            if current_account_id in option_values
+            and ctx.triggered_id != "bank-statement-balance"
+            else None
+        )
         account = str(balance.get("account_id", ""))
         masked_account = f"…{account[-4:]}" if account else ""
         amount = _format_input_amount(balance["balance"])
@@ -1340,50 +1355,75 @@ def register_callbacks(app: Dash) -> None:
                 f"{balance['as_of_date']} ({masked_account}). Выбери актив, чтобы "
                 "сохранить его в месячный снимок."
             )
-        return {"display": "block"}, summary, options, None
+        selected_period = f"{int(year):04d}-{int(month):02d}"
+        statement_period = str(balance["as_of_date"])[:7]
+        period_mismatch = selected_period != statement_period
+        if normalize_locale(locale) == "en":
+            period_message = (
+                f"This balance belongs to {statement_period}. Select that year and month "
+                "in the dashboard controls before applying it."
+            )
+        else:
+            period_message = (
+                f"Остаток относится к {statement_period}. Перед применением выбери этот "
+                "год и месяц в параметрах dashboard."
+            )
+        return (
+            {"display": "block"},
+            summary,
+            options,
+            selected_account_id,
+            period_message if period_mismatch else "",
+            "warning",
+            period_mismatch,
+            bool(period_mismatch or config.is_test_mode()),
+        )
 
     @app.callback(
         Output("bank-statement-balance-comparison", "children"),
+        Output("assets-input-grid", "rowData", allow_duplicate=True),
+        Output("asset-statement-highlight-message", "children"),
+        Output("asset-statement-highlight-message", "color"),
+        Output("asset-statement-highlight-message", "is_open"),
+        Output("bank-statement-balance-message", "children", allow_duplicate=True),
+        Output("bank-statement-balance-message", "color", allow_duplicate=True),
+        Output("bank-statement-balance-message", "is_open", allow_duplicate=True),
         Input("bank-statement-asset-account", "value"),
-        State("bank-statement-balance", "data"),
+        Input("bank-statement-balance", "data"),
+        Input("dashboard-year", "value"),
+        Input("dashboard-month", "value"),
         State("dashboard-locale", "data"),
+        State("assets-input-grid", "rowData", allow_optional=True),
+        prevent_initial_call=True,
     )
-    def compare_statement_balance(account_id, balance, locale):
-        if not account_id or not balance or not config.use_sqlite_storage():
-            return ""
-        from src.data.sqlite_store import asset_snapshot_month
-
-        period = str(balance["as_of_date"])[:7]
-        current = next((
-            row for row in asset_snapshot_month(config.active_database_path(), period)
-            if row["account_id"] == account_id
-            and row["currency_code"] == balance["currency"]
-        ), None)
-        new_value = _format_input_amount(balance["balance"])
-        if current is None:
-            return (
-                f"No saved {balance['currency']} value for {period}; new value: {new_value}."
-                if normalize_locale(locale) == "en"
-                else f"За {period} нет сохранённого значения в {balance['currency']}; новое: {new_value}."
-            )
-        old_value = _format_input_amount(current["amount"])
-        return (
-            f"Current: {old_value} → statement: {new_value} {balance['currency']}."
-            if normalize_locale(locale) == "en"
-            else f"Сейчас: {old_value} → по выписке: {new_value} {balance['currency']}."
+    def compare_statement_balance(account_id, balance, year, month, locale, current_rows):
+        rows, message, color, is_open = _statement_asset_preview(
+            current_rows or [],
+            balance,
+            account_id,
+            f"{int(year):04d}-{int(month):02d}",
+            locale,
         )
+        return message, rows, message, color, is_open, "", "secondary", False
 
     @app.callback(
         Output("bank-statement-balance-message", "children"),
         Output("bank-statement-balance-message", "color"),
         Output("bank-statement-balance-message", "is_open"),
+        Output("assets-input-grid", "rowData", allow_duplicate=True),
+        Output("asset-statement-highlight-message", "children", allow_duplicate=True),
+        Output("asset-statement-highlight-message", "color", allow_duplicate=True),
+        Output("asset-statement-highlight-message", "is_open", allow_duplicate=True),
+        Output("bank-statement-balance-comparison", "children", allow_duplicate=True),
         Input("bank-statement-balance-apply", "n_clicks"),
         State("bank-statement-balance", "data"),
         State("bank-statement-asset-account", "value"),
+        State("dashboard-year", "value"),
+        State("dashboard-month", "value"),
         State("dashboard-locale", "data"),
         prevent_initial_call=True,
     )
-    def apply_statement_balance(clicks, balance, account_id, locale):
+    def apply_statement_balance(clicks, balance, account_id, year, month, locale):
         if not clicks:
             raise PreventUpdate
         try:
@@ -1399,6 +1439,14 @@ def register_callbacks(app: Dash) -> None:
                     "Select an asset account for the statement balance."
                     if normalize_locale(locale) == "en"
                     else "Выбери актив для остатка из выписки."
+                )
+            selected_period = f"{int(year):04d}-{int(month):02d}"
+            statement_period = str(balance["as_of_date"])[:7]
+            if selected_period != statement_period:
+                raise ValueError(
+                    f"Select {statement_period} in the dashboard controls first."
+                    if normalize_locale(locale) == "en"
+                    else f"Сначала выбери {statement_period} в параметрах dashboard."
                 )
             from src.data.sqlite_store import upsert_asset_snapshot
 
@@ -1434,9 +1482,34 @@ def register_callbacks(app: Dash) -> None:
                     f"Снимок актива {action}: {result['account']}, "
                     f"{result['period']}, {amount} {result['currency']}."
                 )
-            return message, "success", True
+            rows, highlight, highlight_color, highlight_open = _statement_asset_preview(
+                _asset_input_records(year, month, locale),
+                balance,
+                account_id,
+                selected_period,
+                locale,
+            )
+            return (
+                message,
+                "success",
+                True,
+                rows,
+                highlight,
+                highlight_color,
+                highlight_open,
+                highlight,
+            )
         except Exception as exc:
-            return report_text(str(exc), locale), "danger", True
+            return (
+                report_text(str(exc), locale),
+                "danger",
+                True,
+                no_update,
+                no_update,
+                no_update,
+                no_update,
+                no_update,
+            )
 
     @app.callback(
         Output("kaspi-import-grid", "rowData", allow_duplicate=True),
@@ -2086,10 +2159,35 @@ def register_callbacks(app: Dash) -> None:
         State("assets-input-grid", "rowData", allow_optional=True),
         State("assets-input-grid", "selectedRows", allow_optional=True),
         State("dashboard-locale", "data"),
+        State("bank-statement-balance", "data"),
+        State("bank-statement-asset-account", "value", allow_optional=True),
         prevent_initial_call=True,
     )
-    def sync_assets_snapshot(load_clicks, add_clicks, delete_clicks, apply_clicks, year, month, row_data, selected_rows, locale):
+    def sync_assets_snapshot(
+        load_clicks,
+        add_clicks,
+        delete_clicks,
+        apply_clicks,
+        year,
+        month,
+        row_data,
+        selected_rows,
+        locale,
+        statement_balance,
+        statement_account_id,
+    ):
         trigger = ctx.triggered_id
+        period = f"{int(year):04d}-{int(month):02d}"
+
+        def with_statement_preview(rows):
+            return _statement_asset_preview(
+                rows,
+                statement_balance,
+                statement_account_id,
+                period,
+                locale,
+            )[0]
+
         try:
             if trigger in {"assets-add-row-button", "assets-delete-row-button", "assets-apply-button"}:
                 config.require_writable_mode()
@@ -2097,7 +2195,7 @@ def register_callbacks(app: Dash) -> None:
                 rows = list(row_data or [])
                 rows.append({"account": "", "amount": 0, "currency": DEFAULT_CURRENCY})
                 message = "An empty row was added. Enter the account, amount, and currency, then select Apply." if normalize_locale(locale) == "en" else "Добавлена пустая строка. Заполни счет, сумму и валюту, затем нажми Применить."
-                return rows, message, "secondary", no_update
+                return with_statement_preview(rows), message, "secondary", no_update
 
             if trigger == "assets-delete-row-button":
                 if not selected_rows:
@@ -2120,7 +2218,7 @@ def register_callbacks(app: Dash) -> None:
                     else f"Отправлено в архив счетов: {result['archived']}. Они остаются в истории за {result['period']} и исключаются из следующих снимков."
                 )
                 return (
-                    _asset_input_records(year, month, locale),
+                    with_statement_preview(_asset_input_records(year, month, locale)),
                     message,
                     "success",
                     _asset_classification_rows(locale),
@@ -2132,10 +2230,10 @@ def register_callbacks(app: Dash) -> None:
                 clear_table_cache()
                 clear_main_dashboard_cache()
                 message = ((f"Assets saved: {result['rows']} rows. File: {result['path']}. Backup: {result['backup_path'] or 'not created'}." ) if normalize_locale(locale) == "en" else (f"Активы сохранены: {result['rows']} строк. Файл: {result['path']}. Backup: {result['backup_path'] or 'не создавался'}."))
-                return _asset_input_records(year, month, locale), message, "success", no_update
+                return with_statement_preview(_asset_input_records(year, month, locale)), message, "success", no_update
 
             message, color = _asset_input_status(year, month, locale)
-            return _asset_input_records(year, month, locale), message, color, no_update
+            return with_statement_preview(_asset_input_records(year, month, locale)), message, color, no_update
         except Exception as exc:
             return row_data or [], report_text(str(exc), locale), "danger", no_update
 
@@ -2151,10 +2249,13 @@ def register_callbacks(app: Dash) -> None:
         State("dashboard-year", "value"),
         State("dashboard-month", "value"),
         State("dashboard-locale", "data"),
+        State("bank-statement-balance", "data"),
+        State("bank-statement-asset-account", "value", allow_optional=True),
         prevent_initial_call=True,
     )
     def save_asset_classification(save_clicks, restore_clicks, rows, selected_rows,
-                                  year, month, locale):
+                                  year, month, locale, statement_balance,
+                                  statement_account_id):
         trigger = ctx.triggered_id
         if trigger not in {
             "asset-classification-save-button", "asset-account-restore-button"
@@ -2190,7 +2291,13 @@ def register_callbacks(app: Dash) -> None:
                     message,
                     "success",
                     refreshed_rows,
-                    _asset_input_records(year, month, locale),
+                    _statement_asset_preview(
+                        _asset_input_records(year, month, locale),
+                        statement_balance,
+                        statement_account_id,
+                        f"{int(year):04d}-{int(month):02d}",
+                        locale,
+                    )[0],
                 )
 
             from src.data.sqlite_store import set_asset_account_classifications
@@ -2931,19 +3038,41 @@ def _input_report_layout(
     return dbc.Tabs(
         [
             dbc.Tab(
-                _transaction_input_layout(
-                    currency,
-                    year,
-                    month,
-                    theme,
-                    read_only=read_only,
-                    transaction_save_result=transaction_save_result,
-                    locale=locale,
+                html.Div(
+                    [
+                        _transaction_input_layout(
+                            currency,
+                            year,
+                            month,
+                            theme,
+                            read_only=read_only,
+                            transaction_save_result=transaction_save_result,
+                            locale=locale,
+                        ),
+                        _asset_snapshot_input_layout(
+                            year,
+                            month,
+                            theme,
+                            load_records=load_asset_records,
+                            read_only=read_only,
+                            locale=locale,
+                        ),
+                    ],
+                    className="d-grid gap-4",
                 ),
-                label=report_text("Транзакции", locale),
+                label=report_text("Операции и остатки", locale),
                 tab_id="input-transactions",
             ),
-            dbc.Tab(_assets_input_layout(year, month, theme, load_records=load_asset_records, read_only=read_only, locale=locale), label=report_text("Активы", locale), tab_id="input-assets"),
+            dbc.Tab(
+                _asset_settings_layout(
+                    theme,
+                    load_records=load_asset_records,
+                    read_only=read_only,
+                    locale=locale,
+                ),
+                label=report_text("Настройки активов", locale),
+                tab_id="input-assets",
+            ),
             dbc.Tab(
                 _category_input_layout(theme, read_only=read_only, locale=locale),
                 label=report_text("Категории", locale),
@@ -3085,7 +3214,6 @@ def _transaction_input_layout(
                         )]
                         if sqlite_storage else []
                     ),
-                    dcc.Store(id="bank-statement-balance"),
                     dcc.Upload(
                         id="kaspi-upload",
                         children=html.Div(
@@ -3131,6 +3259,13 @@ def _transaction_input_layout(
                             html.Div(
                                 id="bank-statement-balance-summary",
                                 className="small mb-2",
+                            ),
+                            dbc.Alert(
+                                id="bank-statement-period-message",
+                                children="",
+                                color="warning",
+                                is_open=False,
+                                className="mb-2 py-2",
                             ),
                             dbc.Row(
                                 [
@@ -3178,6 +3313,11 @@ def _transaction_input_layout(
                             html.Div(
                                 id="bank-statement-balance-comparison",
                                 className="small mt-2",
+                            ),
+                            html.A(
+                                report_text("Показать в таблице активов", locale),
+                                href="#assets-snapshot-section",
+                                className="d-inline-block small mt-2",
                             ),
                             dbc.Alert(
                                 id="bank-statement-balance-message",
@@ -3653,53 +3793,78 @@ def _debt_input_layout(currency: str, theme: str | None, include_create: bool = 
     )
 
 
-def _assets_input_layout(year: str, month: str, theme: str | None, load_records: bool = True, read_only: bool = False, locale: str = DEFAULT_LOCALE):
+def _asset_snapshot_input_layout(
+    year: str,
+    month: str,
+    theme: str | None,
+    load_records: bool = True,
+    read_only: bool = False,
+    locale: str = DEFAULT_LOCALE,
+):
     records = _asset_input_records(year, month, locale) if load_records else []
     message, message_color = _asset_input_status(year, month, locale)
+    period = f"{int(year):04d}-{int(month):02d}"
+    title = f"Assets for {period}" if normalize_locale(locale) == "en" else f"Активы за {period}"
+    return html.Section(
+        [
+            html.Div(
+                [
+                    html.H2(title, className="h5 mb-0"),
+                    html.Div(
+                        [
+                            dbc.Button(report_text("Загрузить", locale), id="assets-load-button", color="secondary", outline=True, size="sm"),
+                            dbc.Button(report_text("Добавить строку", locale), id="assets-add-row-button", color="secondary", outline=True, size="sm", disabled=read_only),
+                            dbc.Button(report_text("Отправить в архив", locale), id="assets-delete-row-button", color="warning", outline=True, size="sm", disabled=read_only),
+                            dbc.Button(report_text("Применить", locale), id="assets-apply-button", color="primary", outline=True, size="sm", disabled=read_only),
+                        ],
+                        className="d-flex flex-wrap gap-2 finrep-assets-actions",
+                    ),
+                ],
+                className="d-flex justify-content-between align-items-center mb-3 finrep-assets-header",
+            ),
+            dbc.Alert(
+                id="assets-input-message",
+                children=message,
+                color=message_color,
+                is_open=True,
+                className="mb-3 py-2",
+            ),
+            dbc.Alert(
+                id="asset-statement-highlight-message",
+                children="",
+                color="secondary",
+                is_open=False,
+                className="mb-3 py-2",
+            ),
+            _ag_grid_scroll(
+                dag.AgGrid(
+                    id="assets-input-grid",
+                    rowData=records,
+                    columnDefs=_localized_input_column_defs(_asset_input_column_defs(), locale),
+                    defaultColDef=_ag_grid_default_col_def(editable=not read_only),
+                    dashGridOptions={"pagination": False, "suppressFieldDotNotation": True, "rowSelection": "multiple", "stopEditingWhenCellsLoseFocus": True, "undoRedoCellEditing": True},
+                    className=_ag_grid_class_name(theme),
+                    style=_ag_grid_style(_asset_grid_height(len(records), maximum=920)),
+                )
+            ),
+        ],
+        id="assets-snapshot-section",
+        style=_section_style(theme),
+    )
+
+
+def _asset_settings_layout(
+    theme: str | None,
+    load_records: bool = True,
+    read_only: bool = False,
+    locale: str = DEFAULT_LOCALE,
+):
     classification_rows = _asset_classification_rows(locale) if load_records else []
     classification_message, classification_color = _asset_classification_status(
         classification_rows, locale)
     classification_read_only = read_only or not config.use_sqlite_storage()
     return html.Div(
         [
-            html.Section(
-                [
-                    html.Div(
-                        [
-                            html.H2(report_text("Активы", locale), className="h5 mb-0"),
-                            html.Div(
-                                [
-                                    dbc.Button(report_text("Загрузить", locale), id="assets-load-button", color="secondary", outline=True, size="sm"),
-                                    dbc.Button(report_text("Добавить строку", locale), id="assets-add-row-button", color="secondary", outline=True, size="sm", disabled=read_only),
-                                    dbc.Button(report_text("Отправить в архив", locale), id="assets-delete-row-button", color="warning", outline=True, size="sm", disabled=read_only),
-                                    dbc.Button(report_text("Применить", locale), id="assets-apply-button", color="primary", outline=True, size="sm", disabled=read_only),
-                                ],
-                                className="d-flex flex-wrap gap-2 finrep-assets-actions",
-                            ),
-                        ],
-                        className="d-flex justify-content-between align-items-center mb-3 finrep-assets-header",
-                    ),
-                    dbc.Alert(
-                        id="assets-input-message",
-                        children=message,
-                        color=message_color,
-                        is_open=True,
-                        className="mb-3 py-2",
-                    ),
-                    _ag_grid_scroll(
-                        dag.AgGrid(
-                            id="assets-input-grid",
-                            rowData=records,
-                            columnDefs=_localized_input_column_defs(_asset_input_column_defs(), locale),
-                            defaultColDef=_ag_grid_default_col_def(editable=not read_only),
-                            dashGridOptions={"pagination": False, "suppressFieldDotNotation": True, "rowSelection": "multiple", "stopEditingWhenCellsLoseFocus": True, "undoRedoCellEditing": True},
-                            className=_ag_grid_class_name(theme),
-                            style=_ag_grid_style(_asset_grid_height(len(records), maximum=920)),
-                        )
-                    ),
-                ],
-                style=_section_style(theme),
-            ),
             html.Section(
                 [
                     html.Div(
@@ -4208,45 +4373,117 @@ def _transaction_save_result_panel(result: dict | None, locale: str = DEFAULT_LO
 
 
 def _asset_input_records(
-        year: str, month: str, locale: str = DEFAULT_LOCALE) -> list[dict]:
+    year: str, month: str, locale: str = DEFAULT_LOCALE) -> list[dict]:
     data = read_asset_snapshot(year, month).copy(deep=True)
     if data.empty:
         return []
-    type_by_account = {}
+    account_details = {}
     if config.use_sqlite_storage():
         from src.data.sqlite_store import asset_accounts
 
         english = normalize_locale(locale) == "en"
-        type_by_account = {
+        account_details = {
             row["name"]: {
-                "id": row["asset_type_id"],
-                "label": (
+                "account_id": row["id"],
+                "asset_type_id": row["asset_type_id"],
+                "asset_type_label": (
                     row["asset_type_name_en"] if english else row["asset_type_name_ru"]
                 ),
             }
             for row in asset_accounts(config.active_database_path())
-            if row["asset_type_id"]
         }
     unclassified = report_text("Не классифицировано", locale)
     data.insert(
         1,
-        "asset_type_id",
+        "account_id",
         data["account"].map(
-            lambda account: type_by_account.get(account, {}).get(
-                "id", UNCLASSIFIED_ASSET_TYPE_VALUE)),
+            lambda account: account_details.get(account, {}).get("account_id", "")),
     )
     data.insert(
         2,
+        "asset_type_id",
+        data["account"].map(
+            lambda account: account_details.get(account, {}).get(
+                "asset_type_id") or UNCLASSIFIED_ASSET_TYPE_VALUE),
+    )
+    data.insert(
+        3,
         "asset_type",
         data["account"].map(
-            lambda account: type_by_account.get(account, {}).get(
-                "label", unclassified)),
+            lambda account: account_details.get(account, {}).get(
+                "asset_type_label") or unclassified),
     )
     data["amount_sort"] = data["amount"]
     data = data.sort_values("amount_sort", ascending=False, kind="mergesort")
     data["amount_sort"] = range(len(data), 0, -1)
     data["amount"] = data["amount"].map(_format_input_amount)
     return _dataframe_records(data)
+
+
+def _statement_asset_preview(
+    rows: list[dict],
+    balance: dict | None,
+    account_id: str | None,
+    selected_period: str,
+    locale: str = DEFAULT_LOCALE,
+) -> tuple[list[dict], str, str, bool]:
+    annotated = []
+    for row in rows:
+        clean_row = dict(row)
+        clean_row.pop("_statement_balance_status", None)
+        annotated.append(clean_row)
+    if (
+        not balance
+        or not account_id
+        or not config.use_sqlite_storage()
+        or str(balance.get("as_of_date", ""))[:7] != selected_period
+    ):
+        return annotated, "", "secondary", False
+
+    from src.data.sqlite_store import asset_accounts, asset_snapshot_month
+
+    account = next((
+        row for row in asset_accounts(config.active_database_path())
+        if row["id"] == account_id and row["active"]
+    ), None)
+    if account is None:
+        return annotated, "", "secondary", False
+    currency = str(balance["currency"]).upper()
+    current = next((
+        row for row in asset_snapshot_month(config.active_database_path(), selected_period)
+        if row["account_id"] == account_id and row["currency_code"] == currency
+    ), None)
+    new_amount = Decimal(str(balance["balance"]))
+    new_value = _format_input_amount(new_amount)
+    if current is None:
+        message = (
+            f"No saved {currency} value for {account['name']} in {selected_period}. "
+            f"Applying the statement will create a row with {new_value} {currency}."
+            if normalize_locale(locale) == "en"
+            else f"За {selected_period} у {account['name']} нет значения в {currency}. "
+            f"Применение выписки создаст строку {new_value} {currency}."
+        )
+        return annotated, message, "warning", True
+
+    matched = current["amount"] == new_amount
+    status = "matched" if matched else "pending"
+    for row in annotated:
+        if row.get("account_id") == account_id and row.get("currency") == currency:
+            row["_statement_balance_status"] = status
+    old_value = _format_input_amount(current["amount"])
+    if normalize_locale(locale) == "en":
+        message = (
+            f"{account['name']}: already matches the statement, {new_value} {currency}."
+            if matched
+            else f"{account['name']}: current {old_value} → statement {new_value} {currency}."
+        )
+    else:
+        message = (
+            f"{account['name']}: уже совпадает с выпиской, {new_value} {currency}."
+            if matched
+            else f"{account['name']}: сейчас {old_value} → по выписке {new_value} {currency}."
+        )
+    return annotated, message, "success" if matched else "warning", True
 
 
 def _asset_input_status(year: str, month: str, locale: str = DEFAULT_LOCALE) -> tuple[str, str]:
@@ -4405,8 +4642,23 @@ def _asset_input_column_defs() -> list[dict]:
          "minWidth": 220, "cellClassRules": asset_type_class_rules},
         {"field": "asset_type", "headerName": "Тип актива", "editable": False,
          "flex": 1.2, "minWidth": 190, "cellClassRules": asset_type_class_rules},
-        {"field": "amount", "headerName": "Сумма", "editable": True, "flex": 1, "minWidth": 160},
+        {
+            "field": "amount",
+            "headerName": "Сумма",
+            "editable": True,
+            "flex": 1,
+            "minWidth": 160,
+            "cellClassRules": {
+                "finrep-statement-balance-pending": (
+                    "params.data && params.data._statement_balance_status == 'pending'"
+                ),
+                "finrep-statement-balance-matched": (
+                    "params.data && params.data._statement_balance_status == 'matched'"
+                ),
+            },
+        },
         {"field": "currency", "headerName": "Валюта", "editable": True, "cellEditor": "agSelectCellEditor", "cellEditorParams": {"values": currencies}, "flex": 0.7, "minWidth": 120},
+        {"field": "account_id", "hide": True},
         {"field": "amount_sort", "hide": True, "sort": "desc", "sortIndex": 0},
     ]
 

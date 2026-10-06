@@ -645,6 +645,26 @@ body {
 .finrep-theme-dark .finrep-asset-kind-other { color: #d0d0d0 !important; }
 .finrep-theme-dark .finrep-asset-kind-unclassified { color: #ffc4c4 !important; }
 
+.finrep-statement-balance-pending {
+  background-color: rgba(255, 193, 7, 0.28) !important;
+  box-shadow: inset 3px 0 0 #c58b00;
+  font-weight: 700;
+}
+
+.finrep-statement-balance-matched {
+  background-color: rgba(25, 135, 84, 0.24) !important;
+  box-shadow: inset 3px 0 0 #198754;
+  font-weight: 700;
+}
+
+.finrep-theme-dark .finrep-statement-balance-pending {
+  color: #ffe8a1 !important;
+}
+
+.finrep-theme-dark .finrep-statement-balance-matched {
+  color: #b8f4c6 !important;
+}
+
 .finrep-theme-dark .finrep-native-input,
 .finrep-theme-dark .finrep-native-input.form-control,
 .finrep-theme-dark input.form-control,

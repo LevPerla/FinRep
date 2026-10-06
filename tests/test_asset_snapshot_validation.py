@@ -225,6 +225,196 @@ def test_statement_balance_updates_only_selected_asset_and_retry_is_idempotent(t
     } == {("Cash", Decimal("100")), ("Deposit", Decimal("40150.55"))}
 
 
+def test_statement_balance_preview_marks_only_matching_asset_and_period(
+        tmp_path, monkeypatch):
+    database = tmp_path / "finrep.sqlite3"
+    monkeypatch.setenv("FINREP_STORAGE_BACKEND", "sqlite")
+    monkeypatch.setenv("FINREP_SQLITE_PATH", str(database))
+    initialize_database(database)
+    add_asset_account(database, "deposit", "Deposit")
+    add_asset_snapshot(
+        database,
+        snapshot_id="deposit-snapshot",
+        account_id="deposit",
+        period="2026-10",
+        amount="100",
+        currency="RUB",
+    )
+    from src.dashboard.app import _asset_input_records, _statement_asset_preview
+
+    balance = {
+        "balance": "150",
+        "currency": "RUB",
+        "as_of_date": "2026-10-31",
+    }
+    rows = _asset_input_records("2026", "10")
+
+    pending, message, color, is_open = _statement_asset_preview(
+        rows, balance, "deposit", "2026-10", "ru")
+    assert pending[0]["_statement_balance_status"] == "pending"
+    assert "100 → по выписке 150 RUB" in message
+    assert (color, is_open) == ("warning", True)
+
+    mismatch, message, color, is_open = _statement_asset_preview(
+        pending, balance, "deposit", "2026-09", "ru")
+    assert "_statement_balance_status" not in mismatch[0]
+    assert (message, color, is_open) == ("", "secondary", False)
+
+    missing, message, color, is_open = _statement_asset_preview(
+        rows,
+        {**balance, "currency": "USD"},
+        "deposit",
+        "2026-10",
+        "ru",
+    )
+    assert "_statement_balance_status" not in missing[0]
+    assert "создаст строку 150 USD" in message
+    assert (color, is_open) == ("warning", True)
+
+    upsert_asset_snapshot(
+        database,
+        account_id="deposit",
+        period="2026-10",
+        amount="150",
+        currency="RUB",
+        reason="statement closing balance",
+    )
+    matched, message, color, is_open = _statement_asset_preview(
+        _asset_input_records("2026", "10"),
+        balance,
+        "deposit",
+        "2026-10",
+        "ru",
+    )
+    assert matched[0]["_statement_balance_status"] == "matched"
+    assert "уже совпадает" in message
+    assert (color, is_open) == ("success", True)
+
+
+def test_statement_balance_period_mismatch_disables_apply(tmp_path, monkeypatch):
+    database = tmp_path / "finrep.sqlite3"
+    monkeypatch.setenv("FINREP_STORAGE_BACKEND", "sqlite")
+    monkeypatch.setenv("FINREP_SQLITE_PATH", str(database))
+    monkeypatch.setenv("FINREP_DASH_PASSWORD", "synthetic-password")
+    monkeypatch.setenv("FINREP_DASH_SECRET_KEY", "synthetic-secret")
+    initialize_database(database)
+    add_asset_account(database, "deposit", "Deposit")
+    from src.dashboard.app import create_app
+
+    app = create_app()
+    client = app.server.test_client()
+    with client.session_transaction() as context:
+        context["authenticated"] = True
+        context["data_mode"] = "live"
+    key = next(
+        key for key in app.callback_map
+        if "bank-statement-period-message.children" in key
+    )
+    callback = app.callback_map[key]
+    balance = {
+        "account_id": "SYNTHETIC-ACCOUNT",
+        "balance": "150",
+        "currency": "RUB",
+        "as_of_date": "2026-10-31",
+    }
+    values = {
+        "bank-statement-balance": balance,
+        "dashboard-locale": "ru",
+        "dashboard-year": "2026",
+        "dashboard-month": "09",
+        "bank-statement-asset-account": "deposit",
+    }
+
+    def invoke(changed):
+        payload = {
+            "output": key,
+            "outputs": [
+                {"id": item.component_id, "property": item.component_property}
+                for item in callback["output"]
+            ],
+            "inputs": [
+                {**item, "value": values.get(item["id"])}
+                for item in callback["inputs"]
+            ],
+            "state": [
+                {**item, "value": values.get(item["id"])}
+                for item in callback["state"]
+            ],
+            "changedPropIds": [changed],
+        }
+        response = client.post("/_dash-update-component", json=payload)
+        assert response.status_code == 200
+        return response.get_json()["response"]
+
+    mismatch = invoke("bank-statement-balance.data")
+    assert mismatch["bank-statement-period-message"]["is_open"] is True
+    assert "2026-10" in mismatch["bank-statement-period-message"]["children"]
+    assert mismatch["bank-statement-balance-apply"]["disabled"] is True
+    assert mismatch["bank-statement-asset-account"]["value"] is None
+
+    values["dashboard-month"] = "10"
+    matched_period = invoke("dashboard-month.value")
+    assert matched_period["bank-statement-period-message"]["is_open"] is False
+    assert matched_period["bank-statement-balance-apply"]["disabled"] is False
+    assert matched_period["bank-statement-asset-account"]["value"] == "deposit"
+
+    apply_key = next(
+        key for key, callback in app.callback_map.items()
+        if any(
+            item["id"] == "bank-statement-balance-apply"
+            for item in callback["inputs"]
+        )
+    )
+    apply_callback = app.callback_map[apply_key]
+    apply_values = {
+        "bank-statement-balance-apply": 1,
+        "bank-statement-balance": balance,
+        "bank-statement-asset-account": "deposit",
+        "dashboard-year": "2026",
+        "dashboard-month": "10",
+        "dashboard-locale": "ru",
+    }
+
+    def invoke_apply():
+        payload = {
+            "output": apply_key,
+            "outputs": [
+                {"id": item.component_id, "property": item.component_property}
+                for item in apply_callback["output"]
+            ],
+            "inputs": [
+                {**item, "value": apply_values.get(item["id"])}
+                for item in apply_callback["inputs"]
+            ],
+            "state": [
+                {**item, "value": apply_values.get(item["id"])}
+                for item in apply_callback["state"]
+            ],
+            "changedPropIds": ["bank-statement-balance-apply.n_clicks"],
+        }
+        response = client.post("/_dash-update-component", json=payload)
+        assert response.status_code == 200
+        return response.get_json()["response"]
+
+    applied = invoke_apply()
+    applied_row = applied["assets-input-grid"]["rowData"][0]
+    assert applied_row["account_id"] == "deposit"
+    assert applied_row["amount"] == "150"
+    assert applied_row["_statement_balance_status"] == "matched"
+    assert applied["asset-statement-highlight-message"]["color"] == "success"
+    assert "уже совпадает" in applied["bank-statement-balance-comparison"]["children"]
+
+    apply_values["bank-statement-balance-apply"] = 2
+    retry = invoke_apply()
+    assert "уже совпадал" in retry["bank-statement-balance-message"]["children"]
+
+    with client.session_transaction() as context:
+        context["data_mode"] = "test"
+    read_only = invoke("dashboard-month.value")
+    assert read_only["bank-statement-balance-panel"]["style"] == {"display": "none"}
+    assert read_only["bank-statement-balance-apply"]["disabled"] is True
+
+
 def test_month_report_explains_missing_asset_snapshot(assets_root):
     from src.dashboard.month_data import _asset_snapshot_display
 
