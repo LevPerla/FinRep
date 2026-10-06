@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import re
+from decimal import Decimal
 from pathlib import Path
 
 import pandas as pd
@@ -12,6 +13,15 @@ from src.data.importers.common import import_frame_from_rows
 OZON_SOURCE = "ozon_pdf"
 OZON_MARKER = "OZON Bank LLC"
 AMOUNT_RE = re.compile(r"(?P<sign>[+-])(?P<currency>[A-Z]{3})(?P<amount>\d+\.\d{2})")
+OZON_ACCOUNT_RE = re.compile(r"Account number:\s*№?\s*(?P<account>\d{20})")
+OZON_PERIOD_RE = re.compile(
+    r"Statement period:\s*\d{2}\.\d{2}\.\d{4}\s*[–—-]\s*"
+    r"(?P<period_end>\d{2}\.\d{2}\.\d{4})"
+)
+OZON_OUTGOING_BALANCE_RE = re.compile(
+    r"Outgoing balance:\s*(?P<currency>[A-Z]{3})\s*"
+    r"(?P<amount>\d[\d ]*\.\d{2})"
+)
 
 
 def parse_ozon_pdf(path: str | Path) -> pd.DataFrame:
@@ -21,24 +31,55 @@ def parse_ozon_pdf(path: str | Path) -> pd.DataFrame:
 def parse_ozon_pdf_bytes(content: bytes) -> pd.DataFrame:
     from hashlib import sha256
 
-    return import_frame_from_rows(
-        _extract_rows_from_pdf(io.BytesIO(content)),
+    rows = _extract_rows_from_pdf(io.BytesIO(content))
+    result = import_frame_from_rows(
+        rows,
         OZON_SOURCE,
         statement_id=sha256(content).hexdigest(),
     )
+    if rows and rows[0].get("statement_balance"):
+        result.attrs["statement_balance"] = {
+            "account_id": rows[0]["statement_account_id"],
+            "balance": rows[0]["statement_balance"],
+            "currency": rows[0]["currency"],
+            "as_of_date": rows[0]["statement_balance_date"],
+        }
+    return result
 
 
 def _extract_rows_from_pdf(pdf_source) -> list[dict]:
     rows: list[dict] = []
     with pdfplumber.open(pdf_source) as pdf:
-        first_page_text = pdf.pages[0].extract_text() if pdf.pages else ""
+        page_texts = [page.extract_text() or "" for page in pdf.pages]
+        first_page_text = page_texts[0] if page_texts else ""
         if OZON_MARKER not in (first_page_text or ""):
             raise ValueError("PDF не похож на выписку Ozon Банка.")
         for page in pdf.pages:
             for table in page.extract_tables():
                 if table and _is_transactions_table(table[0]):
                     rows.extend(_rows_from_table(table[2:]))
+    balance = _statement_balance_from_text("\n".join(page_texts))
+    if rows and balance:
+        for row in rows:
+            row.update(balance)
     return rows
+
+
+def _statement_balance_from_text(text: str) -> dict[str, str] | None:
+    account_match = OZON_ACCOUNT_RE.search(text)
+    period_match = OZON_PERIOD_RE.search(text)
+    balance_match = OZON_OUTGOING_BALANCE_RE.search(text)
+    if not account_match or not period_match or not balance_match:
+        return None
+    currency = balance_match.group("currency")
+    return {
+        "statement_account_id": account_match.group("account"),
+        "statement_balance": str(Decimal(balance_match.group("amount").replace(" ", ""))),
+        "statement_balance_date": pd.to_datetime(
+            period_match.group("period_end"), format="%d.%m.%Y"
+        ).date().isoformat(),
+        "currency": "RUB" if currency == "RUR" else currency,
+    }
 
 
 def _is_transactions_table(header: list[str | None]) -> bool:
