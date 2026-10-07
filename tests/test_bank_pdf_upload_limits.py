@@ -6,6 +6,7 @@ import pytest
 
 from src import config
 from src.data.importers import bank_pdf
+from src.data.sqlite_store import initialize_database
 
 
 def _contents(payload: bytes) -> str:
@@ -48,6 +49,18 @@ def test_upload_at_exact_size_limit_reaches_selected_parser(monkeypatch):
 
     pd.testing.assert_frame_equal(actual, expected)
     parser.assert_called_once_with(payload)
+
+
+def test_batch_limits_count_and_total_size(monkeypatch):
+    monkeypatch.setattr(bank_pdf, "MAX_BANK_PDF_BATCH_FILES", 2)
+    with pytest.raises(bank_pdf.BankPdfLimitError, match="не больше 2"):
+        bank_pdf.validate_bank_upload_batch([
+            _contents(b"1"), _contents(b"2"), _contents(b"3"),
+        ])
+
+    monkeypatch.setattr(bank_pdf, "MAX_BANK_PDF_BATCH_BYTES", 4)
+    with pytest.raises(bank_pdf.BankPdfLimitError, match="Общий размер"):
+        bank_pdf.validate_bank_upload_batch([_contents(b"123"), _contents(b"45")])
 
 
 def test_upload_over_page_limit_stops_before_text_extraction_or_parser(monkeypatch):
@@ -229,3 +242,116 @@ def test_dashboard_hides_private_error_details_and_logs_diagnostics(
     assert message == "private-statement.pdf: импорт не выполнен из-за внутренней ошибки."
     assert "/Users/owner" not in message
     assert private_detail in caplog.text
+
+
+def test_dashboard_batch_keeps_ready_files_and_marks_cross_file_duplicates(
+    tmp_path, monkeypatch
+):
+    database = tmp_path / "finrep.sqlite3"
+    monkeypatch.setenv("FINREP_DASH_PASSWORD", "synthetic-password")
+    monkeypatch.setenv("FINREP_DASH_SECRET_KEY", "synthetic-key")
+    monkeypatch.setenv("FINREP_STORAGE_BACKEND", "sqlite")
+    monkeypatch.setenv("FINREP_SQLITE_PATH", str(database))
+    initialize_database(database)
+    from src.dashboard import app as dashboard_app
+
+    def parsed(source, balance):
+        frame = pd.DataFrame([{
+            "source": source,
+            "source_id": f"{source}-1",
+            "date": "2026-10-01",
+            "currency": "USD",
+            "amount": "10",
+            "direction": "credit",
+            "comment": "Interest payment",
+            "category": "Прочие доходы",
+            "details": "Interest payment",
+            "import_action": "import",
+            "skip_reason": "",
+            "duplicate_in_source": False,
+            "duplicate_in_staging": False,
+        }])
+        frame.attrs["statement_balance"] = {
+            "account_id": source,
+            "balance": balance,
+            "currency": "USD",
+            "as_of_date": "2026-10-31",
+        }
+        return frame
+
+    parser = Mock(side_effect=[
+        parsed("kaspi_pdf", "100"),
+        bank_pdf.BankPdfReadError("Не удалось прочитать PDF."),
+        parsed("ozon_pdf", "200"),
+    ])
+    monkeypatch.setattr(dashboard_app, "parse_bank_upload_contents", parser)
+    app = dashboard_app.create_app()
+    client = app.server.test_client()
+    with client.session_transaction() as session:
+        session["authenticated"] = True
+        session["data_mode"] = "live"
+
+    key = next(
+        key for key in app.callback_map if "bank-statement-balances.data" in key
+    )
+    callback = app.callback_map[key]
+    values = {
+        "kaspi-upload": [
+            _contents(b"first"), _contents(b"broken"), _contents(b"third"),
+        ],
+        "dashboard-locale": "ru",
+        "kaspi-import-grid": [],
+    }
+    payload = {
+        "output": key,
+        "outputs": [
+            {"id": item.component_id, "property": item.component_property}
+            for item in callback["output"]
+        ],
+        "inputs": [
+            {**item, "value": values[item["id"]]}
+            for item in callback["inputs"]
+        ],
+        "state": [{
+            **item,
+            "value": (
+                ["first.pdf", "broken.pdf", "third.pdf"]
+                if item["id"] == "kaspi-upload" else values[item["id"]]
+            ),
+        } for item in callback["state"]],
+        "changedPropIds": ["kaspi-upload.contents"],
+    }
+    response = client.post("/_dash-update-component", json=payload)
+
+    assert response.status_code == 200
+    result = response.get_json()["response"]
+    rows = result["kaspi-import-grid"]["rowData"]
+    assert len(rows) == 2
+    assert {row["source_file"] for row in rows} == {"first.pdf", "third.pdf"}
+    assert {row["import_action"] for row in rows} == {"review"}
+    assert "broken.pdf — ошибка" in result["bank-upload-status"]["children"]
+    assert result["kaspi-import-message"]["color"] == "warning"
+    balances = result["bank-statement-balances"]["data"]
+    assert [item["source_file"] for item in balances] == ["first.pdf", "third.pdf"]
+    assert result["bank-statement-balance"]["data"] == balances[0]
+
+    source_key = next(
+        key for key in app.callback_map
+        if "bank-statement-balance-source-container.style" in key
+    )
+    source_callback = app.callback_map[source_key]
+    source_response = client.post("/_dash-update-component", json={
+        "output": source_key,
+        "outputs": [
+            {"id": item.component_id, "property": item.component_property}
+            for item in source_callback["output"]
+        ],
+        "inputs": [{**source_callback["inputs"][0], "value": balances}],
+        "state": [{**source_callback["state"][0], "value": None}],
+        "changedPropIds": ["bank-statement-balances.data"],
+    })
+    source_result = source_response.get_json()["response"]
+    assert source_result["bank-statement-balance-source-container"]["style"] == {
+        "display": "block"
+    }
+    assert len(source_result["bank-statement-balance-source"]["options"]) == 2

@@ -2,9 +2,10 @@ import json
 import logging
 import os
 from decimal import Decimal
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from io import BytesIO
 from pathlib import Path
+from threading import Lock
 from urllib.parse import parse_qs, urlencode
 from uuid import uuid4
 
@@ -17,6 +18,7 @@ from flask import request, session
 
 from src import config
 from src.data.get import clear_data_cache, get_transactions
+from src.data.get_finance import FX_MAX_AGE_DAYS, fx_network_mode, get_usd_rates
 from src.data.inflation import refresh_official_cpi
 from src.data.assets_editor import (
     asset_snapshot_path,
@@ -34,9 +36,12 @@ from src.data.debts import (
 )
 from src.data.importers.bank_pdf import (
     BANK_PDF_UPLOAD_LIMIT_LABEL,
+    MAX_BANK_PDF_BATCH_BYTES,
+    MAX_BANK_PDF_BATCH_FILES,
     MAX_BANK_PDF_REQUEST_BYTES,
     BankPdfError,
     parse_bank_upload_contents,
+    validate_bank_upload_batch,
 )
 from src.data.importers.common import (
     INTERNAL_TRANSFER_CATEGORY,
@@ -56,6 +61,7 @@ from src.data.staging import (
     read_transaction_drafts_snapshot,
 )
 from src.data.sqlite_bootstrap import ensure_default_live_database
+from src.data.sqlite_store import cpi_observations, fx_rates
 from src.dashboard.expense_data import build_expense_dashboard_data
 from src.dashboard.income_data import build_income_dashboard_data
 from src.dashboard.export import ExportBusyError, export_dashboard_page
@@ -97,6 +103,57 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 ASSETS_FOLDER = PROJECT_ROOT / "assets"
 logger = logging.getLogger(__name__)
 DashboardTab = tuple[str, str, str]
+_REFERENCE_REFRESH_LOCK = Lock()
+
+
+def _reference_refresh_due(rows: list[dict], now: datetime | None = None) -> bool:
+    timestamps = []
+    for row in rows:
+        try:
+            value = datetime.fromisoformat(str(row.get("fetched_at", "")).replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        timestamps.append(value if value.tzinfo else value.replace(tzinfo=timezone.utc))
+    current = now or datetime.now(timezone.utc)
+    current = current if current.tzinfo else current.replace(tzinfo=timezone.utc)
+    return not timestamps or max(timestamps) < current - timedelta(days=FX_MAX_AGE_DAYS)
+
+
+def _refresh_stale_reference_data(now: datetime | None = None):
+    if config.is_test_mode() or not config.use_sqlite_storage():
+        return no_update, no_update
+    with _REFERENCE_REFRESH_LOCK:
+        database = config.active_database_path()
+        current = now or datetime.now(timezone.utc)
+        fx_result = cpi_result = no_update
+        if _reference_refresh_due(fx_rates(database), current):
+            try:
+                end = pd.Timestamp(current.date())
+                with fx_network_mode(True):
+                    get_usd_rates(
+                        list(config.UNIQUE_TICKERS),
+                        end - timedelta(days=FX_MAX_AGE_DAYS), end)
+                status = "error" if _reference_refresh_due(
+                    fx_rates(database), current) else "done"
+                fx_result = {"request": "auto", "status": status}
+            except Exception:
+                logger.exception("Automatic FX refresh failed; cached rates retained")
+                fx_result = {"request": "auto", "status": "error"}
+        if _reference_refresh_due(cpi_observations(database), current):
+            try:
+                cpi_result = refresh_official_cpi(database)
+                if cpi_result.get("status") != "done":
+                    logger.warning("Automatic CPI refresh incomplete; cached observations retained")
+            except Exception:
+                logger.exception("Automatic CPI refresh failed; cached observations retained")
+                cpi_result = {
+                    "status": "error",
+                    "results": [{"currency": "—", "status": "error",
+                                 "message": "Automatic refresh failed."}],
+                }
+        return fx_result, cpi_result
+
+
 MAIN_DASHBOARD_TABS: list[DashboardTab] = [
     ("main", "Основной отчет", "Главная"),
     ("year", "Годовой отчет", "Год"),
@@ -352,6 +409,7 @@ def create_layout():
             dcc.Store(id="cpi-base-period"),
             dcc.Store(id="transaction-save-result", storage_type="memory"),
             dcc.Store(id="bank-statement-balance", storage_type="memory"),
+            dcc.Store(id="bank-statement-balances", storage_type="memory"),
             dcc.Store(
                 id="transaction-add-request-id",
                 data=uuid4().hex,
@@ -734,6 +792,8 @@ def register_callbacks(app: Dash) -> None:
 
     @app.callback(
         Output("dashboard-refresh-token", "data"),
+        Output("fx-refresh-result", "data", allow_duplicate=True),
+        Output("cpi-refresh-result", "data", allow_duplicate=True),
         Input("refresh-reports", "n_clicks"),
         State("dashboard-refresh-token", "data"),
         prevent_initial_call=True,
@@ -741,10 +801,11 @@ def register_callbacks(app: Dash) -> None:
     def refresh_reports(n_clicks: int | None, current_token: int | None):
         if not n_clicks:
             raise PreventUpdate
+        fx_result, cpi_result = _refresh_stale_reference_data()
         clear_data_cache()
         clear_table_cache()
         clear_main_dashboard_cache()
-        return int(current_token or 0) + 1
+        return int(current_token or 0) + 1, fx_result, cpi_result
 
     @app.callback(
         Output("dashboard-refresh-token", "data", allow_duplicate=True),
@@ -1239,6 +1300,23 @@ def register_callbacks(app: Dash) -> None:
         message = "Export ready." if normalize_locale(locale) == "en" else "Экспорт готов."
         return dcc.send_file(str(export_path)), message, "success", True
 
+    app.clientside_callback(
+        """function(contents, filenames, locale) {
+            if (!contents) return window.dash_clientside.no_update;
+            const names = Array.isArray(filenames) ? filenames : [filenames || "PDF"];
+            const en = locale === "en";
+            return names.map((name, index) =>
+                `${name} — ${index === 0 ? (en ? "parsing" : "разбирается") :
+                    (en ? "queued" : "в очереди")}`
+            ).join("\n");
+        }""",
+        Output("bank-upload-status", "children"),
+        Input("kaspi-upload", "contents", allow_optional=True),
+        State("kaspi-upload", "filename", allow_optional=True),
+        State("dashboard-locale", "data"),
+        prevent_initial_call=True,
+    )
+
     @app.callback(
         Output("kaspi-import-grid", "rowData"),
         Output("kaspi-import-grid", "columnDefs"),
@@ -1247,6 +1325,8 @@ def register_callbacks(app: Dash) -> None:
         Output("transaction-import-period", "options"),
         Output("transaction-import-period", "value"),
         Output("bank-statement-balance", "data"),
+        Output("bank-upload-status", "children", allow_duplicate=True),
+        Output("bank-statement-balances", "data"),
         Input("kaspi-upload", "contents", allow_optional=True),
         State("kaspi-upload", "filename", allow_optional=True),
         State("dashboard-locale", "data"),
@@ -1256,57 +1336,167 @@ def register_callbacks(app: Dash) -> None:
     def preview_kaspi_pdf(contents, filename, locale, current_rows):
         if not contents:
             raise PreventUpdate
-        display_filename = _safe_upload_filename(filename)
+        contents_list = list(contents) if isinstance(contents, list) else [contents]
+        filenames = list(filename) if isinstance(filename, list) else [filename]
+        filenames.extend([None] * (len(contents_list) - len(filenames)))
+        display_filenames = [
+            _safe_upload_filename(value) for value in filenames[:len(contents_list)]
+        ]
+        english = normalize_locale(locale) == "en"
         try:
-            data = parse_bank_upload_contents(contents)
-            internal_count = int(data["skip_reason"].eq("internal_transfer").sum()) if "skip_reason" in data else 0
-            if normalize_locale(locale) == "en":
-                message = (
-                    f"{display_filename}: {len(data)} rows found, "
-                    f"{int(data['import_action'].eq('import').sum())} to import, "
-                    f"{int(data['import_action'].eq('skip').sum())} skipped, "
-                    f"{int(data['import_action'].eq('review').sum())} require review, "
-                    f"{internal_count} internal transfers."
-                )
-            else:
-                message = (
-                    f"{display_filename}: найдено строк {len(data)}, "
-                    f"к импорту {int(data['import_action'].eq('import').sum())}, "
-                    f"skip {int(data['import_action'].eq('skip').sum())}, "
-                    f"требуют решения {int(data['import_action'].eq('review').sum())}, "
-                    f"внутренние переводы {internal_count}."
-                )
-            period_options, period_value = _import_period_selection(data)
-            if len(period_options) > 1 and not config.use_sqlite_storage():
-                message += " The statement contains multiple months — select a period before Preview." if normalize_locale(locale) == "en" else " Выписка содержит несколько месяцев — выбери период перед Preview."
-            return (
-                _merge_input_grid_rows(current_rows, _dataframe_records(data)),
-                _localized_input_column_defs(_kaspi_import_column_defs(locale), locale),
-                message,
-                "secondary",
-                period_options,
-                period_value,
-                data.attrs.get("statement_balance"),
-            )
+            validate_bank_upload_batch(contents_list)
         except BankPdfError as exc:
-            logger.warning(
-                "Bank PDF upload rejected: filename=%r error=%s",
-                display_filename,
-                type(exc).__name__,
-                exc_info=True,
+            message = report_text(str(exc), locale)
+            status = "\n".join(
+                f"{name} — {'error' if english else 'ошибка'}: {message}"
+                for name in display_filenames
             )
-            return no_update, no_update, f"{display_filename}: {report_text(str(exc), locale)}", "danger", no_update, no_update, None
-        except Exception:
-            logger.exception("Unexpected bank PDF import failure: filename=%r", display_filename)
             return (
-                no_update,
-                no_update,
-                (f"{display_filename}: import failed due to an internal error." if normalize_locale(locale) == "en" else f"{display_filename}: импорт не выполнен из-за внутренней ошибки."),
-                "danger",
-                no_update,
-                no_update,
-                None,
+                no_update, no_update, message, "danger", no_update, no_update,
+                None, status, [],
             )
+
+        frames = []
+        balances = []
+        statuses = []
+        error_messages = []
+        errors = 0
+        for index, (item, display_filename) in enumerate(
+            zip(contents_list, display_filenames)
+        ):
+            try:
+                data = parse_bank_upload_contents(item).copy(deep=True)
+                data["source_file"] = display_filename
+                frames.append(data)
+                balance = data.attrs.get("statement_balance")
+                if balance:
+                    balances.append({
+                        **balance,
+                        "source_file": display_filename,
+                        "source_index": index,
+                    })
+                imported = int(data["import_action"].eq("import").sum())
+                skipped = int(data["import_action"].eq("skip").sum())
+                review = int(data["import_action"].eq("review").sum())
+                statuses.append(
+                    f"{display_filename} — "
+                    + (
+                        f"ready: {len(data)} rows, {imported} import, "
+                        f"{skipped} skipped, {review} review"
+                        if english else
+                        f"готово: {len(data)} строк, {imported} import, "
+                        f"{skipped} skip, {review} review"
+                    )
+                )
+            except BankPdfError as exc:
+                errors += 1
+                error_message = f"{display_filename}: {report_text(str(exc), locale)}"
+                error_messages.append(error_message)
+                logger.warning(
+                    "Bank PDF upload rejected: filename=%r error=%s",
+                    display_filename,
+                    type(exc).__name__,
+                    exc_info=True,
+                )
+                statuses.append(
+                    f"{display_filename} — {'error' if english else 'ошибка'}: "
+                    f"{report_text(str(exc), locale)}"
+                )
+            except Exception:
+                errors += 1
+                error_message = (
+                    f"{display_filename}: import failed due to an internal error."
+                    if english else
+                    f"{display_filename}: импорт не выполнен из-за внутренней ошибки."
+                )
+                error_messages.append(error_message)
+                logger.exception(
+                    "Unexpected bank PDF import failure: filename=%r",
+                    display_filename,
+                )
+                statuses.append(
+                    f"{display_filename} — "
+                    + (
+                        "error: import failed due to an internal error."
+                        if english else
+                        "ошибка: импорт не выполнен из-за внутренней ошибки."
+                    )
+                )
+
+        status = "\n".join(statuses)
+        if not frames:
+            message = error_messages[0] if len(error_messages) == 1 else (
+                f"Files ready: 0; errors: {errors}."
+                if english else f"Готовых файлов: 0; ошибок: {errors}."
+            )
+            return (
+                no_update, no_update, message, "danger", no_update, no_update,
+                None, status, [],
+            )
+
+        data = _mark_cross_file_duplicates(pd.concat(frames, ignore_index=True))
+        period_options, period_value = _import_period_selection(data)
+        if len(period_options) > 1 and not config.use_sqlite_storage():
+            period_value = None
+        message = (
+            f"Files ready: {len(frames)}; errors: {errors}; rows: {len(data)}."
+            if english else
+            f"Готовых файлов: {len(frames)}; ошибок: {errors}; строк: {len(data)}."
+        )
+        if len(period_options) > 1 and not config.use_sqlite_storage():
+            message += (
+                " Select a period before Preview."
+                if english else " Выбери период перед Preview."
+            )
+        return (
+            _merge_input_grid_rows(current_rows, _dataframe_records(data)),
+            _localized_input_column_defs(_kaspi_import_column_defs(locale), locale),
+            message,
+            "warning" if errors else "secondary",
+            period_options,
+            period_value,
+            balances[0] if balances else None,
+            status,
+            balances,
+        )
+
+    @app.callback(
+        Output("bank-statement-balance-source-container", "style"),
+        Output("bank-statement-balance-source", "options"),
+        Output("bank-statement-balance-source", "value"),
+        Input("bank-statement-balances", "data"),
+        State("bank-statement-balance-source", "value", allow_optional=True),
+    )
+    def show_statement_balance_sources(balances, current_value):
+        balances = balances or []
+        options = [
+            {
+                "value": index,
+                "label": (
+                    f"{balance['source_file']} · {balance['balance']} "
+                    f"{balance['currency']} · {balance['as_of_date']}"
+                ),
+            }
+            for index, balance in enumerate(balances)
+        ]
+        selected = current_value if isinstance(current_value, int) and (
+            0 <= current_value < len(options)) else (0 if options else None)
+        return (
+            {"display": "block"} if len(options) > 1 else {"display": "none"},
+            options,
+            selected,
+        )
+
+    @app.callback(
+        Output("bank-statement-balance", "data", allow_duplicate=True),
+        Input("bank-statement-balance-source", "value"),
+        State("bank-statement-balances", "data"),
+        prevent_initial_call=True,
+    )
+    def select_statement_balance(index, balances):
+        if index is None or not balances:
+            raise PreventUpdate
+        return balances[int(index)]
 
     @app.callback(
         Output("bank-statement-balance-panel", "style"),
@@ -3134,6 +3324,7 @@ def _transaction_input_layout(
     month_value = f"{year}-{str(month).zfill(2)}"
     sqlite_storage = config.use_sqlite_storage()
     upload_limit_label = BANK_PDF_UPLOAD_LIMIT_LABEL
+    batch_limit_mib = MAX_BANK_PDF_BATCH_BYTES // (1024 * 1024)
     if normalize_locale(locale) == "en":
         upload_limit_label = upload_limit_label.replace(" и ", " and ").replace(" страниц", " pages")
 
@@ -3220,11 +3411,20 @@ def _transaction_input_layout(
                             [
                                 html.Div(report_text("Перетащи Kaspi, BCC или Ozon PDF сюда", locale), className="fw-semibold"),
                                 html.Div(report_text("или нажми для выбора файла", locale), className="small opacity-75"),
-                                html.Div((f"up to {upload_limit_label}" if normalize_locale(locale) == "en" else f"до {upload_limit_label}"), className="small opacity-75"),
+                                html.Div(
+                                    (
+                                        f"up to {upload_limit_label} each; "
+                                        f"{MAX_BANK_PDF_BATCH_FILES} files, {batch_limit_mib} MiB total"
+                                        if normalize_locale(locale) == "en" else
+                                        f"до {upload_limit_label} каждый; "
+                                        f"{MAX_BANK_PDF_BATCH_FILES} файлов, {batch_limit_mib} MiB суммарно"
+                                    ),
+                                    className="small opacity-75",
+                                ),
                             ],
                             className="kaspi-upload-content",
                         ),
-                        multiple=False,
+                        multiple=True,
                         accept=".pdf,application/pdf",
                         className="kaspi-upload-zone",
                         style={
@@ -3239,6 +3439,14 @@ def _transaction_input_layout(
                             "justifyContent": "center",
                             **_section_style(theme),
                         },
+                    ),
+                    dcc.Loading(
+                        html.Div(
+                            id="bank-upload-status",
+                            className="small mt-2",
+                            style={"whiteSpace": "pre-line"},
+                        ),
+                        type="circle",
                     ),
                     dbc.Alert(
                         id="kaspi-import-message",
@@ -3256,6 +3464,25 @@ def _transaction_input_layout(
                     ),
                     html.Div(
                         [
+                            html.Div(
+                                [
+                                    dbc.Label(
+                                        "Statement" if normalize_locale(locale) == "en" else "Выписка",
+                                        html_for="bank-statement-balance-source",
+                                        className="small mb-1",
+                                    ),
+                                    dcc.Dropdown(
+                                        id="bank-statement-balance-source",
+                                        options=[],
+                                        value=None,
+                                        clearable=False,
+                                        className="dash-dropdown",
+                                    ),
+                                ],
+                                id="bank-statement-balance-source-container",
+                                style={"display": "none"},
+                                className="mb-2",
+                            ),
                             html.Div(
                                 id="bank-statement-balance-summary",
                                 className="small mb-2",
@@ -4041,10 +4268,7 @@ def _asset_classification_column_defs(
         },
     }
     unassigned_label = report_text("Не задана", locale)
-    by_type_label = report_text("по типу", locale)
-    liquidity_formatter = (
-        f"params.value ? params.value + ' · {by_type_label}' : '{unassigned_label}'"
-    )
+    liquidity_formatter = f"params.value || '{unassigned_label}'"
     columns = [
         {"field": "account_id", "hide": True},
         {"field": "Счет", "headerName": "Счет", "flex": 2, "minWidth": 220,
@@ -4127,6 +4351,32 @@ def _merge_input_grid_rows(existing_rows: list[dict] | None, new_rows: list[dict
             merged.append(dict(row))
             existing_keys.add(key)
     return merged
+
+
+def _mark_cross_file_duplicates(data: pd.DataFrame) -> pd.DataFrame:
+    if data.empty or "source_file" not in data:
+        return data
+    result = data.copy(deep=True)
+    keys = pd.DataFrame({
+        "date": result["date"].astype(str),
+        "currency": result["currency"].astype(str).str.upper(),
+        "amount": pd.to_numeric(result["amount"], errors="coerce").round(2),
+        "direction": result["direction"].astype(str).str.lower(),
+        "comment": result["comment"].astype(str).str.replace(
+            r"\s+", " ", regex=True).str.upper().str.strip(),
+    })
+    cross_file = pd.Series(False, index=result.index)
+    for indexes in keys.groupby(list(keys.columns), dropna=False).groups.values():
+        if result.loc[indexes, "source_file"].nunique() > 1:
+            cross_file.loc[indexes] = True
+    protected = result["skip_reason"].astype(str).isin({
+        "internal_transfer", "duplicate_in_staging",
+    })
+    review = cross_file & ~protected
+    result.loc[review, "duplicate_in_source"] = True
+    result.loc[review, "skip_reason"] = "possible_duplicate"
+    result.loc[review, "import_action"] = "review"
+    return result
 
 
 def _simple_column_defs(data: pd.DataFrame) -> list[dict]:
@@ -4739,6 +4989,11 @@ def _kaspi_import_column_defs(locale: str = DEFAULT_LOCALE) -> list[dict]:
                     "(params.value == 'ozon_pdf' ? 'Ozon PDF' : params.value)))"
                 )
             },
+        },
+        {
+            "field": "source_file",
+            "headerName": "File" if normalize_locale(locale) == "en" else "Файл",
+            "width": 220,
         },
         {
             "field": "category",

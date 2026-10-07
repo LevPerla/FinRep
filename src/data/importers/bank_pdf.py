@@ -18,6 +18,8 @@ from src.data.importers.ozon_pdf import OZON_MARKER, parse_ozon_pdf_bytes
 MIB = 1024 * 1024
 MAX_BANK_PDF_BYTES = 10 * MIB
 MAX_BANK_PDF_PAGES = 50
+MAX_BANK_PDF_BATCH_FILES = 5
+MAX_BANK_PDF_BATCH_BYTES = 20 * MIB
 BANK_PDF_UPLOAD_LIMIT_LABEL = f"{MAX_BANK_PDF_BYTES // MIB} MiB и {MAX_BANK_PDF_PAGES} страниц"
 # A 10 MiB file becomes about 13.4 MiB after base64 encoding. Keep a coarse
 # request-level backstop above that so the callback can return the exact error.
@@ -42,6 +44,27 @@ class BankPdfUnsupportedError(BankPdfError):
 
 class BankPdfEmptyError(BankPdfError):
     pass
+
+
+def validate_bank_upload_batch(contents: list[str]) -> None:
+    if len(contents) > MAX_BANK_PDF_BATCH_FILES:
+        raise BankPdfLimitError(
+            f"Можно загрузить не больше {MAX_BANK_PDF_BATCH_FILES} PDF за раз."
+        )
+    total_bytes = 0
+    for item in contents:
+        try:
+            _, encoded = item.split(",", 1)
+        except ValueError as exc:
+            raise BankPdfReadError(
+                "Не удалось прочитать PDF. Проверь файл и попробуй снова."
+            ) from exc
+        total_bytes += _decoded_base64_size(encoded)
+    if total_bytes > MAX_BANK_PDF_BATCH_BYTES:
+        raise BankPdfLimitError(
+            "Общий размер PDF слишком большой: максимум "
+            f"{_byte_limit_label(MAX_BANK_PDF_BATCH_BYTES)}."
+        )
 
 
 def parse_bank_upload_contents(contents: str) -> pd.DataFrame:
