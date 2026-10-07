@@ -21,8 +21,11 @@ def test_refresh_stale_reference_data_refreshes_fx_and_cpi_independently(monkeyp
     monkeypatch.setattr(app_module.config, "is_test_mode", lambda: False)
     monkeypatch.setattr(app_module.config, "use_sqlite_storage", lambda: True)
     monkeypatch.setattr(app_module.config, "active_database_path", lambda: "db")
-    monkeypatch.setattr(app_module, "fx_rates", lambda _database: [
-        {"fetched_at": "2026-09-01T00:00:00Z"}])
+    fx_rows = iter([
+        [{"fetched_at": "2026-09-01T00:00:00Z"}],
+        [{"fetched_at": "2026-10-07T00:00:00Z"}],
+    ])
+    monkeypatch.setattr(app_module, "fx_rates", lambda _database: next(fx_rows))
     monkeypatch.setattr(app_module, "cpi_observations", lambda _database: [
         {"fetched_at": "2026-10-06T00:00:00Z"}])
     monkeypatch.setattr(app_module, "fx_network_mode", lambda enabled: nullcontext())
@@ -33,9 +36,11 @@ def test_refresh_stale_reference_data_refreshes_fx_and_cpi_independently(monkeyp
         app_module, "refresh_official_cpi",
         lambda database: calls.append(("cpi", database)) or {"status": "done"})
 
-    app_module._refresh_stale_reference_data(now)
+    fx_result, cpi_result = app_module._refresh_stale_reference_data(now)
 
     assert [call[0] for call in calls] == ["fx"]
+    assert fx_result == {"request": "auto", "status": "done"}
+    assert cpi_result is app_module.no_update
 
     calls.clear()
     monkeypatch.setattr(app_module, "fx_rates", lambda _database: [
@@ -43,9 +48,11 @@ def test_refresh_stale_reference_data_refreshes_fx_and_cpi_independently(monkeyp
     monkeypatch.setattr(app_module, "cpi_observations", lambda _database: [
         {"fetched_at": "2026-09-01T00:00:00Z"}])
 
-    app_module._refresh_stale_reference_data(now)
+    fx_result, cpi_result = app_module._refresh_stale_reference_data(now)
 
     assert calls == [("cpi", "db")]
+    assert fx_result is app_module.no_update
+    assert cpi_result == {"status": "done"}
 
 
 def test_refresh_stale_reference_data_never_uses_network_in_test_mode(monkeypatch):
@@ -53,4 +60,5 @@ def test_refresh_stale_reference_data_never_uses_network_in_test_mode(monkeypatc
     monkeypatch.setattr(
         app_module, "fx_rates", lambda _database: (_ for _ in ()).throw(AssertionError))
 
-    app_module._refresh_stale_reference_data()
+    assert app_module._refresh_stale_reference_data() == (
+        app_module.no_update, app_module.no_update)

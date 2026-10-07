@@ -5,6 +5,7 @@ from decimal import Decimal
 from datetime import datetime, timedelta, timezone
 from io import BytesIO
 from pathlib import Path
+from threading import Lock
 from urllib.parse import parse_qs, urlencode
 from uuid import uuid4
 
@@ -102,6 +103,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 ASSETS_FOLDER = PROJECT_ROOT / "assets"
 logger = logging.getLogger(__name__)
 DashboardTab = tuple[str, str, str]
+_REFERENCE_REFRESH_LOCK = Lock()
 
 
 def _reference_refresh_due(rows: list[dict], now: datetime | None = None) -> bool:
@@ -117,25 +119,39 @@ def _reference_refresh_due(rows: list[dict], now: datetime | None = None) -> boo
     return not timestamps or max(timestamps) < current - timedelta(days=FX_MAX_AGE_DAYS)
 
 
-def _refresh_stale_reference_data(now: datetime | None = None) -> None:
+def _refresh_stale_reference_data(now: datetime | None = None):
     if config.is_test_mode() or not config.use_sqlite_storage():
-        return
-    database = config.active_database_path()
-    current = now or datetime.now(timezone.utc)
-    if _reference_refresh_due(fx_rates(database), current):
-        try:
-            end = pd.Timestamp(current.date())
-            with fx_network_mode(True):
-                get_usd_rates(list(config.UNIQUE_TICKERS), end - timedelta(days=FX_MAX_AGE_DAYS), end)
-        except Exception:
-            logger.exception("Automatic FX refresh failed; cached rates retained")
-    if _reference_refresh_due(cpi_observations(database), current):
-        try:
-            result = refresh_official_cpi(database)
-            if result.get("status") != "done":
-                logger.warning("Automatic CPI refresh incomplete; cached observations retained")
-        except Exception:
-            logger.exception("Automatic CPI refresh failed; cached observations retained")
+        return no_update, no_update
+    with _REFERENCE_REFRESH_LOCK:
+        database = config.active_database_path()
+        current = now or datetime.now(timezone.utc)
+        fx_result = cpi_result = no_update
+        if _reference_refresh_due(fx_rates(database), current):
+            try:
+                end = pd.Timestamp(current.date())
+                with fx_network_mode(True):
+                    get_usd_rates(
+                        list(config.UNIQUE_TICKERS),
+                        end - timedelta(days=FX_MAX_AGE_DAYS), end)
+                status = "error" if _reference_refresh_due(
+                    fx_rates(database), current) else "done"
+                fx_result = {"request": "auto", "status": status}
+            except Exception:
+                logger.exception("Automatic FX refresh failed; cached rates retained")
+                fx_result = {"request": "auto", "status": "error"}
+        if _reference_refresh_due(cpi_observations(database), current):
+            try:
+                cpi_result = refresh_official_cpi(database)
+                if cpi_result.get("status") != "done":
+                    logger.warning("Automatic CPI refresh incomplete; cached observations retained")
+            except Exception:
+                logger.exception("Automatic CPI refresh failed; cached observations retained")
+                cpi_result = {
+                    "status": "error",
+                    "results": [{"currency": "—", "status": "error",
+                                 "message": "Automatic refresh failed."}],
+                }
+        return fx_result, cpi_result
 
 
 MAIN_DASHBOARD_TABS: list[DashboardTab] = [
@@ -776,6 +792,8 @@ def register_callbacks(app: Dash) -> None:
 
     @app.callback(
         Output("dashboard-refresh-token", "data"),
+        Output("fx-refresh-result", "data", allow_duplicate=True),
+        Output("cpi-refresh-result", "data", allow_duplicate=True),
         Input("refresh-reports", "n_clicks"),
         State("dashboard-refresh-token", "data"),
         prevent_initial_call=True,
@@ -783,11 +801,11 @@ def register_callbacks(app: Dash) -> None:
     def refresh_reports(n_clicks: int | None, current_token: int | None):
         if not n_clicks:
             raise PreventUpdate
-        _refresh_stale_reference_data()
+        fx_result, cpi_result = _refresh_stale_reference_data()
         clear_data_cache()
         clear_table_cache()
         clear_main_dashboard_cache()
-        return int(current_token or 0) + 1
+        return int(current_token or 0) + 1, fx_result, cpi_result
 
     @app.callback(
         Output("dashboard-refresh-token", "data", allow_duplicate=True),
