@@ -300,6 +300,9 @@ REPORT_TEXT_EN = {
     "Нет снимка активов за выбранный месяц.": "No asset snapshot for the selected month.",
     # Data entry presentation. Category names and stored values stay unchanged.
     "Активы": "Assets",
+    "Операции и остатки": "Transactions and balances",
+    "Настройки активов": "Asset settings",
+    "Показать в таблице активов": "Show in the assets table",
     "Категории": "Categories",
     "Ручной ввод транзакции": "Add a transaction manually",
     "Импорт банковского PDF": "Import a bank PDF",

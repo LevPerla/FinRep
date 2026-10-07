@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import re
+from decimal import Decimal
 from pathlib import Path
 
 import pandas as pd
@@ -18,6 +19,12 @@ RU_AMOUNT_RE = re.compile(
     r"(?<![\d.,])(?P<amount>[+-]?(?:\d{1,3}(?: \d{3})*|\d+),\d{2})(?!\d)"
 )
 RU_TRANSACTION_DATE_RE = re.compile(r"^\d{2}\.\d{2}\.\d{4}$")
+BCC_RU_PERIOD_RE = re.compile(
+    r"Период\s+\d{2}\.\d{2}\.\d{4}\s*-\s*(?P<period_end>\d{2}\.\d{2}\.\d{4})"
+)
+BCC_RU_BALANCE_AMOUNT_RE = re.compile(
+    r"(?P<amount>[+-]?\d[\d ]*,\d{2})\s+(?P<currency>[A-Z]{3})"
+)
 
 
 def parse_bcc_pdf(path: str | Path) -> pd.DataFrame:
@@ -27,11 +34,20 @@ def parse_bcc_pdf(path: str | Path) -> pd.DataFrame:
 def parse_bcc_pdf_bytes(content: bytes) -> pd.DataFrame:
     from hashlib import sha256
 
-    return import_frame_from_rows(
-        _extract_rows_from_pdf(io.BytesIO(content)),
+    rows = _extract_rows_from_pdf(io.BytesIO(content))
+    result = import_frame_from_rows(
+        rows,
         BCC_SOURCE,
         statement_id=sha256(content).hexdigest(),
     )
+    if rows and rows[0].get("statement_balance"):
+        result.attrs["statement_balance"] = {
+            "account_id": rows[0]["statement_account_id"],
+            "balance": rows[0]["statement_balance"],
+            "currency": rows[0]["currency"],
+            "as_of_date": rows[0]["statement_balance_date"],
+        }
+    return result
 
 
 def _extract_rows_from_pdf(pdf_source) -> list[dict]:
@@ -42,7 +58,12 @@ def _extract_rows_from_pdf(pdf_source) -> list[dict]:
             raise ValueError("PDF не похож на выписку Bank CenterCredit.")
         if _is_russian_statement(first_page_text):
             rows = _russian_rows_from_pages(pdf.pages, first_page_text or "")
-            return _with_account_id(rows, first_page_text)
+            rows = _with_account_id(rows, first_page_text)
+            balance = _statement_balance_from_text(first_page_text or "")
+            if rows and balance:
+                for row in rows:
+                    row.update(balance)
+            return rows
         for page in pdf.pages:
             for table in page.extract_tables():
                 if not table:
@@ -60,6 +81,35 @@ def _with_account_id(rows: list[dict], first_page_text: str | None) -> list[dict
     for row in rows:
         row["bank_account_id"] = account_id
     return rows
+
+
+def _statement_balance_from_text(text: str) -> dict[str, str] | None:
+    account_match = BCC_ACCOUNT_RE.search(text)
+    period_match = BCC_RU_PERIOD_RE.search(text)
+    if not account_match or not period_match:
+        return None
+    period_end = period_match.group("period_end")
+    balance_match = None
+    lines = text.splitlines()
+    for index, line in enumerate(lines[:-1]):
+        if f"Остаток на {period_end}" not in line:
+            continue
+        amounts = list(BCC_RU_BALANCE_AMOUNT_RE.finditer(lines[index + 1]))
+        if amounts:
+            balance_match = amounts[-1]
+            break
+    if not balance_match:
+        return None
+    return {
+        "statement_account_id": account_match.group(0),
+        "statement_balance": str(
+            Decimal(balance_match.group("amount").replace(" ", "").replace(",", "."))
+        ),
+        "statement_balance_date": pd.to_datetime(
+            period_end, format="%d.%m.%Y"
+        ).date().isoformat(),
+        "currency": balance_match.group("currency"),
+    }
 
 
 def is_bcc_statement(first_page_text: str | None) -> bool:

@@ -4,6 +4,7 @@ from src import config
 from src.data.importers.bcc_pdf import (
     BCC_SOURCE,
     _russian_row_from_cells,
+    _statement_balance_from_text,
     is_bcc_statement,
     parse_bcc_pdf,
 )
@@ -58,4 +59,15 @@ def test_parse_russian_bcc_account_statement_row():
         "details": "Retail. 26.07.2026 00:00:00, JPN, Tokyo, Trip.com, Карта: 446375******8407",
         "bank_status": "posted",
         "bank_reference": "",
+    }
+    assert _statement_balance_from_text(
+        first_page_text
+        + "\nПериод 06.04.2026 - 06.10.2026\n"
+        "Остаток на 06.04.2026 Поступления за период Расходы за период Остаток на 06.10.2026\n"
+        "12 341,09 EUR 1 086,62 EUR 4 206,69 EUR 9 221,02 EUR"
+    ) == {
+        "statement_account_id": "KZ008560000000000000",
+        "statement_balance": "9221.02",
+        "statement_balance_date": "2026-10-06",
+        "currency": "EUR",
     }

@@ -24,6 +24,17 @@ def _component(node, component_id):
     return None
 
 
+def _components(node, component_id):
+    found = [node] if getattr(node, "id", None) == component_id else []
+    children = getattr(node, "children", None)
+    if not isinstance(children, (list, tuple)):
+        children = [children]
+    for child in children:
+        if child is not None:
+            found.extend(_components(child, component_id))
+    return found
+
+
 def _use_live_sqlite(monkeypatch, database):
     monkeypatch.setenv("FINREP_STORAGE_BACKEND", "sqlite")
     monkeypatch.setenv("FINREP_SQLITE_PATH", str(database))
@@ -32,7 +43,11 @@ def _use_live_sqlite(monkeypatch, database):
 
 
 def test_assets_input_shows_account_classification_with_history_context(tmp_path, monkeypatch):
-    from src.dashboard.app import _assets_input_layout
+    from src.dashboard.app import (
+        _asset_settings_layout,
+        _asset_snapshot_input_layout,
+        _input_report_layout,
+    )
 
     database = tmp_path / "finrep.sqlite3"
     initialize_database(database)
@@ -44,10 +59,20 @@ def test_assets_input_shows_account_classification_with_history_context(tmp_path
     _use_live_sqlite(monkeypatch, database)
 
     year, month = current_period.split("-")
-    layout = _assets_input_layout(year, month, "dark")
-    grid = _component(layout, "asset-classification-grid")
-    snapshot_grid = _component(layout, "assets-input-grid")
-    message = _component(layout, "asset-classification-message")
+    settings_layout = _asset_settings_layout("dark")
+    snapshot_layout = _asset_snapshot_input_layout(year, month, "dark")
+    combined_layout = _input_report_layout("RUB", year, month, "dark")
+    grid = _component(settings_layout, "asset-classification-grid")
+    snapshot_grid = _component(snapshot_layout, "assets-input-grid")
+    message = _component(settings_layout, "asset-classification-message")
+
+    assert [tab.label for tab in combined_layout.children] == [
+        "Операции и остатки", "Настройки активов", "Категории"]
+    assert len(_components(combined_layout, "assets-input-grid")) == 1
+    assert _component(combined_layout.children[0], "assets-input-grid") is not None
+    assert _component(combined_layout.children[1], "assets-input-grid") is None
+    assert _component(combined_layout.children[1], "asset-classification-grid") is not None
+    assert _component(snapshot_layout, "assets-snapshot-section") is snapshot_layout
 
     assert len(grid.rowData) == 1
     row = grid.rowData[0]
@@ -82,8 +107,8 @@ def test_assets_input_shows_account_classification_with_history_context(tmp_path
     assert next(
         column for column in grid.columnDefs if column["field"] == "closed_period"
     )["editable"] is False
-    assert _component(layout, "assets-delete-row-button").children == "Отправить в архив"
-    assert _component(layout, "asset-account-restore-button") is not None
+    assert _component(snapshot_layout, "assets-delete-row-button").children == "Отправить в архив"
+    assert _component(settings_layout, "asset-account-restore-button") is not None
     assert grid.dashGridOptions["rowSelection"] == "multiple"
     assert next(
         column for column in grid.columnDefs if column["field"] == "Последний снимок"
@@ -108,7 +133,13 @@ def test_assets_input_shows_account_classification_with_history_context(tmp_path
         "finrep-asset-kind-unclassified",
     }
     assert snapshot_columns["amount"]["flex"] == 1
+    assert set(snapshot_columns["amount"]["cellClassRules"]) == {
+        "finrep-statement-balance-pending",
+        "finrep-statement-balance-matched",
+    }
     assert snapshot_columns["currency"]["flex"] == 0.7
+    assert snapshot_columns["account_id"]["hide"] is True
+    assert snapshot_grid.rowData[0]["account_id"] == "account-1"
     assert snapshot_grid.rowData[0]["asset_type"] == "Не классифицировано"
     assert snapshot_grid.rowData[0]["asset_type_id"] == "__unclassified__"
     assert "Не классифицировано: 1" in message.children
