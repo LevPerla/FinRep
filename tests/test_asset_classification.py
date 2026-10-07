@@ -100,6 +100,8 @@ def test_assets_input_shows_account_classification_with_history_context(tmp_path
         column for column in grid.columnDefs if column["field"] == "liquidity_class_id")
     assert liquidity_column["editable"] is False
     assert "cellEditorParams" not in liquidity_column
+    assert "по типу" not in liquidity_column["valueFormatter"]["function"]
+    assert "by type" not in liquidity_column["valueFormatter"]["function"]
     assert next(column for column in grid.columnDefs if column["field"] == "Счет")["flex"] == 2
     assert type_column["minWidth"] == 190
     assert next(column for column in grid.columnDefs if column["field"] == "active")[

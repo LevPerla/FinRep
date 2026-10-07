@@ -134,8 +134,9 @@ def test_staging_controls_are_absent_but_import_rows_can_be_excluded(exported_ca
     assert _component(layout, "kaspi-save-button") is None
     assert _component(layout, "transaction-delete-button") is None
     assert "finrep-import-grid" in import_grid.className
-    assert [column["field"] for column in import_grid.columnDefs[:5]] == [
+    assert [column["field"] for column in import_grid.columnDefs[:6]] == [
         "source",
+        "source_file",
         "category",
         "date",
         "amount",

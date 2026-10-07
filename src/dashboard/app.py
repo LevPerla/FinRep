@@ -2,7 +2,7 @@ import json
 import logging
 import os
 from decimal import Decimal
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from io import BytesIO
 from pathlib import Path
 from urllib.parse import parse_qs, urlencode
@@ -17,6 +17,7 @@ from flask import request, session
 
 from src import config
 from src.data.get import clear_data_cache, get_transactions
+from src.data.get_finance import FX_MAX_AGE_DAYS, fx_network_mode, get_usd_rates
 from src.data.inflation import refresh_official_cpi
 from src.data.assets_editor import (
     asset_snapshot_path,
@@ -59,6 +60,7 @@ from src.data.staging import (
     read_transaction_drafts_snapshot,
 )
 from src.data.sqlite_bootstrap import ensure_default_live_database
+from src.data.sqlite_store import cpi_observations, fx_rates
 from src.dashboard.expense_data import build_expense_dashboard_data
 from src.dashboard.income_data import build_income_dashboard_data
 from src.dashboard.export import ExportBusyError, export_dashboard_page
@@ -100,6 +102,42 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 ASSETS_FOLDER = PROJECT_ROOT / "assets"
 logger = logging.getLogger(__name__)
 DashboardTab = tuple[str, str, str]
+
+
+def _reference_refresh_due(rows: list[dict], now: datetime | None = None) -> bool:
+    timestamps = []
+    for row in rows:
+        try:
+            value = datetime.fromisoformat(str(row.get("fetched_at", "")).replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        timestamps.append(value if value.tzinfo else value.replace(tzinfo=timezone.utc))
+    current = now or datetime.now(timezone.utc)
+    current = current if current.tzinfo else current.replace(tzinfo=timezone.utc)
+    return not timestamps or max(timestamps) < current - timedelta(days=FX_MAX_AGE_DAYS)
+
+
+def _refresh_stale_reference_data(now: datetime | None = None) -> None:
+    if config.is_test_mode() or not config.use_sqlite_storage():
+        return
+    database = config.active_database_path()
+    current = now or datetime.now(timezone.utc)
+    if _reference_refresh_due(fx_rates(database), current):
+        try:
+            end = pd.Timestamp(current.date())
+            with fx_network_mode(True):
+                get_usd_rates(list(config.UNIQUE_TICKERS), end - timedelta(days=FX_MAX_AGE_DAYS), end)
+        except Exception:
+            logger.exception("Automatic FX refresh failed; cached rates retained")
+    if _reference_refresh_due(cpi_observations(database), current):
+        try:
+            result = refresh_official_cpi(database)
+            if result.get("status") != "done":
+                logger.warning("Automatic CPI refresh incomplete; cached observations retained")
+        except Exception:
+            logger.exception("Automatic CPI refresh failed; cached observations retained")
+
+
 MAIN_DASHBOARD_TABS: list[DashboardTab] = [
     ("main", "Основной отчет", "Главная"),
     ("year", "Годовой отчет", "Год"),
@@ -745,6 +783,7 @@ def register_callbacks(app: Dash) -> None:
     def refresh_reports(n_clicks: int | None, current_token: int | None):
         if not n_clicks:
             raise PreventUpdate
+        _refresh_stale_reference_data()
         clear_data_cache()
         clear_table_cache()
         clear_main_dashboard_cache()
@@ -4211,10 +4250,7 @@ def _asset_classification_column_defs(
         },
     }
     unassigned_label = report_text("Не задана", locale)
-    by_type_label = report_text("по типу", locale)
-    liquidity_formatter = (
-        f"params.value ? params.value + ' · {by_type_label}' : '{unassigned_label}'"
-    )
+    liquidity_formatter = f"params.value || '{unassigned_label}'"
     columns = [
         {"field": "account_id", "hide": True},
         {"field": "Счет", "headerName": "Счет", "flex": 2, "minWidth": 220,
