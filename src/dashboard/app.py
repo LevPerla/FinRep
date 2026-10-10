@@ -1586,10 +1586,11 @@ def register_callbacks(app: Dash) -> None:
         Output("asset-classification-grid", "rowData", allow_duplicate=True),
         Input("bank-create-asset-button", "n_clicks"),
         State("bank-new-asset-name", "value"),
+        State("bank-new-asset-type", "value"),
         State("dashboard-locale", "data"),
         prevent_initial_call=True,
     )
-    def create_statement_asset(clicks, account_name, locale):
+    def create_statement_asset(clicks, account_name, asset_type_id, locale):
         if not clicks:
             raise PreventUpdate
         try:
@@ -1606,6 +1607,8 @@ def register_callbacks(app: Dash) -> None:
                     "Enter a name for the new asset." if english
                     else "Введи название нового актива."
                 )
+            if not asset_type_id:
+                raise ValueError("Выбери тип актива." if not english else "Choose an asset type.")
             from src.data.sqlite_store import add_asset_account, asset_accounts
 
             existing = next((
@@ -1621,11 +1624,14 @@ def register_callbacks(app: Dash) -> None:
                      if english else "Счёт в архиве. Восстанови его во вкладке «Настройки активов».")
                 )
             account_id = uuid4().hex
-            add_asset_account(config.active_database_path(), account_id, name)
+            add_asset_account(
+                config.active_database_path(), account_id, name,
+                asset_type_id=asset_type_id,
+            )
             return (
                 account_id,
-                (f"Asset ‘{name}’ created. Select it in the balance row."
-                 if english else f"Актив «{name}» создан. Теперь выбери его в строке остатка."),
+                (f"Asset ‘{name}’ created, awaiting its first valuation. Select it in the balance row."
+                 if english else f"Актив «{name}» создан и ожидает первой оценки. Выбери его в строке остатка."),
                 "success", True, "", _active_asset_options(),
                 _asset_classification_rows(locale),
             )
@@ -2456,8 +2462,8 @@ def register_callbacks(app: Dash) -> None:
                 config.require_writable_mode()
             if trigger == "assets-add-row-button":
                 rows = list(row_data or [])
-                rows.append({"account": "", "amount": 0, "currency": DEFAULT_CURRENCY})
-                message = "An empty row was added. Enter the account, amount, and currency, then select Apply." if normalize_locale(locale) == "en" else "Добавлена пустая строка. Заполни счет, сумму и валюту, затем нажми Применить."
+                rows.append({"account": "", "asset_type_id": "", "amount": 0, "currency": DEFAULT_CURRENCY})
+                message = "An empty row was added. Enter its name, type, amount and currency, then select Apply." if normalize_locale(locale) == "en" else "Добавлена пустая строка. Заполни название, тип, сумму и валюту, затем нажми «Применить»."
                 return with_statement_preview(rows), message, "secondary", no_update
 
             if trigger == "assets-copy-previous-button":
@@ -2862,13 +2868,16 @@ def _main_missing_month_notice(period: str, locale: str = DEFAULT_LOCALE):
 def _main_asset_freshness_notice(freshness: dict, locale: str = DEFAULT_LOCALE):
     stale_names = ", ".join(freshness.get("stale_accounts", []))
     missing_names = ", ".join(freshness.get("missing_accounts", []))
+    carried_names = ", ".join(freshness.get("carried_accounts", []))
     if normalize_locale(locale) == "en":
         parts = []
         if stale_names:
             parts.append(f"Stale valuations: {stale_names}.")
         if missing_names:
             parts.append(f"Unknown valuation date: {missing_names}.")
-        title = "Asset valuations need attention"
+        if carried_names:
+            parts.append(f"Carried forward: {carried_names}.")
+        title = "Provisional asset total" if carried_names else "Asset valuations need attention"
         detail = " ".join(parts) + " Values remain included in capital."
     else:
         parts = []
@@ -2876,7 +2885,9 @@ def _main_asset_freshness_notice(freshness: dict, locale: str = DEFAULT_LOCALE):
             parts.append(f"Устаревшие оценки: {stale_names}.")
         if missing_names:
             parts.append(f"Дата оценки неизвестна: {missing_names}.")
-        title = "Оценки активов требуют внимания"
+        if carried_names:
+            parts.append(f"Перенесённые остатки: {carried_names}.")
+        title = "Предварительный итог активов" if carried_names else "Оценки активов требуют внимания"
         detail = " ".join(parts) + " Значения продолжают учитываться в капитале."
     return dbc.Alert(
         [
@@ -3111,7 +3122,7 @@ def _cockpit_status_class(status) -> str:
     status = str(status).strip().lower()
     if status in {"assets", "cash-flow", "positive", "strong", "ok"}:
         return "ok"
-    if status in {"negative", "watch", "thin", "review"}:
+    if status in {"negative", "watch", "thin", "review", "stale", "provisional"}:
         return "warn"
     return "neutral"
 
@@ -3683,9 +3694,25 @@ def _transaction_input_layout(
                                             ),
                                             dbc.Input(
                                                 id="bank-new-asset-name",
-                                                placeholder="Name in the registry" if normalize_locale(locale) == "en"
-                                                else "Название в реестре",
+                                                placeholder="Short unique name (without type or currency)" if normalize_locale(locale) == "en"
+                                                else "Короткое уникальное имя без типа и валюты",
                                                 disabled=read_only or not config.use_sqlite_storage(),
+                                            ),
+                                        ],
+                                        className="finrep-balance-create-input",
+                                    ),
+                                    html.Div(
+                                        [
+                                            dbc.Label(
+                                                "Asset type" if normalize_locale(locale) == "en" else "Тип актива",
+                                                html_for="bank-new-asset-type", className="small mb-1",
+                                            ),
+                                            dcc.Dropdown(
+                                                id="bank-new-asset-type",
+                                                options=_new_asset_type_options(locale),
+                                                placeholder="Choose type" if normalize_locale(locale) == "en" else "Выбери тип",
+                                                disabled=read_only or not config.use_sqlite_storage(),
+                                                className="dash-dropdown",
                                             ),
                                         ],
                                         className="finrep-balance-create-input",
@@ -4311,7 +4338,7 @@ def _asset_snapshot_input_layout(
                 dag.AgGrid(
                     id="assets-input-grid",
                     rowData=records,
-                    columnDefs=_localized_input_column_defs(_asset_input_column_defs(), locale),
+                    columnDefs=_localized_input_column_defs(_asset_input_column_defs(locale), locale),
                     defaultColDef=_ag_grid_default_col_def(editable=not read_only),
                     dashGridOptions={"pagination": False, "suppressFieldDotNotation": True, "rowSelection": "multiple", "stopEditingWhenCellsLoseFocus": True, "undoRedoCellEditing": True},
                     className=_ag_grid_class_name(theme),
@@ -4359,6 +4386,13 @@ def _asset_settings_layout(
                                             "Архивные счета сохраняются в истории и не проверяются на актуальность. Выбери архивный счёт в таблице, чтобы вернуть его в текущий снимок.",
                                             locale,
                                         ),
+                                        className="small mb-0",
+                                        style={"color": "var(--finrep-muted)"},
+                                    ),
+                                    html.P(
+                                        "Новый актив требует типа. Ликвидность определяется типом. Перед архивацией сохрани нулевой остаток за месяц закрытия во всех валютах; после этого он не переносится в следующие месяцы."
+                                        if normalize_locale(locale) != "en" else
+                                        "New assets need a type; liquidity follows the type. Save zero balances in every currency for the closing month before archiving.",
                                         className="small mb-0",
                                         style={"color": "var(--finrep-muted)"},
                                     ),
@@ -4445,7 +4479,9 @@ def _asset_classification_rows(locale: str = DEFAULT_LOCALE) -> list[dict]:
             "active": bool(row["active"]),
             "closed_period": row["closed_period"] or "",
             "Актуальность": freshness_label(
-                row, locale=normalize_locale(locale)),
+                row, locale=normalize_locale(locale)) if row["snapshot_count"] else (
+                    "Awaiting first valuation" if normalize_locale(locale) == "en"
+                    else "Ожидает первой оценки"),
             "freshness_status": row["freshness_status"],
             "Снимков": row["snapshot_count"],
             "Первый снимок": row["first_period"] or "",
@@ -4463,6 +4499,9 @@ def _asset_classification_status(rows: list[dict], locale: str = DEFAULT_LOCALE)
         row.get("asset_type_id") in {None, "", UNCLASSIFIED_ASSET_TYPE_VALUE}
         for row in rows
     )
+    unclassified_names = [row["Счет"] for row in rows
+                          if row.get("asset_type_id") in {None, "", UNCLASSIFIED_ASSET_TYPE_VALUE}]
+    pending_names = [row["Счет"] for row in rows if row.get("active", True) and not row.get("Снимков")]
     excluded = sum(not row.get("Включать в капитал", True) for row in rows)
     archived = sum(not row.get("active", True) for row in rows)
     liquidity_unclassified = sum(not row.get("liquidity_class_id") for row in rows)
@@ -4482,6 +4521,8 @@ def _asset_classification_status(rows: list[dict], locale: str = DEFAULT_LOCALE)
             f"Liquidity unassigned: {liquidity_unclassified}. "
             f"Stale valuations: {stale}. Unknown valuation date: {missing_date}. "
             f"Archived: {archived}. Excluded from capital: {excluded}."
+            + (f" Classify: {', '.join(unclassified_names)}." if unclassified_names else "")
+            + (f" Awaiting first valuation: {', '.join(pending_names)}." if pending_names else "")
         )
     else:
         message = (
@@ -4489,6 +4530,8 @@ def _asset_classification_status(rows: list[dict], locale: str = DEFAULT_LOCALE)
             f"Ликвидность не задана: {liquidity_unclassified}. "
             f"Устаревших оценок: {stale}. Без даты оценки: {missing_date}. "
             f"В архиве: {archived}. Исключено из капитала: {excluded}."
+            + (f" Требуют классификации: {', '.join(unclassified_names)}." if unclassified_names else "")
+            + (f" Ожидают первой оценки: {', '.join(pending_names)}." if pending_names else "")
         )
     return (
         message,
@@ -4910,6 +4953,17 @@ def _active_asset_options() -> list[dict]:
     ]
 
 
+def _new_asset_type_options(locale: str = DEFAULT_LOCALE) -> list[dict]:
+    if not config.use_sqlite_storage():
+        return []
+    from src.data.sqlite_store import asset_types
+
+    english = normalize_locale(locale) == "en"
+    return [{"label": row["name_en"] if english else row["name_ru"],
+             "value": row["id"]}
+            for row in asset_types(config.active_database_path())]
+
+
 def _asset_input_records(
     year: str, month: str, locale: str = DEFAULT_LOCALE) -> list[dict]:
     data = read_asset_snapshot(year, month).copy(deep=True)
@@ -4917,7 +4971,7 @@ def _asset_input_records(
         return []
     account_details = {}
     if config.use_sqlite_storage():
-        from src.data.sqlite_store import asset_accounts
+        from src.data.sqlite_store import asset_accounts, effective_asset_snapshot_month
 
         english = normalize_locale(locale) == "en"
         account_details = {
@@ -4930,6 +4984,11 @@ def _asset_input_records(
             }
             for row in asset_accounts(config.active_database_path())
         }
+        period = f"{int(year):04d}-{int(month):02d}"
+        balance_details = {
+            (row["account_id"], row["currency_code"]): row
+            for row in effective_asset_snapshot_month(config.active_database_path(), period)
+        }
     unclassified = report_text("Не классифицировано", locale)
     data.insert(
         1,
@@ -4937,6 +4996,25 @@ def _asset_input_records(
         data["account"].map(
             lambda account: account_details.get(account, {}).get("account_id", "")),
     )
+    if config.use_sqlite_storage():
+        data["source_period"] = [
+            balance_details.get((account_id, currency), {}).get("source_period", "")
+            for account_id, currency in zip(data["account_id"], data["currency"])
+        ]
+        data["age_months"] = [
+            balance_details.get((account_id, currency), {}).get("age_months", 0)
+            for account_id, currency in zip(data["account_id"], data["currency"])
+        ]
+        data["carried"] = data["source_period"].ne(period)
+        english = normalize_locale(locale) == "en"
+        data["valuation_status"] = data.apply(
+            lambda row: (
+                (f"Carried from {row['source_period']} ({row['age_months']} mo.)" if english
+                 else f"Перенесено с {row['source_period']} ({row['age_months']} мес.)")
+                if row["carried"] else
+                (f"Confirmed for {period}" if english else f"Подтверждено за {period}")
+            ), axis=1,
+        )
     data.insert(
         2,
         "asset_type_id",
@@ -5055,7 +5133,31 @@ def _statement_asset_previews(
 def _asset_input_status(year: str, month: str, locale: str = DEFAULT_LOCALE) -> tuple[str, str]:
     period = f"{int(year):04d}-{int(month):02d}"
     if config.use_sqlite_storage():
-        from src.data.sqlite_store import saved_asset_months
+        from src.data.sqlite_store import asset_accounts, effective_asset_snapshot_month, saved_asset_months
+
+        rows = effective_asset_snapshot_month(config.active_database_path(), period)
+        carried = [row for row in rows if row["carried"]]
+        if carried:
+            age_unit = "mo." if normalize_locale(locale) == "en" else "мес."
+            detail = ", ".join(
+                f"{row['account_name']} {row['currency_code']} ({row['source_period']}, {row['age_months']} {age_unit})"
+                for row in carried
+            )
+            return (
+                f"Provisional total. Carried balances ({len(carried)}): {detail}. Review and Apply to confirm."
+                if normalize_locale(locale) == "en" else
+                f"Предварительный итог. Перенесённые остатки ({len(carried)}): {detail}. Проверь и нажми «Применить», чтобы подтвердить.",
+                "warning",
+            )
+        pending = [row["name"] for row in asset_accounts(config.active_database_path())
+                   if row["active"] and not row["snapshot_count"]]
+        if pending:
+            return (
+                f"Awaiting first valuation (not included in capital): {', '.join(pending)}."
+                if normalize_locale(locale) == "en" else
+                f"Ожидают первой оценки и не входят в капитал: {', '.join(pending)}.",
+                "warning",
+            )
 
         if period in saved_asset_months(config.active_database_path()):
             message = (f"Saved asset snapshot for {period} loaded."
@@ -5187,8 +5289,11 @@ def _debt_transaction_draft_column_defs() -> list[dict]:
     ]
 
 
-def _asset_input_column_defs() -> list[dict]:
+def _asset_input_column_defs(locale: str = DEFAULT_LOCALE) -> list[dict]:
     currencies = list(config.UNIQUE_TICKERS)
+    type_options = _new_asset_type_options(locale)
+    type_labels = {item["value"]: item["label"] for item in type_options}
+    type_labels[UNCLASSIFIED_ASSET_TYPE_VALUE] = report_text("Не классифицировано", locale)
     asset_type_class_rules = {
         f"finrep-asset-kind-{asset_type_id.replace('_', '-')}": (
             f"params.data && params.data.asset_type_id == '{asset_type_id}'"
@@ -5206,7 +5311,11 @@ def _asset_input_column_defs() -> list[dict]:
     return [
         {"field": "account", "headerName": "Счет", "editable": True, "flex": 2,
          "minWidth": 220, "cellClassRules": asset_type_class_rules},
-        {"field": "asset_type", "headerName": "Тип актива", "editable": False,
+        {"field": "asset_type_id", "headerName": "Тип актива",
+         "editable": {"function": "params.data && !params.data.account_id"},
+         "cellEditor": "agSelectCellEditor",
+         "cellEditorParams": {"values": [item["value"] for item in type_options]},
+         "valueFormatter": {"function": f"({json.dumps(type_labels, ensure_ascii=False)})[params.value] || params.value"},
          "flex": 1.2, "minWidth": 190, "cellClassRules": asset_type_class_rules},
         {
             "field": "amount",
@@ -5224,7 +5333,13 @@ def _asset_input_column_defs() -> list[dict]:
             },
         },
         {"field": "currency", "headerName": "Валюта", "editable": True, "cellEditor": "agSelectCellEditor", "cellEditorParams": {"values": currencies}, "flex": 0.7, "minWidth": 120},
+        {"field": "valuation_status", "headerName": "Статус оценки", "editable": False,
+         "flex": 1.2, "minWidth": 220,
+         "cellClassRules": {"finrep-asset-carried": "params.data && params.data.carried"}},
         {"field": "account_id", "hide": True},
+        {"field": "source_period", "hide": True},
+        {"field": "age_months", "hide": True},
+        {"field": "carried", "hide": True},
         {"field": "amount_sort", "hide": True, "sort": "desc", "sortIndex": 0},
     ]
 

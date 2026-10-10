@@ -104,8 +104,8 @@ def test_statistics_count_only_business_facts_in_one_all_time_profile(tmp_path):
         asset_type="crypto", quantity="0.1", unit_price="100", currency="KZT",
         operation_key="buy-btc",
     )
-    add_asset_account(database, "cash", "Cash")
-    add_asset_account(database, "deposit", "Deposit")
+    add_asset_account(database, "cash", "Cash", asset_type_id="cash_account")
+    add_asset_account(database, "deposit", "Deposit", asset_type_id="deposit")
     add_asset_snapshot(
         database, snapshot_id="snapshot-1", account_id="cash", period="2024-02",
         amount="100", currency="RUB",

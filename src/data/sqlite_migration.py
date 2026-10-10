@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import csv
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from decimal import Decimal
 import hashlib
 import json
@@ -14,7 +14,6 @@ import sqlite3
 from src.dashboard.income_sources import classify_income_comment
 from src.data.money import parse_money_amount
 from src.data.sqlite_store import (
-    add_asset_account,
     add_asset_snapshot,
     add_cash_transaction,
     connect_database,
@@ -494,7 +493,12 @@ def _migrate_asset_file(path: Path, item: ManifestEntry, target_db: Path,
             with connect_database(target_db) as target:
                 exists = target.execute("SELECT 1 FROM asset_accounts WHERE id = ?", (account_id,)).fetchone()
             if not exists:
-                add_asset_account(target_db, account_id, account_name)
+                # Legacy CSV has no type; leave it visibly unclassified for review.
+                now = datetime.now(timezone.utc).isoformat()
+                with connect_database(target_db, writable=True) as target:
+                    target.execute("""INSERT INTO asset_accounts
+                        (id, name, active, created_at, updated_at)
+                        VALUES (?, ?, 1, ?, ?)""", (account_id, account_name, now, now))
             add_asset_snapshot(
                 target_db, snapshot_id=_stable_id("snapshot", source_record_id),
                 account_id=account_id, period=period, amount=amount, currency=currency,

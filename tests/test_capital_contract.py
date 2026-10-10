@@ -1,3 +1,5 @@
+from datetime import date
+
 import pandas as pd
 
 from src import config
@@ -160,13 +162,30 @@ def test_first_asset_month_does_not_invent_zero_fx_revaluation():
     assert metrics.loc["monthly_fx_revaluation", "Статус"] == "empty"
 
 
-def test_capital_components_show_only_latest_included_explicit_snapshots(
+def test_carried_balance_marks_capital_provisional_not_stale():
+    balance = pd.DataFrame({
+        "Доход": [100.0], "Расход": [0.0], "Дельта": [100.0],
+        "Баланс": [100.0], "Капитал": [100.0],
+        "Капитал по активам": [600.0], "Расхождение с активами": [500.0],
+        "Валютная переоценка": [0.0],
+    }, index=pd.to_datetime(["2026-10-31"]))
+    freshness = {"carried_count": 1, "stale_count": 0, "missing_count": 0,
+                 "has_warning": True}
+
+    metrics = main_data._cockpit_metrics(
+        balance, "RUB", "2026", "10", asset_freshness=freshness).set_index("ID")
+
+    assert metrics.loc["capital", "Статус"] == "provisional"
+    assert "перенесённых остатков: 1" in metrics.loc["capital", "Детали"]
+
+
+def test_capital_components_include_carried_active_snapshots(
         tmp_path, monkeypatch):
     database = tmp_path / "finrep.sqlite3"
     initialize_database(database)
-    add_asset_account(database, "cash", "Основной счёт")
-    add_asset_account(database, "duplicate", "Внешняя оценка портфеля")
-    add_asset_account(database, "historical", "Закрытый старый счёт")
+    add_asset_account(database, "cash", "Основной счёт", asset_type_id="cash_account")
+    add_asset_account(database, "duplicate", "Внешняя оценка портфеля", asset_type_id="other")
+    add_asset_account(database, "historical", "Закрытый старый счёт", asset_type_id="other")
     set_asset_account_classification(
         database,
         "cash",
@@ -201,8 +220,9 @@ def test_capital_components_show_only_latest_included_explicit_snapshots(
 
     result = main_data._capital_components_data("RUB")
 
-    assert result["Счет"].tolist() == ["Основной счёт"]
-    assert result["Период оценки"].tolist() == ["2026-02"]
-    assert result["Тип актива"].tolist() == ["Расчётный счёт"]
-    assert result["В валюте отчёта"].tolist() == [100.0]
-    assert result.attrs["total"] == 100.0
+    assert set(result["Счет"]) == {"Основной счёт", "Закрытый старый счёт"}
+    assert set(result["Период оценки"]) == {max("2026-02", date.today().strftime("%Y-%m"))}
+    assert dict(zip(result["Счет"], result["В валюте отчёта"])) == {
+        "Основной счёт": 100.0, "Закрытый старый счёт": 700.0,
+    }
+    assert result.attrs["total"] == 800.0

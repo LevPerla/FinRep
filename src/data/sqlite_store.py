@@ -1926,8 +1926,14 @@ def add_asset_account(path: str | Path, account_id: str, name: str, *,
                       include_in_capital: bool = True) -> None:
     if not account_id or not name.strip():
         raise ValueError("account ID and name are required")
+    if not asset_type_id:
+        raise ValueError("asset type is required for a new account")
     now = _utc_now()
     with connect_database(path, writable=True) as connection:
+        if not connection.execute(
+            "SELECT 1 FROM asset_types WHERE id = ? AND active = 1", (asset_type_id,)
+        ).fetchone():
+            raise ValueError("asset type must be active")
         connection.execute(
             """INSERT INTO asset_accounts
               (id, name, active, created_at, updated_at, asset_type_id, include_in_capital)
@@ -2072,6 +2078,8 @@ def set_asset_account_classifications(path: str | Path, rows: list[dict], *,
             before = current[account_id]
             included = int(include_in_capital)
             active = before["active"] if item["active"] is None else int(item["active"])
+            if active and asset_type_id is None and before["asset_type_id"] is not None:
+                raise ValueError(f"asset type is required: {before['name']}")
             closed_period = (
                 before["closed_period"] if item["active"] is None
                 else item["closed_period"]
@@ -2084,6 +2092,8 @@ def set_asset_account_classifications(path: str | Path, rows: list[dict], *,
                 raise ValueError(
                     f"closed period cannot precede the last snapshot ({last_snapshot})"
                 )
+            if not active:
+                _require_zero_closing_balances(connection, account_id, closed_period)
             if (before["asset_type_id"], before["liquidity_class_override_id"],
                     before["include_in_capital"], before["active"],
                     before["closed_period"]) == (
@@ -2146,6 +2156,7 @@ def archive_asset_accounts(path: str | Path, account_names: list[str], *,
                 continue
             if not account["active"]:
                 raise ValueError(f"asset account is already archived: {name}")
+            _require_zero_closing_balances(connection, account["id"], period)
             connection.execute(
                 """UPDATE asset_accounts SET active = 0, closed_period = ?,
                 updated_at = ? WHERE id = ?""",
@@ -2168,6 +2179,21 @@ def archive_asset_accounts(path: str | Path, account_names: list[str], *,
             )
             archived += 1
     return {"submitted": len(names), "archived": archived, "period": period}
+
+
+def _require_zero_closing_balances(
+        connection: sqlite3.Connection, account_id: str, period: str | None) -> None:
+    if period is None:
+        raise ValueError("closed period is required")
+    rows = connection.execute("""SELECT currency_code,
+        MAX(CASE WHEN period = ? AND amount_minor = 0 THEN 1 ELSE 0 END) AS zero_this_month
+        FROM asset_snapshots WHERE account_id = ? AND period <= ?
+        GROUP BY currency_code""", (period, account_id, period)).fetchall()
+    missing = [row["currency_code"] for row in rows if not row["zero_this_month"]]
+    if missing:
+        raise ValueError(
+            f"save a zero balance for {period} before archiving: {', '.join(missing)}"
+        )
 
 
 def restore_asset_accounts_to_snapshot(path: str | Path, account_ids: list[str], *,
@@ -2276,6 +2302,11 @@ def add_asset_snapshot(path: str | Path, *, snapshot_id: str, account_id: str,
     now = _utc_now()
     with connect_database(path, writable=True) as connection:
         amount_minor = _minor_units(connection, currency, amount, allow_zero=True)
+        account = connection.execute(
+            "SELECT closed_period FROM asset_accounts WHERE id = ?", (account_id,)
+        ).fetchone()
+        if account is not None and account["closed_period"] == period and amount_minor != 0:
+            raise ValueError("closing month balance must be zero")
         connection.execute(
             """INSERT INTO asset_snapshots
               (id, account_id, period, currency_code, amount_minor, created_at, updated_at)
@@ -2380,6 +2411,60 @@ def asset_snapshots(path: str | Path) -> list[dict]:
     return [{**dict(row), "amount": _amount(row["amount_minor"], row["minor_unit"])} for row in rows]
 
 
+def effective_asset_snapshot_month(path: str | Path, period: str) -> list[dict]:
+    """Latest known balance per account/currency, without writing carried values."""
+    period = _period(period)
+    with connect_database(path) as connection:
+        rows = connection.execute("""SELECT v.*, c.minor_unit FROM v_asset_snapshots v
+            JOIN currencies c ON c.code = v.currency_code
+            WHERE v.period <= ? AND (v.closed_period IS NULL OR v.closed_period >= ?)
+            ORDER BY v.period DESC, v.id DESC""", (period, period)).fetchall()
+    latest = {}
+    for row in rows:
+        key = (row["account_id"], row["currency_code"])
+        if key not in latest:
+            latest[key] = {
+                **dict(row), "source_period": row["period"],
+                "period": period, "carried": row["period"] != period,
+                "age_months": _asset_balance_age(period, row["period"]),
+                "amount": _amount(row["amount_minor"], row["minor_unit"]),
+            }
+    return sorted(latest.values(), key=lambda row: (row["account_name"], row["currency_code"]))
+
+
+def effective_asset_snapshot_history(path: str | Path) -> list[dict]:
+    """Effective monthly values from the first valuation through the current month."""
+    snapshots = asset_snapshots(path)
+    if not snapshots:
+        return []
+    snapshots.sort(key=lambda row: (row["period"], row["id"]))
+    period = snapshots[0]["period"]
+    end = max(date.today().strftime("%Y-%m"), snapshots[-1]["period"])
+    latest = {}
+    result = []
+    index = 0
+    while period <= end:
+        while index < len(snapshots) and snapshots[index]["period"] <= period:
+            row = snapshots[index]
+            latest[(row["account_id"], row["currency_code"])] = row
+            index += 1
+        for row in latest.values():
+            if row["closed_period"] is not None and period > row["closed_period"]:
+                continue
+            result.append({
+                **row, "source_period": row["period"], "period": period,
+                "carried": row["period"] != period,
+                "age_months": _asset_balance_age(period, row["period"]),
+            })
+        year, month = map(int, period.split("-"))
+        period = f"{year + (month == 12):04d}-{month % 12 + 1:02d}"
+    return result
+
+
+def _asset_balance_age(period: str, source_period: str) -> int:
+    return (int(period[:4]) - int(source_period[:4])) * 12 + int(period[5:]) - int(source_period[5:])
+
+
 def replace_asset_snapshot_month(path: str | Path, *, period: str,
                                  rows: list[dict]) -> dict:
     """Atomically make one period equal to the supplied account/currency rows."""
@@ -2395,7 +2480,7 @@ def replace_asset_snapshot_month(path: str | Path, *, period: str,
         if key in seen:
             raise ValueError("asset snapshot contains a duplicate account/currency")
         seen.add(key)
-        normalized.append((account_name, currency, row.get("amount")))
+        normalized.append((account_name, currency, row.get("amount"), row.get("asset_type_id")))
 
     now = _utc_now()
     inserted = updated = deleted = 0
@@ -2404,7 +2489,7 @@ def replace_asset_snapshot_month(path: str | Path, *, period: str,
             "SELECT * FROM asset_snapshots WHERE period = ?", (period,)).fetchall()
         existing = {(row["account_id"], row["currency_code"]): row for row in existing_rows}
         wanted = set()
-        for account_name, currency, amount in normalized:
+        for account_name, currency, amount, asset_type_id in normalized:
             accounts = connection.execute(
                 "SELECT id, active, closed_period FROM asset_accounts WHERE name = ? ORDER BY id",
                 (account_name,),
@@ -2421,15 +2506,22 @@ def replace_asset_snapshot_month(path: str | Path, *, period: str,
                         f"asset account is archived after {account['closed_period']}: {account_name}"
                     )
             else:
+                if not asset_type_id or not connection.execute(
+                    "SELECT 1 FROM asset_types WHERE id = ? AND active = 1",
+                    (asset_type_id,),
+                ).fetchone():
+                    raise ValueError(f"asset type is required for a new account: {account_name}")
                 account_id = hashlib.sha256(
                     f"asset-account\0{account_name}".encode()).hexdigest()[:32]
                 connection.execute("""INSERT INTO asset_accounts
-                    (id, name, active, created_at, updated_at)
-                    VALUES (?, ?, 1, ?, ?)""",
-                    (account_id, account_name, now, now))
+                    (id, name, active, asset_type_id, created_at, updated_at)
+                    VALUES (?, ?, 1, ?, ?, ?)""",
+                    (account_id, account_name, asset_type_id, now, now))
             key = (account_id, currency)
             wanted.add(key)
             amount_minor = _minor_units(connection, currency, amount, allow_zero=True)
+            if accounts and account["closed_period"] == period and amount_minor != 0:
+                raise ValueError(f"closing month balance must be zero: {account_name}")
             current = existing.get(key)
             if current is None:
                 snapshot_id = hashlib.sha256(
@@ -2455,6 +2547,18 @@ def replace_asset_snapshot_month(path: str | Path, *, period: str,
         for key, current in existing.items():
             if key in wanted:
                 continue
+            account = connection.execute(
+                "SELECT name, closed_period FROM asset_accounts WHERE id = ?",
+                (current["account_id"],),
+            ).fetchone()
+            if account["closed_period"] == period:
+                raise ValueError(f"cannot remove a closing zero balance: {account['name']}")
+            if not connection.execute(
+                """SELECT 1 FROM asset_snapshots
+                WHERE account_id = ? AND currency_code = ? AND period < ? LIMIT 1""",
+                (current["account_id"], current["currency_code"], period),
+            ).fetchone():
+                raise ValueError(f"cannot remove the first valuation: {account['name']}")
             connection.execute("""DELETE FROM entity_source_links
                 WHERE entity_type = 'asset_snapshot' AND entity_id = ?""", (current["id"],))
             connection.execute("DELETE FROM asset_snapshots WHERE id = ?", (current["id"],))

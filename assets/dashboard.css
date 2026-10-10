@@ -640,6 +640,8 @@ body {
 .finrep-asset-kind-real-estate { background-color: rgba(160, 123, 76, 0.22) !important; color: #694719 !important; }
 .finrep-asset-kind-other { background-color: rgba(150, 150, 150, 0.20) !important; color: #5b5b5b !important; }
 .finrep-asset-kind-unclassified { background-color: rgba(239, 120, 120, 0.18) !important; color: #8a3030 !important; }
+.finrep-asset-carried { background-color: rgba(255, 185, 80, 0.22) !important; color: #8a5312 !important; font-weight: 600; }
+.finrep-theme-dark .finrep-asset-carried { color: #ffdca3 !important; }
 .finrep-theme-dark .finrep-asset-kind-cash { color: #b8f4c6 !important; }
 .finrep-theme-dark .finrep-asset-kind-cash-account { color: #b9ddff !important; }
 .finrep-theme-dark .finrep-asset-kind-deposit { color: #b9ecff !important; }

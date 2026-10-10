@@ -71,7 +71,7 @@ def test_archived_account_is_not_checked_for_freshness():
     assert freshness_label(evaluated) == "В архиве · 2020-01"
 
 
-def test_dashboard_freshness_uses_accounts_from_latest_complete_snapshot(monkeypatch):
+def test_dashboard_freshness_includes_older_active_accounts(monkeypatch):
     accounts = [
         _account("deposit", "2022-09"),
         _account("cash_account", "2026-10"),
@@ -79,10 +79,12 @@ def test_dashboard_freshness_uses_accounts_from_latest_complete_snapshot(monkeyp
     monkeypatch.setattr(config, "use_sqlite_storage", lambda: True)
     monkeypatch.setattr(config, "active_database_path", lambda: "unused.sqlite3")
     monkeypatch.setattr(sqlite_store, "asset_accounts", lambda _path: accounts)
+    monkeypatch.setattr(sqlite_store, "effective_asset_snapshot_month", lambda _path, _period: [])
 
     result = main_data._current_asset_freshness()
 
-    assert [row["last_period"] for row in result["accounts"]] == ["2026-10"]
+    assert [row["last_period"] for row in result["accounts"]] == ["2022-09", "2026-10"]
+    assert result["stale_count"] == 1
 
 
 def test_dashboard_freshness_is_relative_to_selected_report_month(monkeypatch):
@@ -90,6 +92,7 @@ def test_dashboard_freshness_is_relative_to_selected_report_month(monkeypatch):
     monkeypatch.setattr(config, "use_sqlite_storage", lambda: True)
     monkeypatch.setattr(config, "active_database_path", lambda: "unused.sqlite3")
     monkeypatch.setattr(sqlite_store, "asset_accounts", lambda _path: accounts)
+    monkeypatch.setattr(sqlite_store, "effective_asset_snapshot_month", lambda _path, _period: [])
 
     result = main_data._current_asset_freshness("2026", "02")
 

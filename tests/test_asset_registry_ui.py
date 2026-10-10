@@ -57,6 +57,7 @@ def test_create_asset_from_statement_exposes_it_in_registry(tmp_path, monkeypatc
     values = {
         ("bank-create-asset-button", "n_clicks"): 1,
         ("bank-new-asset-name", "value"): "  New deposit  ",
+        ("bank-new-asset-type", "value"): "deposit",
         ("dashboard-locale", "data"): "ru",
     }
 
@@ -83,8 +84,8 @@ def test_create_asset_from_statement_exposes_it_in_registry(tmp_path, monkeypatc
 
 def test_add_existing_asset_to_month_preserves_drafts_until_apply(tmp_path, monkeypatch):
     database, app, client = _app(tmp_path, monkeypatch)
-    add_asset_account(database, "registry-asset", "Registry asset")
-    draft = {"account": "Manual draft", "amount": "7", "currency": "RUB"}
+    add_asset_account(database, "registry-asset", "Registry asset", asset_type_id="other")
+    draft = {"account": "Manual draft", "asset_type_id": "other", "amount": "7", "currency": "RUB"}
     values = {
         ("assets-add-from-registry-button", "n_clicks"): 1,
         ("dashboard-year", "value"): "2026",
@@ -125,12 +126,12 @@ def test_add_existing_asset_to_month_preserves_drafts_until_apply(tmp_path, monk
 def test_copy_previous_month_adds_only_missing_active_balances(tmp_path, monkeypatch):
     database, app, client = _app(tmp_path, monkeypatch)
     for account_id, name in (("deposit", "Deposit"), ("card", "Card"), ("old", "Archived")):
-        add_asset_account(database, account_id, name)
+        add_asset_account(database, account_id, name, asset_type_id="other")
     for account_id, currency, amount in (
         ("deposit", "RUB", "100"),
         ("deposit", "USD", "50"),
         ("card", "KZT", "200"),
-        ("old", "RUB", "300"),
+        ("old", "RUB", "0"),
     ):
         add_asset_snapshot(
             database, snapshot_id=f"{account_id}-{currency}", account_id=account_id,

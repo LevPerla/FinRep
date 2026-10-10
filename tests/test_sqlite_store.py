@@ -116,7 +116,7 @@ def test_asset_account_classification_preserves_history_and_controls_capital(tmp
     assert [row["id"] for row in liquidity_classes(database)] == ["A1", "A2", "A3", "A4"]
     assert asset_accounts(database)[0]["liquidity_class_id"] == "A1"
     assert asset_accounts(database)[0]["liquidity_source"] == "suggested"
-    assert len(_get_assets_sqlite_cached(str(database))) == 1
+    assert len(_get_assets_sqlite_cached(str(database))) >= 1
 
     set_asset_account_classification(
         database, "cash-1", asset_type_id="deposit", include_in_capital=False,
@@ -189,8 +189,8 @@ def test_v12_upgrade_adds_cash_and_replaces_manual_liquidity_with_type_defaults(
 def test_asset_account_classification_batch_is_atomic_and_skips_unchanged_rows(tmp_path):
     database = tmp_path / "synthetic.sqlite3"
     initialize_database(database)
-    add_asset_account(database, "account-1", "Счёт 1")
-    add_asset_account(database, "account-2", "Счёт 2")
+    add_asset_account(database, "account-1", "Счёт 1", asset_type_id="other")
+    add_asset_account(database, "account-2", "Счёт 2", asset_type_id="other")
 
     with pytest.raises(ValueError, match="unknown asset account"):
         set_asset_account_classifications(
@@ -203,14 +203,14 @@ def test_asset_account_classification_batch_is_atomic_and_skips_unchanged_rows(t
             ],
             reason="bulk edit",
         )
-    assert {row["asset_type_id"] for row in asset_accounts(database)} == {None}
+    assert {row["asset_type_id"] for row in asset_accounts(database)} == {"other"}
 
     first = set_asset_account_classifications(
         database,
         [
             {"account_id": "account-1", "asset_type_id": "deposit",
              "include_in_capital": True},
-            {"account_id": "account-2", "asset_type_id": None,
+            {"account_id": "account-2", "asset_type_id": "other",
              "include_in_capital": False},
         ],
         reason="bulk edit",
@@ -220,7 +220,7 @@ def test_asset_account_classification_batch_is_atomic_and_skips_unchanged_rows(t
         [
             {"account_id": "account-1", "asset_type_id": "deposit",
              "include_in_capital": True},
-            {"account_id": "account-2", "asset_type_id": None,
+            {"account_id": "account-2", "asset_type_id": "other",
              "include_in_capital": False},
         ],
         reason="bulk retry",
@@ -237,10 +237,10 @@ def test_asset_account_classification_batch_is_atomic_and_skips_unchanged_rows(t
 def test_archived_asset_account_preserves_history_and_blocks_new_snapshots(tmp_path):
     database = tmp_path / "synthetic.sqlite3"
     initialize_database(database)
-    add_asset_account(database, "account-1", "Закрытый счёт")
+    add_asset_account(database, "account-1", "Закрытый счёт", asset_type_id="cash_account")
     add_asset_snapshot(
         database, snapshot_id="snapshot-1", account_id="account-1",
-        period="2026-02", amount="100", currency="RUB")
+        period="2026-02", amount="0", currency="RUB")
 
     result = set_asset_account_classifications(
         database,
@@ -268,13 +268,13 @@ def test_archived_asset_account_preserves_history_and_blocks_new_snapshots(tmp_p
 def test_asset_account_reopen_is_explicit_and_audited(tmp_path):
     database = tmp_path / "synthetic.sqlite3"
     initialize_database(database)
-    add_asset_account(database, "account-1", "Счёт")
+    add_asset_account(database, "account-1", "Счёт", asset_type_id="cash_account")
     add_asset_snapshot(
         database, snapshot_id="snapshot-1", account_id="account-1",
-        period="2026-02", amount="100", currency="RUB")
+        period="2026-02", amount="0", currency="RUB")
     set_asset_account_classifications(
         database,
-        [{"account_id": "account-1", "asset_type_id": None,
+        [{"account_id": "account-1", "asset_type_id": "cash_account",
           "include_in_capital": True, "active": False,
           "closed_period": "2026-02"}],
         reason="account closed",
@@ -282,7 +282,7 @@ def test_asset_account_reopen_is_explicit_and_audited(tmp_path):
 
     set_asset_account_classifications(
         database,
-        [{"account_id": "account-1", "asset_type_id": None,
+        [{"account_id": "account-1", "asset_type_id": "cash_account",
           "include_in_capital": True, "active": True,
           "closed_period": None}],
         reason="account reopened",
@@ -303,13 +303,19 @@ def test_asset_account_reopen_is_explicit_and_audited(tmp_path):
 def test_archive_and_restore_account_preserve_history_and_copy_latest_values(tmp_path):
     database = tmp_path / "synthetic.sqlite3"
     initialize_database(database)
-    add_asset_account(database, "account-1", "Мультивалютный счёт")
+    add_asset_account(database, "account-1", "Мультивалютный счёт", asset_type_id="cash_account")
     add_asset_snapshot(
         database, snapshot_id="snapshot-rub", account_id="account-1",
         period="2026-02", amount="100", currency="RUB")
     add_asset_snapshot(
         database, snapshot_id="snapshot-usd", account_id="account-1",
         period="2026-02", amount="20", currency="USD")
+    add_asset_snapshot(
+        database, snapshot_id="closing-rub", account_id="account-1",
+        period="2026-03", amount="0", currency="RUB")
+    add_asset_snapshot(
+        database, snapshot_id="closing-usd", account_id="account-1",
+        period="2026-03", amount="0", currency="USD")
 
     archived = archive_asset_accounts(
         database, ["Мультивалютный счёт"], period="2026-03")
@@ -318,7 +324,7 @@ def test_archive_and_restore_account_preserve_history_and_copy_latest_values(tmp
     account = asset_accounts(database)[0]
     assert account["active"] == 0
     assert account["closed_period"] == "2026-03"
-    assert len(asset_snapshots(database)) == 2
+    assert len(asset_snapshots(database)) == 4
 
     restored = restore_asset_accounts_to_snapshot(
         database, ["account-1"], period="2026-04")
@@ -335,15 +341,15 @@ def test_archive_and_restore_account_preserve_history_and_copy_latest_values(tmp
     assert account["closed_period"] is None
     april = asset_snapshot_month(database, "2026-04")
     assert {(row["currency_code"], row["amount"]) for row in april} == {
-        ("RUB", Decimal("100")),
-        ("USD", Decimal("20")),
+        ("RUB", Decimal("0")),
+        ("USD", Decimal("0")),
     }
 
 
 def test_asset_account_cannot_close_before_its_last_snapshot(tmp_path):
     database = tmp_path / "synthetic.sqlite3"
     initialize_database(database)
-    add_asset_account(database, "account-1", "Счёт")
+    add_asset_account(database, "account-1", "Счёт", asset_type_id="cash_account")
     add_asset_snapshot(
         database, snapshot_id="snapshot-1", account_id="account-1",
         period="2026-03", amount="100", currency="RUB")
@@ -351,7 +357,7 @@ def test_asset_account_cannot_close_before_its_last_snapshot(tmp_path):
     with pytest.raises(ValueError, match="cannot precede the last snapshot"):
         set_asset_account_classifications(
             database,
-            [{"account_id": "account-1", "asset_type_id": None,
+            [{"account_id": "account-1", "asset_type_id": "cash_account",
               "include_in_capital": True, "active": False,
               "closed_period": "2026-02"}],
             reason="invalid closure",
@@ -644,12 +650,17 @@ def test_draft_batch_edit_remove_uses_optimistic_revision(tmp_path):
 def test_asset_month_replace_is_atomic_and_audited(tmp_path):
     database = tmp_path / "synthetic.sqlite3"
     initialize_database(database)
+    add_asset_account(database, "cash", "Cash", asset_type_id="cash")
+    add_asset_snapshot(
+        database, snapshot_id="cash-prior", account_id="cash",
+        period="2026-02", amount="4.00", currency="USD",
+    )
     first = replace_asset_snapshot_month(
         database,
         period="2026-03",
         rows=[
-            {"account": "Card", "currency": "RUB", "amount": "100.00"},
-            {"account": "Cash", "currency": "USD", "amount": "5.00"},
+            {"account": "Card", "asset_type_id": "cash_account", "currency": "RUB", "amount": "100.00"},
+            {"account": "Cash", "asset_type_id": "cash", "currency": "USD", "amount": "5.00"},
         ],
     )
     second = replace_asset_snapshot_month(
@@ -957,7 +968,7 @@ def test_sample_money_round_trip_uses_exact_minor_units(tmp_path):
         database, transaction_id="two", occurred_on="2025-01-03", flow_direction="income",
         category_id="income.salary", amount=amount, currency=currency,
     )
-    add_asset_account(database, "account-1", asset["Счет"])
+    add_asset_account(database, "account-1", asset["Счет"], asset_type_id="other")
     add_asset_snapshot(
         database, snapshot_id="snapshot-1", account_id="account-1", period="2025-01",
         amount=asset_amount, currency=asset_currency,

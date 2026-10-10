@@ -177,7 +177,7 @@ def test_asset_input_status_reads_saved_month_from_sqlite(tmp_path, monkeypatch)
     replace_asset_snapshot_month(
         database,
         period="2026-10",
-        rows=[{"account": "Cash", "amount": "10", "currency": "RUB"}],
+        rows=[{"account": "Cash", "asset_type_id": "cash", "amount": "10", "currency": "RUB"}],
     )
     from src.dashboard.app import _asset_input_status
 
@@ -190,8 +190,8 @@ def test_asset_input_status_reads_saved_month_from_sqlite(tmp_path, monkeypatch)
 def test_statement_balance_updates_only_selected_asset_and_retry_is_idempotent(tmp_path):
     database = tmp_path / "finrep.sqlite3"
     initialize_database(database)
-    add_asset_account(database, "cash", "Cash")
-    add_asset_account(database, "deposit", "Deposit")
+    add_asset_account(database, "cash", "Cash", asset_type_id="cash_account")
+    add_asset_account(database, "deposit", "Deposit", asset_type_id="deposit")
     add_asset_snapshot(
         database,
         snapshot_id="cash-snapshot",
@@ -229,7 +229,7 @@ def test_statement_balance_updates_only_selected_asset_and_retry_is_idempotent(t
 def test_statement_balance_batch_rolls_back_when_one_row_is_invalid(tmp_path):
     database = tmp_path / "finrep.sqlite3"
     initialize_database(database)
-    add_asset_account(database, "cash", "Cash")
+    add_asset_account(database, "cash", "Cash", asset_type_id="cash_account")
 
     with pytest.raises(ValueError, match="unknown asset account"):
         upsert_asset_snapshot_batch(database, [
@@ -246,8 +246,8 @@ def test_statement_balance_preview_marks_only_matching_asset_and_period(
     monkeypatch.setenv("FINREP_STORAGE_BACKEND", "sqlite")
     monkeypatch.setenv("FINREP_SQLITE_PATH", str(database))
     initialize_database(database)
-    add_asset_account(database, "deposit", "Deposit")
-    add_asset_account(database, "cash", "Cash")
+    add_asset_account(database, "deposit", "Deposit", asset_type_id="deposit")
+    add_asset_account(database, "cash", "Cash", asset_type_id="cash_account")
     add_asset_snapshot(
         database,
         snapshot_id="deposit-snapshot",
@@ -333,8 +333,8 @@ def test_statement_balance_period_mismatch_disables_apply(tmp_path, monkeypatch)
     monkeypatch.setenv("FINREP_DASH_PASSWORD", "synthetic-password")
     monkeypatch.setenv("FINREP_DASH_SECRET_KEY", "synthetic-secret")
     initialize_database(database)
-    add_asset_account(database, "deposit", "Deposit")
-    add_asset_account(database, "cash", "Cash")
+    add_asset_account(database, "deposit", "Deposit", asset_type_id="deposit")
+    add_asset_account(database, "cash", "Cash", asset_type_id="cash_account")
     from src.dashboard.app import create_app
 
     app = create_app()
