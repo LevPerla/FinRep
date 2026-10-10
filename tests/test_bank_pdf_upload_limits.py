@@ -366,6 +366,7 @@ def test_dashboard_batch_keeps_ready_files_and_marks_cross_file_duplicates(
                 "dashboard-locale": "ru",
                 "dashboard-year": "2026",
                 "dashboard-month": "10",
+                "asset-registry-refresh": None,
             }[item["id"]]}
             for item in table_callback["inputs"]
         ],

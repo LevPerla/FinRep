@@ -444,6 +444,7 @@ def create_layout():
             dcc.Store(id="cpi-base-period"),
             dcc.Store(id="transaction-save-result", storage_type="memory"),
             dcc.Store(id="bank-statement-balances", storage_type="memory"),
+            dcc.Store(id="asset-registry-refresh", storage_type="memory"),
             dcc.Store(
                 id="transaction-add-request-id",
                 data=uuid4().hex,
@@ -1501,19 +1502,16 @@ def register_callbacks(app: Dash) -> None:
         Input("dashboard-locale", "data"),
         Input("dashboard-year", "value"),
         Input("dashboard-month", "value"),
+        Input("asset-registry-refresh", "data"),
         State({"type": "bank-balance-asset", "index": ALL}, "value"),
         State({"type": "bank-balance-asset", "index": ALL}, "id"),
     )
-    def show_statement_balances(balances, locale, year, month, selected_values, selected_ids):
+    def show_statement_balances(balances, locale, year, month, registry_refresh,
+                                selected_values, selected_ids):
+        del registry_refresh
         if not balances or not config.use_sqlite_storage():
             return {"display": "none"}, "", "", False, True
-        from src.data.sqlite_store import asset_accounts
-
-        options = [
-            {"label": row["name"], "value": row["id"]}
-            for row in asset_accounts(config.active_database_path())
-            if row["active"]
-        ]
+        options = _active_asset_options()
         selected = {}
         if ctx.triggered_id != "bank-statement-balances":
             selected = {
@@ -1577,6 +1575,62 @@ def register_callbacks(app: Dash) -> None:
                 str(balance["as_of_date"])[:7] == selected_period for balance in balances
             )),
         )
+
+    @app.callback(
+        Output("asset-registry-refresh", "data"),
+        Output("bank-create-asset-message", "children"),
+        Output("bank-create-asset-message", "color"),
+        Output("bank-create-asset-message", "is_open"),
+        Output("bank-new-asset-name", "value"),
+        Output("assets-registry-account", "options"),
+        Output("asset-classification-grid", "rowData", allow_duplicate=True),
+        Input("bank-create-asset-button", "n_clicks"),
+        State("bank-new-asset-name", "value"),
+        State("dashboard-locale", "data"),
+        prevent_initial_call=True,
+    )
+    def create_statement_asset(clicks, account_name, locale):
+        if not clicks:
+            raise PreventUpdate
+        try:
+            config.require_writable_mode()
+            english = normalize_locale(locale) == "en"
+            if not config.use_sqlite_storage():
+                raise ValueError(
+                    "Account creation is only available with SQLite."
+                    if english else "Создание счёта доступно только в SQLite."
+                )
+            name = str(account_name or "").strip()
+            if not name:
+                raise ValueError(
+                    "Enter a name for the new asset." if english
+                    else "Введи название нового актива."
+                )
+            from src.data.sqlite_store import add_asset_account, asset_accounts
+
+            existing = next((
+                row for row in asset_accounts(config.active_database_path())
+                if row["name"].casefold() == name.casefold()
+            ), None)
+            if existing:
+                raise ValueError(
+                    ("This account is already in the registry. Select it from the list."
+                     if english else "Счёт уже есть в реестре. Выбери его из списка.")
+                    if existing["active"] else
+                    ("This account is archived. Restore it under Asset settings."
+                     if english else "Счёт в архиве. Восстанови его во вкладке «Настройки активов».")
+                )
+            account_id = uuid4().hex
+            add_asset_account(config.active_database_path(), account_id, name)
+            return (
+                account_id,
+                (f"Asset ‘{name}’ created. Select it in the balance row."
+                 if english else f"Актив «{name}» создан. Теперь выбери его в строке остатка."),
+                "success", True, "", _active_asset_options(),
+                _asset_classification_rows(locale),
+            )
+        except Exception as exc:
+            return no_update, report_text(str(exc), locale), "danger", True, no_update, no_update, no_update
 
     @app.callback(
         Output("bank-statement-balance-comparison", "children"),
@@ -2353,12 +2407,15 @@ def register_callbacks(app: Dash) -> None:
         Output("asset-classification-grid", "rowData", allow_duplicate=True),
         Input("assets-load-button", "n_clicks", allow_optional=True),
         Input("assets-add-row-button", "n_clicks", allow_optional=True),
+        Input("assets-add-from-registry-button", "n_clicks", allow_optional=True),
         Input("assets-delete-row-button", "n_clicks", allow_optional=True),
         Input("assets-apply-button", "n_clicks", allow_optional=True),
         State("dashboard-year", "value"),
         State("dashboard-month", "value"),
         State("assets-input-grid", "rowData", allow_optional=True),
         State("assets-input-grid", "selectedRows", allow_optional=True),
+        State("assets-registry-account", "value", allow_optional=True),
+        State("assets-registry-currency", "value", allow_optional=True),
         State("dashboard-locale", "data"),
         State("bank-statement-balances", "data"),
         State({"type": "bank-balance-asset", "index": ALL}, "value"),
@@ -2367,12 +2424,15 @@ def register_callbacks(app: Dash) -> None:
     def sync_assets_snapshot(
         load_clicks,
         add_clicks,
+        add_from_registry_clicks,
         delete_clicks,
         apply_clicks,
         year,
         month,
         row_data,
         selected_rows,
+        registry_account_id,
+        registry_currency,
         locale,
         statement_balances,
         statement_account_ids,
@@ -2390,12 +2450,59 @@ def register_callbacks(app: Dash) -> None:
             )[0]
 
         try:
-            if trigger in {"assets-add-row-button", "assets-delete-row-button", "assets-apply-button"}:
+            if trigger in {"assets-add-row-button", "assets-add-from-registry-button", "assets-delete-row-button", "assets-apply-button"}:
                 config.require_writable_mode()
             if trigger == "assets-add-row-button":
                 rows = list(row_data or [])
                 rows.append({"account": "", "amount": 0, "currency": DEFAULT_CURRENCY})
                 message = "An empty row was added. Enter the account, amount, and currency, then select Apply." if normalize_locale(locale) == "en" else "Добавлена пустая строка. Заполни счет, сумму и валюту, затем нажми Применить."
+                return with_statement_preview(rows), message, "secondary", no_update
+
+            if trigger == "assets-add-from-registry-button":
+                english = normalize_locale(locale) == "en"
+                if not config.use_sqlite_storage():
+                    raise ValueError(
+                        "Adding from the registry is only available with SQLite."
+                        if english else "Добавление из реестра доступно только в SQLite."
+                    )
+                from src.data.sqlite_store import asset_accounts
+
+                account = next((
+                    row for row in asset_accounts(config.active_database_path())
+                    if row["id"] == registry_account_id and row["active"]
+                ), None)
+                if account is None or registry_currency not in config.UNIQUE_TICKERS:
+                    raise ValueError(
+                        "Choose a registry asset and currency." if english
+                        else "Выбери актив из реестра и валюту."
+                    )
+                rows = list(row_data or [])
+                if any(
+                    row.get("currency") == registry_currency
+                    and (row.get("account_id") == registry_account_id
+                         or str(row.get("account", "")).casefold() == account["name"].casefold())
+                    for row in rows
+                ):
+                    raise ValueError(
+                        "This asset and currency are already in the monthly table."
+                        if english else "Этот актив и валюта уже есть в месячной таблице."
+                    )
+                rows.append({
+                    "account_id": registry_account_id,
+                    "account": account["name"],
+                    "asset_type_id": account["asset_type_id"] or UNCLASSIFIED_ASSET_TYPE_VALUE,
+                    "asset_type": (
+                        account["asset_type_name_en"] if normalize_locale(locale) == "en"
+                        else account["asset_type_name_ru"]
+                    ) or report_text("Не классифицировано", locale),
+                    "amount": "",
+                    "currency": registry_currency,
+                })
+                message = (
+                    "Asset added as a draft. Enter its balance and select Apply."
+                    if normalize_locale(locale) == "en" else
+                    "Актив добавлен как черновик. Введи остаток и нажми «Применить»."
+                )
                 return with_statement_preview(rows), message, "secondary", no_update
 
             if trigger == "assets-delete-row-button":
@@ -3257,6 +3364,7 @@ def _input_report_layout(
                             load_records=load_asset_records,
                             read_only=read_only,
                             locale=locale,
+                            currency=currency,
                         ),
                     ],
                     className="d-grid gap-4",
@@ -3506,6 +3614,43 @@ def _transaction_input_layout(
                             html.Div(
                                 id="bank-statement-balance-table",
                                 className="finrep-balance-table-shell",
+                            ),
+                            html.Div(
+                                [
+                                    html.Div(
+                                        [
+                                            dbc.Label(
+                                                "New asset name" if normalize_locale(locale) == "en"
+                                                else "Новый счёт актива",
+                                                html_for="bank-new-asset-name",
+                                                className="small mb-1",
+                                            ),
+                                            dbc.Input(
+                                                id="bank-new-asset-name",
+                                                placeholder="Name in the registry" if normalize_locale(locale) == "en"
+                                                else "Название в реестре",
+                                                disabled=read_only or not config.use_sqlite_storage(),
+                                            ),
+                                        ],
+                                        className="finrep-balance-create-input",
+                                    ),
+                                    dbc.Button(
+                                        "Create asset" if normalize_locale(locale) == "en"
+                                        else "Создать актив",
+                                        id="bank-create-asset-button",
+                                        color="secondary",
+                                        outline=True,
+                                        disabled=read_only or not config.use_sqlite_storage(),
+                                    ),
+                                ],
+                                className="finrep-balance-create d-flex flex-wrap align-items-end gap-2 mt-3",
+                            ),
+                            dbc.Alert(
+                                id="bank-create-asset-message",
+                                children="",
+                                color="secondary",
+                                is_open=False,
+                                className="mt-2 mb-0 py-2",
                             ),
                             html.Div(
                                 [
@@ -4009,6 +4154,7 @@ def _asset_snapshot_input_layout(
     load_records: bool = True,
     read_only: bool = False,
     locale: str = DEFAULT_LOCALE,
+    currency: str = DEFAULT_CURRENCY,
 ):
     records = _asset_input_records(year, month, locale) if load_records else []
     message, message_color = _asset_input_status(year, month, locale)
@@ -4030,6 +4176,57 @@ def _asset_snapshot_input_layout(
                     ),
                 ],
                 className="d-flex justify-content-between align-items-center mb-3 finrep-assets-header",
+            ),
+            html.Div(
+                [
+                    html.Div(
+                        [
+                            dbc.Label(
+                                "Asset from registry" if normalize_locale(locale) == "en"
+                                else "Актив из реестра",
+                                html_for="assets-registry-account",
+                                className="small mb-1",
+                            ),
+                            dcc.Dropdown(
+                                id="assets-registry-account",
+                                options=_active_asset_options() if load_records else [],
+                                placeholder="Choose asset" if normalize_locale(locale) == "en"
+                                else "Выбери актив",
+                                disabled=read_only or not config.use_sqlite_storage(),
+                                className="dash-dropdown",
+                            ),
+                        ],
+                        className="finrep-registry-account",
+                    ),
+                    html.Div(
+                        [
+                            dbc.Label(
+                                report_text("Валюта", locale),
+                                html_for="assets-registry-currency",
+                                className="small mb-1",
+                            ),
+                            dcc.Dropdown(
+                                id="assets-registry-currency",
+                                options=[{"label": code, "value": code} for code in config.UNIQUE_TICKERS],
+                                value=currency,
+                                clearable=False,
+                                disabled=read_only or not config.use_sqlite_storage(),
+                                className="dash-dropdown",
+                            ),
+                        ],
+                        className="finrep-registry-currency",
+                    ),
+                    dbc.Button(
+                        "Add to month" if normalize_locale(locale) == "en"
+                        else "Добавить в месяц",
+                        id="assets-add-from-registry-button",
+                        color="secondary",
+                        outline=True,
+                        size="sm",
+                        disabled=read_only or not config.use_sqlite_storage(),
+                    ),
+                ],
+                className="finrep-registry-picker d-flex flex-wrap align-items-end gap-2 mb-3",
             ),
             dbc.Alert(
                 id="assets-input-message",
@@ -4635,6 +4832,17 @@ def _transaction_save_result_panel(result: dict | None, locale: str = DEFAULT_LO
         )
     )
     return dbc.Alert(children, color="success", className="mb-3")
+
+
+def _active_asset_options() -> list[dict]:
+    if not config.use_sqlite_storage():
+        return []
+    from src.data.sqlite_store import asset_accounts
+
+    return [
+        {"label": row["name"], "value": row["id"]}
+        for row in asset_accounts(config.active_database_path()) if row["active"]
+    ]
 
 
 def _asset_input_records(

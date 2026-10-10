@@ -1093,6 +1093,9 @@ body {
 .finrep-balance-asset { min-width: 220px; }
 .finrep-balance-period-ok { color: var(--finrep-upload-good); }
 .finrep-balance-period-other { color: var(--finrep-upload-review); }
+.finrep-balance-create-input { flex: 1 1 240px; max-width: 360px; }
+.finrep-registry-account { flex: 1 1 240px; min-width: 220px; max-width: 420px; }
+.finrep-registry-currency { flex: 0 0 120px; }
 
 .finrep-grid-scroll.is-limited {
   overflow: auto;
