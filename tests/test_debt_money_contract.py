@@ -133,12 +133,12 @@ def test_debt_display_is_exact_and_json_safe(data_root, monkeypatch):
         "RUB",
         operation_id="display-create",
     )
-    from src.dashboard.app import _active_debt_records, _debt_select_options
+    from src.dashboard.app import _debt_grid_records, _debt_select_options
 
-    records = _active_debt_records("RUB", "receivable")
+    records = _debt_grid_records("RUB")
     options = _debt_select_options("RUB")
 
-    assert records[0]["Сумма долга"] == "99 999 999 999 999.99"
+    assert records[0]["principal_amount"] == "99 999 999 999 999.99"
     assert any("99 999 999 999 999.99 RUB" in option["label"] for option in options)
     assert any(option["value"] == created["debt_id"] for option in options)
     json.dumps(records)

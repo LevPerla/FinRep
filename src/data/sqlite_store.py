@@ -15,7 +15,7 @@ from src import config
 from src.data.money import parse_money_amount
 
 
-SCHEMA_VERSION = 20
+SCHEMA_VERSION = 21
 _DIRECTIONS = {"income", "expense"}
 _DATASETS = {"cash_transactions", "asset_snapshots"}
 _ASSET_TYPES = (
@@ -303,6 +303,7 @@ _TABLES = (
         kind TEXT NOT NULL CHECK (kind IN ('receivable', 'liability')),
         counterparty TEXT NOT NULL CHECK (trim(counterparty) <> ''),
         opened_on TEXT NOT NULL CHECK (length(opened_on) = 10),
+        due_on TEXT CHECK (due_on IS NULL OR length(due_on) = 10),
         principal_amount_minor INTEGER NOT NULL CHECK (principal_amount_minor > 0),
         principal_currency_code TEXT NOT NULL REFERENCES currencies(code) ON DELETE RESTRICT,
         cash_amount_minor INTEGER NOT NULL CHECK (cash_amount_minor > 0),
@@ -947,6 +948,17 @@ def _migrate_v19_to_v20(connection: sqlite3.Connection) -> None:
         (20, "linked_debt_cash_events", _schema_checksum(), _utc_now()),
     )
     connection.execute("PRAGMA user_version = 20")
+    _migrate_v20_to_v21(connection)
+
+
+def _migrate_v20_to_v21(connection: sqlite3.Connection) -> None:
+    if "due_on" not in {row[1] for row in connection.execute("PRAGMA table_info(debts)")}:
+        connection.execute("ALTER TABLE debts ADD COLUMN due_on TEXT CHECK (due_on IS NULL OR length(due_on) = 10)")
+    connection.execute(
+        "INSERT INTO schema_migrations VALUES (?, ?, ?, ?)",
+        (21, "debt_due_on", _schema_checksum(), _utc_now()),
+    )
+    connection.execute("PRAGMA user_version = 21")
 
 
 @contextmanager
@@ -1091,6 +1103,9 @@ def initialize_database(path: str | Path, *, data_mode: str = "synthetic") -> No
             return
         if version == 19:
             _migrate_v19_to_v20(connection)
+            return
+        if version == 20:
+            _migrate_v20_to_v21(connection)
             return
         has_tables = connection.execute(
             "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' LIMIT 1"
@@ -1480,6 +1495,27 @@ def transaction_drafts_snapshot(path: str | Path) -> tuple[list[dict], str]:
     return ([{**dict(row), "currency": row["currency_code"],
               "amount": _amount(row["amount_minor"], row["minor_unit"])}
              for row in rows], revision)
+
+
+def update_debt_draft_comments(path: str | Path, *, rows: list[dict]) -> None:
+    """Save comments on unpublished debt cash drafts without changing debt records."""
+    with connect_database(path, writable=True) as connection:
+        for row in rows:
+            draft_id = str(row.get("draft_id", ""))
+            current = connection.execute(
+                "SELECT draft_kind, origin_kind, status, comment, row_version FROM transaction_drafts WHERE id = ?",
+                (draft_id,),
+            ).fetchone()
+            if current is None or current["draft_kind"] != "debt" or current["origin_kind"] != "debt" or current["status"] not in {"draft", "ready"}:
+                raise ValueError("Денежная операция по долгу уже обработана или не найдена. Обнови страницу.")
+            if current["row_version"] != row.get("row_version"):
+                raise StorageRevisionConflict("Денежная операция изменилась. Обнови страницу.")
+            comment = str(row.get("comment") or "")
+            if comment != current["comment"]:
+                connection.execute(
+                    "UPDATE transaction_drafts SET comment = ?, row_version = row_version + 1, updated_at = ? WHERE id = ?",
+                    (comment, _utc_now(), draft_id),
+                )
 
 
 def append_cash_drafts(path: str | Path, *, rows: list[dict],
@@ -2742,19 +2778,24 @@ def annual_goals(path: str | Path) -> list[dict]:
 def create_debt_record(path: str | Path, *, kind: str, counterparty: str,
                        opened_on: str, principal_amount, currency: str,
                        operation_key: str, comment: str = "",
-                       create_draft: bool = True) -> dict:
+                       create_draft: bool = True, due_on: str | None = None) -> dict:
     """Atomically create a new same-currency personal debt and optional cash draft."""
     if kind not in {"receivable", "liability"}:
         raise ValueError("debt kind must be receivable or liability")
     if not counterparty.strip() or not operation_key.strip():
         raise ValueError("counterparty and operation key are required")
     opened_on = _iso_date(opened_on, "opened_on")
+    due_on = _iso_date(due_on, "due_on") if due_on else None
+    if due_on and due_on < opened_on:
+        raise ValueError("Дата ожидаемого погашения не может быть раньше даты начала долга.")
     currency = currency.upper()
     request = {
         "kind": kind, "counterparty": counterparty.strip(), "opened_on": opened_on,
         "principal_amount": str(parse_money_amount(principal_amount)), "currency": currency,
         "comment": comment, "create_draft": bool(create_draft),
     }
+    if due_on:
+        request["due_on"] = due_on
     with connect_database(path, writable=True) as connection:
         receipt = connection.execute(
             "SELECT operation_kind, result_json FROM operation_receipts WHERE operation_key = ?",
@@ -2769,11 +2810,11 @@ def create_debt_record(path: str | Path, *, kind: str, counterparty: str,
         debt_id = f"debt-{uuid4().hex[:12]}"
         now = _utc_now()
         connection.execute("""INSERT INTO debts
-            (id, kind, counterparty, opened_on, principal_amount_minor,
+            (id, kind, counterparty, opened_on, due_on, principal_amount_minor,
              principal_currency_code, cash_amount_minor, cash_currency_code,
              comment, status, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)""",
-            (debt_id, kind, counterparty.strip(), opened_on, principal_minor,
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)""",
+            (debt_id, kind, counterparty.strip(), opened_on, due_on, principal_minor,
              currency, principal_minor, currency, comment, now, now))
         draft_id = None
         if create_draft:
@@ -2794,6 +2835,18 @@ def create_debt_record(path: str | Path, *, kind: str, counterparty: str,
              result_json, created_at) VALUES (?, 'create_debt', 'debt', ?, ?, ?)""",
             (operation_key, debt_id, json.dumps(payload, sort_keys=True), now))
         return result
+
+
+def update_debt_due_date(path: str | Path, *, debt_id: str, due_on: str) -> None:
+    due_on = _iso_date(due_on, "due_on")
+    with connect_database(path, writable=True) as connection:
+        debt = connection.execute("SELECT opened_on FROM debts WHERE id = ?", (debt_id,)).fetchone()
+        if debt is None:
+            raise ValueError("Долг не найден.")
+        if due_on < debt["opened_on"]:
+            raise ValueError("Дата ожидаемого погашения не может быть раньше даты начала долга.")
+        connection.execute("UPDATE debts SET due_on = ?, updated_at = ? WHERE id = ?",
+                           (due_on, _utc_now(), debt_id))
 
 
 def record_debt_payment(path: str | Path, *, debt_id: str, occurred_on: str,
@@ -2829,7 +2882,8 @@ def record_debt_payment(path: str | Path, *, debt_id: str, occurred_on: str,
             (debt_id,)).fetchone()[0]
         outstanding_minor = debt["principal_amount_minor"] - paid_minor
         if amount_minor > outstanding_minor:
-            raise ValueError("debt payment exceeds outstanding principal")
+            minor_unit = connection.execute("SELECT minor_unit FROM currencies WHERE code = ?", (currency,)).fetchone()[0]
+            raise ValueError(f"Погашение больше остатка: {_amount(amount_minor, minor_unit)} > {_amount(outstanding_minor, minor_unit)} {currency}.")
         if debt["status"] == "closed" or outstanding_minor <= 0:
             raise ValueError("closed debt cannot receive another payment")
 
@@ -3034,15 +3088,17 @@ def list_debt_payment_plans(path: str | Path) -> list[dict]:
     with connect_database(path) as connection:
         rows = connection.execute("""SELECT p.id, p.debt_id, p.due_on, p.amount_minor,
             d.principal_currency_code AS currency, c.minor_unit, d.counterparty,
-            p.comment, p.confirmed_payment_id
+            p.comment, p.confirmed_payment_id, a.occurred_on AS actual_date
             FROM debt_payment_plans p JOIN debts d ON d.id = p.debt_id
             JOIN currencies c ON c.code = d.principal_currency_code
+            LEFT JOIN debt_payments a ON a.id = p.confirmed_payment_id
             ORDER BY p.due_on, p.id""").fetchall()
     return [{
         "id": row["id"], "debt_id": row["debt_id"], "due_on": row["due_on"],
         "amount": str(Decimal(row["amount_minor"]).scaleb(-row["minor_unit"])),
         "currency": row["currency"], "counterparty": row["counterparty"],
         "comment": row["comment"], "confirmed_payment_id": row["confirmed_payment_id"],
+        "actual_date": row["actual_date"],
     } for row in rows]
 
 
