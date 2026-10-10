@@ -26,6 +26,17 @@ DEFAULT_EXPENSE_CATEGORY = "Прочее"
 DEFAULT_INCOME_CATEGORY = "Доход"
 INTERNAL_TRANSFER_CATEGORY = "Внутренний перевод"
 MANUAL_GRID_SOURCE = "manual_grid"
+DEBT_CATEGORY_ACTIONS = {
+    "Возникновение дебиторской задолженности": ("receivable_opening", "expense"),
+    "Погашение дебиторской задолженности": ("receivable_payment", "income"),
+    "Возникновение кредиторской задолженности": ("liability_opening", "income"),
+    "Погашение кредиторской задолженности": ("liability_payment", "expense"),
+    "Дебиторская задолженность": ("receivable_opening", "expense"),
+    "Погашение деб. зад.": ("receivable_payment", "income"),
+    "Кредиторская задолженность": ("liability_opening", "income"),
+    "Погашение кред. зад.": ("liability_payment", "expense"),
+}
+DEBT_GRID_CATEGORIES = tuple(DEBT_CATEGORY_ACTIONS)[:4]
 INTERNAL_TRANSFER_PATTERNS = (
     "TO KASPI DEPOSIT",
     "KASPI DEPOSIT",
@@ -69,6 +80,8 @@ def import_frame_from_rows(
     if "bank_account_id" not in data.columns:
         data["bank_account_id"] = ""
     data["status"] = "draft"
+    data["counterparty"] = ""
+    data["debt_id"] = ""
     data = _add_duplicate_flags(data, source)
     data = _sort_import_preview(data)
     return data[_import_columns()]
@@ -363,6 +376,12 @@ def validate_input_grid_row(row: dict) -> str:
         expected = "income" if direction == "credit" else "expense"
         if _category_direction(category) != expected:
             errors.append("категория не соответствует знаку суммы")
+    if category in DEBT_CATEGORY_ACTIONS:
+        debt_action = DEBT_CATEGORY_ACTIONS[category][0]
+        if debt_action.endswith("opening") and not str(row.get("counterparty", "")).strip():
+            errors.append("укажи нового контрагента")
+        if debt_action.endswith("payment") and not str(row.get("debt_id", "")).strip():
+            errors.append("выбери погашаемый долг")
     if not str(row.get("source", "")).strip() or not str(row.get("source_id", "")).strip():
         errors.append("отсутствует идентификатор строки")
     return "; ".join(errors)
@@ -416,8 +435,37 @@ def save_input_grid_to_transactions(rows: list[dict]) -> dict:
         "published_keys": [],
         "pending_keys": [],
     }
-    if valid_rows:
-        saved = save_import_to_transactions(valid_rows)
+    cash_rows = [row for row in valid_rows if row["category"] not in DEBT_CATEGORY_ACTIONS]
+    debt_rows = [row for row in valid_rows if row["category"] in DEBT_CATEGORY_ACTIONS]
+    if cash_rows:
+        saved = save_import_to_transactions(cash_rows)
+    if debt_rows:
+        from src.data.sqlite_store import record_reviewed_debt_transaction
+
+        for row in debt_rows:
+            if str(row.get("bank_status", "")).lower() == "pending":
+                saved["pending_rows"] += 1
+                saved["pending_keys"].append((row["source"], row["source_id"]))
+                continue
+            try:
+                result = record_reviewed_debt_transaction(
+                    config.active_database_path(),
+                    action=DEBT_CATEGORY_ACTIONS[row["category"]][0],
+                    occurred_on=row["date"], amount=row["amount"],
+                    currency=row["currency"], source=row["source"],
+                    source_id=row["source_id"],
+                    counterparty=str(row.get("counterparty", "")),
+                    debt_id=str(row.get("debt_id", "")).split(" | ", 1)[0],
+                    comment=str(row.get("comment", "")),
+                    source_comment=str(row.get("source_comment", "")),
+                    bank_status=str(row.get("bank_status", "posted")),
+                )
+            except ValueError as exc:
+                row["validation_error"] = str(exc)
+                invalid_rows.append(row)
+                continue
+            saved["already_published_rows" if result.get("already_published") else "published_rows"] += 1
+            saved["published_keys"].append((row["source"], row["source_id"]))
     pending_keys = {tuple(key) for key in saved["pending_keys"]}
     pending_rows = [
         row for row in valid_rows
@@ -518,6 +566,7 @@ def _category_direction_map() -> dict[str, str]:
         "Доход": "income",
         "Сбережения": "income",
         **{label: "income" for label in config.INCOME_CATEGORY_LABELS},
+        **{label: direction for label, (_, direction) in DEBT_CATEGORY_ACTIONS.items()},
     }
     if config.use_sqlite_storage():
         try:
@@ -796,6 +845,8 @@ def _import_columns() -> list[str]:
         "replaces_source_id",
         "possible_pending_match",
         "staging_revision",
+        "counterparty",
+        "debt_id",
     ]
 
 
