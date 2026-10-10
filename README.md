@@ -171,6 +171,13 @@ PNG/PDF dashboard export uses Playwright. If Chromium is missing:
 uv run playwright install chromium
 ```
 
+Run the real-browser export security checks explicitly (they start local
+listeners):
+
+```bash
+.venv/bin/python -m pytest -q tests/browser_dashboard_export.py
+```
+
 ## Reports
 
 `main.py` generates the legacy Plotly HTML reports:
@@ -233,11 +240,16 @@ Install the application and development tools exactly from `uv.lock`:
 uv sync --locked
 ```
 
-Run the complete test suite without changing the lock file:
+Run the complete test suite with the project interpreter. This works even when
+the sandbox cannot access uv's global cache; `python -m pytest` also keeps the
+repository root on Python's import path so tests can import `src`:
 
 ```bash
-uv run --frozen python -m pytest -q -ra --tb=short
+.venv/bin/python -m pytest -q -ra --tb=short
 ```
+
+If `.venv` does not exist yet and uv's default cache is not writable, use the
+ignored, project-local cache: `UV_CACHE_DIR=.cache/uv uv sync --locked`.
 
 The command intentionally includes every existing test. BCC and Ozon parser tests use fictional statements under `tests/fixtures/bank_statements/`; no private bank PDF is required.
 
@@ -260,6 +272,9 @@ FINREP_DASH_PASSWORD=test FINREP_DASH_SECRET_KEY=test-secret FINREP_DATA_DIR=sam
 ```
 
 ## Notes For Contributors
+
+Submit changes through a pull request. The owner merges it; sync the server
+only after the merge is confirmed on `main`. Do not merge or deploy a branch.
 
 Keep real financial data out of git. Do not commit `data/`, `reports/`, `.env`, bank statements, exports, generated PDFs, or `src/secrets.json`.
 

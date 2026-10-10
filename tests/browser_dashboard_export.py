@@ -1,5 +1,4 @@
-"""Opt-in real Chromium checks: FINREP_BROWSER_TESTS=1 python -m pytest this_file."""
-import os
+"""Real Chromium checks: run explicitly with pytest tests/browser_dashboard_export.py."""
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from threading import Thread
 
@@ -7,8 +6,6 @@ import pytest
 import dash_bootstrap_components as dbc
 
 from src.dashboard import export
-
-pytestmark = pytest.mark.skipif(os.environ.get('FINREP_BROWSER_TESTS') != '1', reason='requires local listeners and installed Chromium')
 
 
 @pytest.fixture
