@@ -21,6 +21,7 @@ DEBT_COLUMNS = [
     "type",
     "counterparty",
     "opened_date",
+    "due_date",
     "principal_amount",
     "principal_currency",
     "cash_amount",
@@ -87,6 +88,7 @@ def read_debts(path: str | Path | None = None) -> pd.DataFrame:
         return _normalize_debts(pd.DataFrame([{
             "debt_id": row["id"], "type": row["kind"], "counterparty": row["counterparty"],
             "opened_date": row["opened_on"],
+            "due_date": row["due_on"] or "",
             "principal_amount": Decimal(row["principal_amount_minor"]).scaleb(-row["principal_minor_unit"]),
             "principal_currency": row["principal_currency_code"],
             "cash_amount": Decimal(row["cash_amount_minor"]).scaleb(-row["cash_minor_unit"]),
@@ -184,6 +186,7 @@ def create_debt(
     comment: str = "",
     create_draft: bool = True,
     operation_id: str | None = None,
+    due_date: str | None = None,
 ) -> dict:
     config.require_writable_mode()
     operation_id = str(operation_id or uuid4().hex)
@@ -200,7 +203,7 @@ def create_debt(
             config.active_database_path(), kind=debt_type, counterparty=counterparty,
             opened_on=opened_date, principal_amount=principal_amount,
             currency=principal_currency, operation_key=operation_id, comment=comment,
-            create_draft=create_draft)
+            create_draft=create_draft, due_on=due_date)
     with staging.transaction_drafts_commit_lock() as draft_path:
         completed = _completed_debt_create(operation_id, draft_path)
         if completed is not None:
@@ -225,6 +228,7 @@ def create_debt(
             "type": debt_type,
             "counterparty": counterparty,
             "opened_date": opened_date,
+            "due_date": due_date or "",
             "principal_amount": principal_amount_value,
             "principal_currency": principal_currency,
             "cash_amount": cash_amount_value,
@@ -509,7 +513,7 @@ def validate_debt_files() -> list[DebtValidationIssue]:
 
 def validate_debt_rows(debts: pd.DataFrame, payments: pd.DataFrame) -> list[DebtValidationIssue]:
     issues: list[DebtValidationIssue] = []
-    issues.extend(_missing_columns(_debt_path(), debts, DEBT_COLUMNS))
+    issues.extend(_missing_columns(_debt_path(), debts, [column for column in DEBT_COLUMNS if column != "due_date"]))
     issues.extend(_missing_columns(_payment_path(), payments, PAYMENT_COLUMNS))
     if issues:
         return issues
@@ -727,6 +731,8 @@ def _validate_debt_row(index: int, row: pd.Series, issues: list[DebtValidationIs
         issues.append(DebtValidationIssue(_debt_path(), index + 2, "counterparty is required"))
     if pd.isna(pd.to_datetime(row["opened_date"], errors="coerce")):
         issues.append(DebtValidationIssue(_debt_path(), index + 2, "invalid opened_date"))
+    if row["due_date"] and (pd.isna(pd.to_datetime(row["due_date"], errors="coerce")) or row["due_date"] < row["opened_date"]):
+        issues.append(DebtValidationIssue(_debt_path(), index + 2, "invalid due_date"))
     if not _is_positive_money(row["principal_amount"]):
         issues.append(DebtValidationIssue(_debt_path(), index + 2, "principal_amount must be finite and positive"))
     if row["principal_currency"] not in config.UNIQUE_TICKERS:

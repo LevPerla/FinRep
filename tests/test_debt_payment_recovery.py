@@ -121,12 +121,11 @@ def test_dashboard_retry_with_same_request_id_does_not_duplicate_payment(
     with client.session_transaction() as session:
         session["authenticated"] = True
         session["data_mode"] = "live"
-    key = next(key for key in app.callback_map if "active-receivable-debts-grid.rowData" in key)
+    key = next(key for key in app.callback_map if "debt-input-message.children" in key)
     callback = app.callback_map[key]
     values = {
         "debt-add-button": 0,
         "debt-payment-button": 1,
-        "debt-migrate-button": 0,
         "dashboard-currency": "RUB",
         "debt-new-grid": [],
         "debt-payment-grid": [{
@@ -162,4 +161,15 @@ def test_dashboard_retry_with_same_request_id_does_not_duplicate_payment(
     assert "Выбери долг" in remaining[0]["validation_error"]
     assert len(debts.read_debt_payments()) == 1
     assert len(staging.read_transaction_drafts()) == 1
+    assert debts.active_debt_balances("receivable", "RUB").iloc[0]["outstanding_amount"] == 75
+
+    payload["state"][2]["value"] = [{
+        "operation_id": "browser-overpayment", "debt": f"Мне должны | Synthetic | 75 RUB | {payment_data}",
+        "date": "2026-09-03", "amount": 100, "cash_currency": "RUB", "comment": "too much",
+    }]
+    overpayment = client.post("/_dash-update-component", json=payload)
+    assert overpayment.status_code == 200
+    result = overpayment.get_json()["response"]
+    assert "Погашение больше остатка" in result["debt-input-message"]["children"]
+    assert result["debt-input-message"]["color"] == "danger"
     assert debts.active_debt_balances("receivable", "RUB").iloc[0]["outstanding_amount"] == 75
