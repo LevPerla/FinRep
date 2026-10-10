@@ -7,7 +7,7 @@
 
 FinRep is a local-first personal finance dashboard and report generator. LIVE mode stores data in SQLite, builds Plotly/Dash views, and writes reports to your own machine. It is not a hosted service and it does not upload your transactions.
 
-Русская версия кратко: FinRep хранит транзакции, активы и отчеты локально. Публичный репозиторий содержит только вымышленные `sample_data/`, чтобы можно было сразу увидеть интерфейс без приватных CSV.
+Русская версия кратко: FinRep хранит операции, активы и долги в локальной SQLite-БД, а отчёты — на вашем компьютере. Публичный репозиторий содержит только вымышленные `sample_data/` для просмотра интерфейса без приватных данных.
 
 ## Dashboard Screenshots
 
@@ -75,13 +75,13 @@ FinRep is designed around local files:
 - legacy CSV files remain migration input or an immutable archive after cutover;
 - generated HTML/PDF/XLSX outputs live in `reports/`.
 
-The app reads and writes those local paths only. Network access is used only when you explicitly refresh market/FX/crypto provider data. Normal dashboard tab changes use local SQLite data.
+The app reads and writes those local paths only. The dashboard can check for stale FX/CPI data in the background when you refresh its reports; crypto balance requests require a separate click. Providers receive the public wallet addresses configured for a crypto refresh, not private keys. Normal dashboard tab changes use local SQLite data.
 
 Before publishing a fork or public repository, run the checklist in `AGENTS_MD/OPEN_SOURCE_CHECKLIST.md`.
 
 ## Data Layout
 
-The demo dataset mirrors the private layout:
+The demo dataset includes fictional CSV fixtures; LIVE data is stored in SQLite:
 
 ```text
 sample_data/
@@ -157,7 +157,8 @@ The dashboard includes:
 - `Месяц`: selected month transactions and category totals.
 - `Инвестиции`: portfolio summary, positions, allocation by asset type/currency, and crypto wallet cache status.
 - `План и прогноз`: goals, capital forecast, runway, and FX stress scenarios.
-- `Ввод данных`: manual transaction drafts, Kaspi PDF import preview, monthly export, and asset snapshot editing.
+- `Ввод данных`: manual operations, multi-file Kaspi/BCC/Ozon PDF review, statement balances, monthly asset snapshots, asset classification, and categories.
+- `Долги · Beta`: personal receivables/liabilities, actual repayments, and explicit links to cash operations. Credit interest and instalment schedules are not supported yet.
 
 Exports are written under:
 
@@ -219,6 +220,8 @@ date;currency;usd_rate;source;fetched_at
 ```
 
 `usd_rate` means `1 currency -> USD`. Cross-rates are calculated through USD. The dashboard reads the cache first and fills weekends/known FX holidays from nearby cached values. Provider refreshes are explicit and append provider-returned rows to the same cache.
+
+The current FX provider order is Yahoo Finance (`yfinance`), then the National Bank of Kazakhstan; unavailable rates remain visibly stale rather than silently becoming zero. CPI observations use the World Bank Global Economic Monitor for Russia and Kazakhstan (with Kazakhstan national statistics where available), the US Bureau of Labor Statistics, UK Office for National Statistics, and Eurostat. Each observation retains its source and release metadata; missing data is shown as missing. The dashboard's refresh action checks stale FX/CPI in the background without blocking the report.
 
 ## Docker
 
