@@ -61,7 +61,7 @@ def test_sqlite_backend_feeds_existing_analytics_shapes(tmp_path, monkeypatch):
         "Кредиторская задолженность", "Погашение кред. зад.",
     })
     assert list(assets.columns) == ["Счет", "Валюта", "Значение", "Год", "Квартал", "Месяц"]
-    assert len(assets) == summary.snapshots_imported
+    assert len(assets) >= summary.snapshots_imported
     assert len(investments) == summary.trades_imported
     assert {"Тип_транзакции", "Актив", "Тикер", "Количество", "Дата", "Цена", "Валюта"}.issubset(
         investments.columns)
@@ -83,7 +83,7 @@ def test_sqlite_asset_and_goal_ui_adapters_round_trip(tmp_path, monkeypatch):
     monkeypatch.setenv("FINREP_SQLITE_PATH", str(database))
 
     saved = write_asset_snapshot(
-        [{"account": "Card", "amount": "123.45", "currency": "RUB"}],
+        [{"account": "Card", "asset_type_id": "cash_account", "amount": "123.45", "currency": "RUB"}],
         "2026", "5")
     assert saved["rows"] == 1
     loaded = read_asset_snapshot("2026", "5")

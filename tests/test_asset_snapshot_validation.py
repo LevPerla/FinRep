@@ -15,6 +15,7 @@ from src.data.sqlite_store import (
     initialize_database,
     replace_asset_snapshot_month,
     upsert_asset_snapshot,
+    upsert_asset_snapshot_batch,
 )
 
 
@@ -176,7 +177,7 @@ def test_asset_input_status_reads_saved_month_from_sqlite(tmp_path, monkeypatch)
     replace_asset_snapshot_month(
         database,
         period="2026-10",
-        rows=[{"account": "Cash", "amount": "10", "currency": "RUB"}],
+        rows=[{"account": "Cash", "asset_type_id": "cash", "amount": "10", "currency": "RUB"}],
     )
     from src.dashboard.app import _asset_input_status
 
@@ -189,8 +190,8 @@ def test_asset_input_status_reads_saved_month_from_sqlite(tmp_path, monkeypatch)
 def test_statement_balance_updates_only_selected_asset_and_retry_is_idempotent(tmp_path):
     database = tmp_path / "finrep.sqlite3"
     initialize_database(database)
-    add_asset_account(database, "cash", "Cash")
-    add_asset_account(database, "deposit", "Deposit")
+    add_asset_account(database, "cash", "Cash", asset_type_id="cash_account")
+    add_asset_account(database, "deposit", "Deposit", asset_type_id="deposit")
     add_asset_snapshot(
         database,
         snapshot_id="cash-snapshot",
@@ -225,13 +226,28 @@ def test_statement_balance_updates_only_selected_asset_and_retry_is_idempotent(t
     } == {("Cash", Decimal("100")), ("Deposit", Decimal("40150.55"))}
 
 
+def test_statement_balance_batch_rolls_back_when_one_row_is_invalid(tmp_path):
+    database = tmp_path / "finrep.sqlite3"
+    initialize_database(database)
+    add_asset_account(database, "cash", "Cash", asset_type_id="cash_account")
+
+    with pytest.raises(ValueError, match="unknown asset account"):
+        upsert_asset_snapshot_batch(database, [
+            {"account_id": "cash", "period": "2026-10", "amount": "100", "currency": "RUB"},
+            {"account_id": "missing", "period": "2026-10", "amount": "200", "currency": "RUB"},
+        ], reason="statement closing balance")
+
+    assert asset_snapshot_month(database, "2026-10") == []
+
+
 def test_statement_balance_preview_marks_only_matching_asset_and_period(
         tmp_path, monkeypatch):
     database = tmp_path / "finrep.sqlite3"
     monkeypatch.setenv("FINREP_STORAGE_BACKEND", "sqlite")
     monkeypatch.setenv("FINREP_SQLITE_PATH", str(database))
     initialize_database(database)
-    add_asset_account(database, "deposit", "Deposit")
+    add_asset_account(database, "deposit", "Deposit", asset_type_id="deposit")
+    add_asset_account(database, "cash", "Cash", asset_type_id="cash_account")
     add_asset_snapshot(
         database,
         snapshot_id="deposit-snapshot",
@@ -240,7 +256,9 @@ def test_statement_balance_preview_marks_only_matching_asset_and_period(
         amount="100",
         currency="RUB",
     )
-    from src.dashboard.app import _asset_input_records, _statement_asset_preview
+    from src.dashboard.app import (
+        _asset_input_records, _statement_asset_preview, _statement_asset_previews,
+    )
 
     balance = {
         "balance": "150",
@@ -290,6 +308,23 @@ def test_statement_balance_preview_marks_only_matching_asset_and_period(
     assert "уже совпадает" in message
     assert (color, is_open) == ("success", True)
 
+    add_asset_snapshot(
+        database, snapshot_id="cash-snapshot", account_id="cash",
+        period="2026-10", amount="50", currency="RUB",
+    )
+    draft = {"account": "Unsaved draft", "amount": "42", "currency": "RUB"}
+    annotated, messages, color, is_open = _statement_asset_previews(
+        [*_asset_input_records("2026", "10"), draft],
+        [{**balance, "source_file": "a.pdf"}, {**balance, "source_file": "b.pdf"}],
+        ["deposit", "cash"], "2026-10", "ru",
+    )
+    assert {row["account_id"]: row["_statement_balance_status"] for row in annotated[:-1]} == {
+        "deposit": "matched", "cash": "pending",
+    }
+    assert annotated[-1] == draft
+    assert len(messages.children) == 2
+    assert (color, is_open) == ("warning", True)
+
 
 def test_statement_balance_period_mismatch_disables_apply(tmp_path, monkeypatch):
     database = tmp_path / "finrep.sqlite3"
@@ -298,7 +333,8 @@ def test_statement_balance_period_mismatch_disables_apply(tmp_path, monkeypatch)
     monkeypatch.setenv("FINREP_DASH_PASSWORD", "synthetic-password")
     monkeypatch.setenv("FINREP_DASH_SECRET_KEY", "synthetic-secret")
     initialize_database(database)
-    add_asset_account(database, "deposit", "Deposit")
+    add_asset_account(database, "deposit", "Deposit", asset_type_id="deposit")
+    add_asset_account(database, "cash", "Cash", asset_type_id="cash_account")
     from src.dashboard.app import create_app
 
     app = create_app()
@@ -316,13 +352,21 @@ def test_statement_balance_period_mismatch_disables_apply(tmp_path, monkeypatch)
         "balance": "150",
         "currency": "RUB",
         "as_of_date": "2026-10-31",
+        "source_file": "synthetic.pdf",
+    }
+    usd_balance = {
+        **balance, "account_id": "SYNTHETIC-USD", "balance": "75",
+        "currency": "USD", "source_file": "synthetic-usd.pdf",
+    }
+    other_month = {
+        **balance, "balance": "999", "as_of_date": "2026-11-30",
+        "source_file": "synthetic-next-month.pdf",
     }
     values = {
-        "bank-statement-balance": balance,
+        "bank-statement-balances": [balance, usd_balance, other_month],
         "dashboard-locale": "ru",
         "dashboard-year": "2026",
         "dashboard-month": "09",
-        "bank-statement-asset-account": "deposit",
     }
 
     def invoke(changed):
@@ -337,7 +381,9 @@ def test_statement_balance_period_mismatch_disables_apply(tmp_path, monkeypatch)
                 for item in callback["inputs"]
             ],
             "state": [
-                {**item, "value": values.get(item["id"])}
+                {**item, "value": ["deposit", "cash", None] if item["property"] == "value" else [
+                    {"type": "bank-balance-asset", "index": index} for index in range(3)
+                ]}
                 for item in callback["state"]
             ],
             "changedPropIds": [changed],
@@ -346,17 +392,21 @@ def test_statement_balance_period_mismatch_disables_apply(tmp_path, monkeypatch)
         assert response.status_code == 200
         return response.get_json()["response"]
 
-    mismatch = invoke("bank-statement-balance.data")
+    mismatch = invoke("bank-statement-balances.data")
     assert mismatch["bank-statement-period-message"]["is_open"] is True
     assert "2026-10" in mismatch["bank-statement-period-message"]["children"]
     assert mismatch["bank-statement-balance-apply"]["disabled"] is True
-    assert mismatch["bank-statement-asset-account"]["value"] is None
+    table = mismatch["bank-statement-balance-table"]["children"]
+    first_row = table["props"]["children"][1]["props"]["children"][0]
+    assert first_row["props"]["children"][4]["props"]["children"]["props"]["disabled"] is True
 
     values["dashboard-month"] = "10"
     matched_period = invoke("dashboard-month.value")
-    assert matched_period["bank-statement-period-message"]["is_open"] is False
+    assert matched_period["bank-statement-period-message"]["is_open"] is True
     assert matched_period["bank-statement-balance-apply"]["disabled"] is False
-    assert matched_period["bank-statement-asset-account"]["value"] == "deposit"
+    table = matched_period["bank-statement-balance-table"]["children"]
+    first_row = table["props"]["children"][1]["props"]["children"][0]
+    assert first_row["props"]["children"][4]["props"]["children"]["props"]["value"] == "deposit"
 
     apply_key = next(
         key for key, callback in app.callback_map.items()
@@ -368,8 +418,7 @@ def test_statement_balance_period_mismatch_disables_apply(tmp_path, monkeypatch)
     apply_callback = app.callback_map[apply_key]
     apply_values = {
         "bank-statement-balance-apply": 1,
-        "bank-statement-balance": balance,
-        "bank-statement-asset-account": "deposit",
+        "bank-statement-balances": [balance, usd_balance, other_month],
         "dashboard-year": "2026",
         "dashboard-month": "10",
         "dashboard-locale": "ru",
@@ -387,7 +436,12 @@ def test_statement_balance_period_mismatch_disables_apply(tmp_path, monkeypatch)
                 for item in apply_callback["inputs"]
             ],
             "state": [
-                {**item, "value": apply_values.get(item["id"])}
+                {**item, "value": (
+                    ["deposit", "cash", None]
+                    if item["id"].startswith("{") and item["property"] == "value" else
+                    [{"type": "bank-balance-asset", "index": index} for index in range(3)]
+                    if item["id"].startswith("{") else apply_values.get(item["id"])
+                )}
                 for item in apply_callback["state"]
             ],
             "changedPropIds": ["bank-statement-balance-apply.n_clicks"],
@@ -397,12 +451,17 @@ def test_statement_balance_period_mismatch_disables_apply(tmp_path, monkeypatch)
         return response.get_json()["response"]
 
     applied = invoke_apply()
-    applied_row = applied["assets-input-grid"]["rowData"][0]
+    assert "assets-input-grid" in applied, applied
+    applied_rows = applied["assets-input-grid"]["rowData"]
+    applied_row = next(row for row in applied_rows if row["account_id"] == "deposit")
     assert applied_row["account_id"] == "deposit"
     assert applied_row["amount"] == "150"
     assert applied_row["_statement_balance_status"] == "matched"
+    assert next(row for row in applied_rows if row["account_id"] == "cash")["amount"] == "75"
+    assert len(asset_snapshot_month(database, "2026-10")) == 2
+    assert asset_snapshot_month(database, "2026-11") == []
     assert applied["asset-statement-highlight-message"]["color"] == "success"
-    assert "уже совпадает" in applied["bank-statement-balance-comparison"]["children"]
+    assert "уже совпадает" in str(applied["bank-statement-balance-comparison"]["children"])
 
     apply_values["bank-statement-balance-apply"] = 2
     retry = invoke_apply()
@@ -454,12 +513,12 @@ def test_load_callback_displays_error_and_does_not_invent_zero(assets_root, monk
         context["data_mode"] = "live"
     key = next(key for key in app.callback_map if "assets-input-message.children" in key)
     callback = app.callback_map[key]
-    values = {"assets-load-button":1,"assets-add-row-button":0,"assets-delete-row-button":0,"assets-apply-button":0,
+    values = {"assets-reset-confirm":1,"assets-add-row-button":0,"assets-delete-row-button":0,"assets-apply-button":0,
               "dashboard-year":"2026","dashboard-month":"01","assets-input-grid":[],"dashboard-locale":"ru"}
     payload = {"output":key,"outputs":[{"id":item.component_id,"property":item.component_property} for item in callback["output"]],
                "inputs":[{**item,"value":values.get(item["id"])} for item in callback["inputs"]],
                "state":[{**item,"value":values.get(item["id"])} for item in callback["state"]],
-               "changedPropIds":["assets-load-button.n_clicks"]}
+               "changedPropIds":["assets-reset-confirm.submit_n_clicks"]}
     before = files(assets_root)
     response = client.post("/_dash-update-component",json=payload)
     assert response.status_code == 200

@@ -187,16 +187,13 @@ def get_assets():
 
 @lru_cache(maxsize=1)
 def _get_assets_sqlite_cached(database_path: str):
-    from src.data.sqlite_store import connect_database
+    from src.data.sqlite_store import effective_asset_snapshot_history
 
-    with connect_database(database_path) as connection:
-        rows = connection.execute("""SELECT v.period, v.account_name, v.currency_code,
-            v.amount_minor, c.minor_unit FROM v_asset_snapshots v
-            JOIN currencies c ON c.code = v.currency_code
-            WHERE v.include_in_capital = 1 ORDER BY v.period, v.id""").fetchall()
+    rows = [row for row in effective_asset_snapshot_history(database_path)
+            if row["include_in_capital"]]
     if not rows:
         return _empty_frame(ASSET_COLUMNS)
-    data = pd.DataFrame([dict(row) for row in rows])
+    data = pd.DataFrame(rows)
     periods = pd.PeriodIndex(data.pop("period"), freq="M")
     data["Счет"] = data.pop("account_name")
     data["Валюта"] = data.pop("currency_code")

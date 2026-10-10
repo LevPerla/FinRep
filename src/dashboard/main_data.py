@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from datetime import date
 from decimal import Decimal
 from functools import lru_cache
 
@@ -43,6 +44,7 @@ COCKPIT_STATUS_LABELS = {
     "thin": "Низкий уровень",
     "review": "Требует сверки",
     "stale": "Оценки устарели",
+    "provisional": "Предварительно",
 }
 
 
@@ -235,14 +237,16 @@ def _cockpit_metrics(
         capital_detail = "Накопленный денежный поток за доступную историю"
         runway_label = "Финансовый запас по денежному потоку"
 
+    carried_count = int(asset_freshness.get("carried_count", 0)) if capital_source == "assets" and asset_freshness else 0
     freshness_warning = bool(
         capital_source == "assets" and asset_freshness
-        and asset_freshness.get("has_warning"))
+        and (asset_freshness.get("stale_count") or asset_freshness.get("missing_count")))
     freshness_detail = ""
-    if freshness_warning:
+    if freshness_warning or carried_count:
         freshness_detail = (
             f"; устаревших оценок: {asset_freshness['stale_count']}, "
-            f"без даты: {asset_freshness['missing_count']}"
+            f"без даты: {asset_freshness['missing_count']}, "
+            f"перенесённых остатков: {carried_count}"
         )
 
     income = _row_number(selected_row, "Доход") if selected_period_available else pd.NA
@@ -291,7 +295,7 @@ def _cockpit_metrics(
             "capital",
             capital_label,
             current_capital,
-            "stale" if freshness_warning else capital_source,
+            "provisional" if carried_count else "stale" if freshness_warning else capital_source,
             f"{capital_detail}{latest_period_suffix}{freshness_detail}",
             "money",
         ),
@@ -368,25 +372,29 @@ def _current_asset_freshness(
     if not config.use_sqlite_storage():
         return None
     from src.data.asset_freshness import evaluate_asset_freshness
-    from src.data.sqlite_store import asset_accounts
+    from src.data.sqlite_store import asset_accounts, effective_asset_snapshot_month
 
     accounts = [
         account for account in asset_accounts(config.active_database_path())
-        if account.get("include_in_capital") and account.get("last_period")
+        if account.get("include_in_capital")
     ]
-    if accounts:
-        latest_period = max(account["last_period"] for account in accounts)
-        accounts = [
-            account for account in accounts
-            if account["last_period"] == latest_period
-        ]
     as_of = None
     if year and month:
         try:
             as_of = pd.Period(f"{int(year):04d}-{int(month):02d}", freq="M").end_time.date()
         except (TypeError, ValueError):
             pass
-    return evaluate_asset_freshness(accounts, as_of=as_of)
+    result = evaluate_asset_freshness(accounts, as_of=as_of)
+    period = f"{int(year):04d}-{int(month):02d}" if year and month else date.today().strftime("%Y-%m")
+    carried = [row for row in effective_asset_snapshot_month(config.active_database_path(), period)
+               if row["include_in_capital"] and row["carried"]]
+    result["carried_count"] = len(carried)
+    result["carried_accounts"] = [
+        f"{row['account_name']} {row['currency_code']} ({row['source_period']}, {row['age_months']} mo.)"
+        for row in carried
+    ]
+    result["has_warning"] = result["has_warning"] or bool(carried)
+    return result
 
 
 def _selected_balance_row(
@@ -847,7 +855,7 @@ def _capital_components_data_cached(
     currency: str,
 ) -> pd.DataFrame:
     from src.data.asset_freshness import evaluate_asset_freshness, freshness_label
-    from src.data.sqlite_store import asset_accounts, connect_database
+    from src.data.sqlite_store import asset_accounts, effective_asset_snapshot_history
 
     columns = [
         "Счет",
@@ -860,32 +868,19 @@ def _capital_components_data_cached(
         "В валюте отчёта",
         "Актуальность",
     ]
-    with connect_database(database_path) as connection:
-        rows = connection.execute("""WITH latest_period AS (
-            SELECT MAX(period) AS period
-            FROM v_asset_snapshots
-            WHERE include_in_capital = 1
-        ), ranked AS (
-            SELECT v.*, c.minor_unit,
-              COALESCE(t.name_ru, 'Не классифицировано') AS asset_type_name,
-              COALESCE(l.name_ru, 'Не задана') AS liquidity_name,
-              ROW_NUMBER() OVER (
-                PARTITION BY v.account_id, v.currency_code
-                ORDER BY v.period DESC, v.id DESC
-              ) AS rank
-            FROM v_asset_snapshots v
-            JOIN currencies c ON c.code = v.currency_code
-            LEFT JOIN asset_types t ON t.id = v.asset_type_id
-            LEFT JOIN liquidity_classes l ON l.id = v.liquidity_class_id
-            WHERE v.include_in_capital = 1
-              AND v.period = (SELECT period FROM latest_period)
-        )
-        SELECT * FROM ranked WHERE rank = 1
-        ORDER BY account_name, currency_code""").fetchall()
+    history = effective_asset_snapshot_history(database_path)
+    latest_period = history[-1]["period"] if history else None
+    rows = [row for row in history
+            if row["period"] == latest_period and row["include_in_capital"]]
     if not rows:
         return pd.DataFrame(columns=columns)
 
-    raw = pd.DataFrame([dict(row) for row in rows])
+    raw = pd.DataFrame(rows)
+    from src.data.sqlite_store import asset_types, liquidity_classes
+    type_labels = {row["id"]: row["name_ru"] for row in asset_types(database_path)}
+    liquidity_labels = {row["id"]: row["name_ru"] for row in liquidity_classes(database_path)}
+    raw["asset_type_name"] = raw["asset_type_id"].map(type_labels).fillna("Не классифицировано")
+    raw["liquidity_name"] = raw["liquidity_class_id"].map(liquidity_labels).fillna("Не задана")
     report_period = pd.Period(raw["period"].max(), freq="M")
     raw["Дата"] = report_period.to_timestamp(how="end").normalize()
     raw["Год"] = report_period.year
@@ -904,7 +899,7 @@ def _capital_components_data_cached(
         "Счет": raw["account_name"],
         "Тип актива": raw["asset_type_name"],
         "Ликвидность": raw["liquidity_name"],
-        "Источник оценки": "Месячный снимок",
+        "Источник оценки": raw["source_period"].map(lambda value: f"Остаток за {value}"),
         "Период оценки": raw["period"],
         "Валюта": raw["Валюта"],
         "Сумма": raw["Значение"],
@@ -1136,15 +1131,10 @@ def _asset_liquidity_allocation_data(currency: str) -> pd.DataFrame:
 @lru_cache(maxsize=None)
 def _asset_liquidity_allocation_data_cached(
         database_path: str, currency: str) -> pd.DataFrame:
-    from src.data.sqlite_store import connect_database
+    from src.data.sqlite_store import effective_asset_snapshot_history
 
-    with connect_database(database_path) as connection:
-        rows = connection.execute("""SELECT v.period, v.account_id, v.currency_code,
-            v.amount_minor, c.minor_unit, v.liquidity_class_id
-            FROM v_asset_snapshots v
-            JOIN currencies c ON c.code = v.currency_code
-            WHERE v.include_in_capital = 1
-            ORDER BY v.period, v.account_id""").fetchall()
+    rows = [row for row in effective_asset_snapshot_history(database_path)
+            if row["include_in_capital"]]
     if not rows:
         return pd.DataFrame(columns=["Дата"])
 

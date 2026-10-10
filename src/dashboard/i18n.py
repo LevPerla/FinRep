@@ -361,7 +361,7 @@ REPORT_TEXT_EN = {
     "или нажми для выбора файла": "or select a file",
     "Операции из PDF появятся здесь. Дубли среди черновиков и сохранённых операций будут пропущены.": "PDF transactions will appear here. Duplicates among drafts and saved transactions will be skipped.",
     "Добавь, вставь или загрузи операции. Готовые строки будут сохранены в SQLite; ошибки останутся в таблице.": "Add, paste, or upload transactions. Valid rows will be saved to SQLite; rows with errors will remain in the table.",
-    "Категории: клик — одна ячейка, Shift+клик — диапазон, Ctrl/Cmd+клик — несколько; Ctrl/Cmd+C и Ctrl/Cmd+V — копировать и вставить.": "Categories: click one cell, Shift+click a range, or Ctrl/Cmd+click multiple cells; use Ctrl/Cmd+C and Ctrl/Cmd+V to copy and paste.",
+    "Категории и действия: клик — одна ячейка, Shift+клик — диапазон, Ctrl/Cmd+клик — несколько; Ctrl/Cmd+C и Ctrl/Cmd+V — копировать и вставить.": "Categories and actions: click one cell, Shift+click a range, or Ctrl/Cmd+click multiple cells; use Ctrl/Cmd+C and Ctrl/Cmd+V to copy and paste.",
     "Период Preview": "Preview period",
     "Выбери месяц выписки": "Select statement month",
     "Сохранить месяц": "Save month",

@@ -6,9 +6,17 @@ from src.data.sqlite_store import (
     add_asset_account,
     add_asset_snapshot,
     asset_accounts,
+    connect_database,
     initialize_database,
     set_asset_account_classifications,
 )
+
+
+def _legacy_unclassified_account(database, account_id, name):
+    with connect_database(database, writable=True) as connection:
+        connection.execute("""INSERT INTO asset_accounts
+            (id, name, active, created_at, updated_at)
+            VALUES (?, ?, 1, '2026-01-01', '2026-01-01')""", (account_id, name))
 
 
 def _component(node, component_id):
@@ -51,7 +59,7 @@ def test_assets_input_shows_account_classification_with_history_context(tmp_path
 
     database = tmp_path / "finrep.sqlite3"
     initialize_database(database)
-    add_asset_account(database, "account-1", "Основной счёт")
+    _legacy_unclassified_account(database, "account-1", "Основной счёт")
     current_period = date.today().strftime("%Y-%m")
     add_asset_snapshot(
         database, snapshot_id="snapshot-1", account_id="account-1",
@@ -110,6 +118,10 @@ def test_assets_input_shows_account_classification_with_history_context(tmp_path
         column for column in grid.columnDefs if column["field"] == "closed_period"
     )["editable"] is False
     assert _component(snapshot_layout, "assets-delete-row-button").children == "Отправить в архив"
+    assert _component(snapshot_layout, "assets-copy-previous-button") is None
+    reset = _component(snapshot_layout, "assets-reset-confirm")
+    assert reset.children.children == "Сбросить правки"
+    assert "Несохранённые изменения будут потеряны" in reset.message
     assert _component(settings_layout, "asset-account-restore-button") is not None
     assert grid.dashGridOptions["rowSelection"] == "multiple"
     assert next(
@@ -117,12 +129,13 @@ def test_assets_input_shows_account_classification_with_history_context(tmp_path
     )["sort"] == "desc"
     snapshot_columns = {column["field"]: column for column in snapshot_grid.columnDefs}
     assert [column["field"] for column in snapshot_grid.columnDefs[:4]] == [
-        "account", "asset_type", "amount", "currency"]
+        "account", "asset_type_id", "amount", "currency"]
     assert snapshot_columns["account"]["flex"] == 2
-    assert snapshot_columns["asset_type"]["editable"] is False
+    assert snapshot_columns["asset_type_id"]["editable"] == {
+        "function": "params.data && !params.data.account_id"}
     assert snapshot_columns["account"]["cellClassRules"] == snapshot_columns[
-        "asset_type"]["cellClassRules"]
-    assert set(snapshot_columns["asset_type"]["cellClassRules"]) == {
+        "asset_type_id"]["cellClassRules"]
+    assert set(snapshot_columns["asset_type_id"]["cellClassRules"]) == {
         "finrep-asset-kind-cash",
         "finrep-asset-kind-cash-account",
         "finrep-asset-kind-deposit",
@@ -151,13 +164,22 @@ def test_assets_input_shows_account_classification_with_history_context(tmp_path
     assert grid.style["height"] == "220px"
 
 
+def test_copy_previous_button_remains_available_for_csv(monkeypatch):
+    from src.dashboard.app import _asset_snapshot_input_layout
+
+    monkeypatch.setenv("FINREP_STORAGE_BACKEND", "csv")
+    layout = _asset_snapshot_input_layout("2026", "01", "dark", load_records=False)
+
+    assert _component(layout, "assets-copy-previous-button") is not None
+
+
 def test_asset_classification_callback_saves_all_rows_and_refreshes_capital(
         tmp_path, monkeypatch):
     from src.dashboard.app import create_app
 
     database = tmp_path / "finrep.sqlite3"
     initialize_database(database)
-    add_asset_account(database, "account-1", "Основной счёт")
+    _legacy_unclassified_account(database, "account-1", "Основной счёт")
     _use_live_sqlite(monkeypatch, database)
     monkeypatch.setenv("FINREP_DASH_PASSWORD", "synthetic-password")
     monkeypatch.setenv("FINREP_DASH_SECRET_KEY", "synthetic-secret")
@@ -228,11 +250,11 @@ def test_asset_classification_rows_sort_by_latest_snapshot_descending(
         ("new-b", "Бета", "2026-02"),
         ("new-a", "Альфа", "2026-02"),
     ]:
-        add_asset_account(database, account_id, name)
+        add_asset_account(database, account_id, name, asset_type_id="other")
         add_asset_snapshot(
             database, snapshot_id=f"snapshot-{account_id}", account_id=account_id,
             period=period, amount="100", currency="RUB")
-    add_asset_account(database, "empty", "Без снимка")
+    add_asset_account(database, "empty", "Без снимка", asset_type_id="other")
     _use_live_sqlite(monkeypatch, database)
 
     rows = _asset_classification_rows("ru")
@@ -268,7 +290,7 @@ def test_archived_account_is_not_carried_into_a_later_snapshot_template(
     for account_id, name in [("closed", "Закрытый счёт"), ("open", "Открытый счёт")]:
         add_asset_snapshot(
             database, snapshot_id=f"snapshot-{account_id}", account_id=account_id,
-            period="2026-02", amount="100", currency="RUB")
+            period="2026-02", amount="0" if account_id == "closed" else "100", currency="RUB")
     set_asset_account_classifications(
         database,
         [{"account_id": "closed", "asset_type_id": "cash_account",

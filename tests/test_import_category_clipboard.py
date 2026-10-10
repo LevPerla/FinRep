@@ -32,6 +32,18 @@ def test_category_column_has_multi_cell_selection_rule():
     assert "sort" not in category_column
 
 
+def test_action_column_reuses_multi_cell_clipboard():
+    action = next(
+        column for column in _kaspi_import_column_defs() if column["field"] == "import_action"
+    )
+    layout = _transaction_input_layout("RUB", "2026", "09", "dark")
+    grid = _component(layout, "kaspi-import-grid")
+
+    assert "finrep-action-selected" in action["cellClassRules"]
+    assert action["cellEditorParams"]["values"] == ["import", "skip"]
+    assert grid.eventListeners["cellClicked"] == ["finrepInputCellClicked(params)"]
+
+
 def test_import_grid_hides_bank_status_and_has_no_sort_priority_numbers():
     columns = _kaspi_import_column_defs()
     date_column = next(column for column in columns if column["field"] == "date")

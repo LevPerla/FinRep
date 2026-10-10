@@ -69,20 +69,14 @@ def previous_asset_snapshot_path(year: str, month: str, assets_root: str | Path 
 
 def read_asset_snapshot(year: str, month: str, assets_root: str | Path | None = None) -> pd.DataFrame:
     if assets_root is None and config.use_sqlite_storage():
-        from src.data.sqlite_store import asset_snapshots
+        from src.data.sqlite_store import effective_asset_snapshot_month
 
         requested = f"{int(year):04d}-{int(month):02d}"
-        rows = asset_snapshots(config.active_database_path())
-        periods = sorted({row["period"] for row in rows if row["period"] <= requested})
-        if not periods:
-            return pd.DataFrame(columns=ASSET_EDITOR_COLUMNS)
-        selected = requested if requested in periods else periods[-1]
+        rows = effective_asset_snapshot_month(config.active_database_path(), requested)
         return pd.DataFrame([
             {"account": row["account_name"], "amount": row["amount"],
              "currency": row["currency_code"]}
             for row in rows
-            if row["period"] == selected
-            and (row["closed_period"] is None or requested <= row["closed_period"])
         ], columns=ASSET_EDITOR_COLUMNS)
     target_path = asset_snapshot_path(year, month, assets_root)
     path = target_path
@@ -153,7 +147,8 @@ def _normalize_asset_rows(data: pd.DataFrame) -> pd.DataFrame:
     for column in ASSET_EDITOR_COLUMNS:
         if column not in normalized.columns:
             normalized[column] = ""
-    normalized = normalized[ASSET_EDITOR_COLUMNS].fillna("")
+    extra = [column for column in ("asset_type_id",) if column in normalized.columns]
+    normalized = normalized[ASSET_EDITOR_COLUMNS + extra].fillna("")
     normalized["account"] = normalized["account"].astype(str).str.strip()
     normalized = normalized[normalized["account"].ne("")].copy(deep=True)
     normalized["currency"] = normalized["currency"].astype(str).str.upper().str.strip()

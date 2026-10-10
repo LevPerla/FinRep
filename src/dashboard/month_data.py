@@ -232,6 +232,19 @@ def _prepare_assets(data: pd.DataFrame) -> pd.DataFrame:
 
 
 def _asset_snapshot_display(data: pd.DataFrame, year: str, month: str) -> pd.DataFrame:
+    if config.use_sqlite_storage():
+        from src.data.sqlite_store import effective_asset_snapshot_month
+
+        period = f"{int(year):04d}-{int(month):02d}"
+        carried = [row for row in effective_asset_snapshot_month(config.active_database_path(), period)
+                   if row["include_in_capital"] and row["carried"]]
+        if carried:
+            notice = pd.DataFrame({"Статус": [
+                f"Предварительный итог. Перенесённые остатки ({len(carried)}): "
+                + ", ".join(f"{row['account_name']} {row['currency_code']} "
+                            f"(с {row['source_period']}, {row['age_months']} мес.)" for row in carried)
+            ]})
+            return pd.concat([notice, data.copy(deep=True)], ignore_index=True)
     if not _has_saved_period(year, month, "asset_snapshots"):
         return pd.DataFrame({"Статус": ["Нет снимка активов за выбранный месяц."]})
     return utils.fill_if_empty(data.copy(deep=True))
