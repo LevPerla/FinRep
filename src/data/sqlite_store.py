@@ -1623,15 +1623,26 @@ def remove_transaction_drafts(path: str | Path, *, draft_ids: list[str],
         return _draft_revision(connection)
 
 
-def _domain_draft_debt_id(connection: sqlite3.Connection, draft: sqlite3.Row) -> str | None:
+def _domain_draft_debt_id(connection: sqlite3.Connection, draft: sqlite3.Row) -> str:
     if draft["origin_kind"] != "debt":
-        return None
+        raise ValueError("Долговая операция не привязана к долгу; укажи долг перед сохранением.")
     entity_id = draft["origin_key"].split(":", 1)[0]
     if draft["domain_action"].endswith("_opening"):
-        row = connection.execute("SELECT id FROM debts WHERE id = ?", (entity_id,)).fetchone()
+        row = connection.execute(
+            "SELECT id, kind, principal_currency_code FROM debts WHERE id = ?",
+            (entity_id,),
+        ).fetchone()
     else:
-        row = connection.execute("SELECT debt_id FROM debt_payments WHERE id = ?", (entity_id,)).fetchone()
-    return row[0] if row else None
+        row = connection.execute("""SELECT d.id, d.kind, d.principal_currency_code
+            FROM debt_payments p JOIN debts d ON d.id = p.debt_id WHERE p.id = ?""",
+            (entity_id,),
+        ).fetchone()
+    if row is None:
+        raise ValueError("Долговая операция не привязана к существующему долгу.")
+    if (row["kind"] != draft["domain_action"].split("_", 1)[0]
+            or row["principal_currency_code"] != draft["currency_code"]):
+        raise ValueError("Тип или валюта долговой операции не совпадает с выбранным долгом.")
+    return row["id"]
 
 
 def _draft_revision(connection: sqlite3.Connection) -> str:

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import sqlite3
 
+import pytest
+
 from src.data.importers.common import new_manual_grid_row, save_input_grid_to_transactions
 from src.data.sqlite_store import (
     connect_database, create_debt_record, initialize_database, publish_domain_drafts,
@@ -64,6 +66,7 @@ def test_reviewed_debt_categories_link_cash_events_and_registry(tmp_path, monkey
     with connect_database(database) as connection:
         assert connection.execute("SELECT status FROM debts WHERE id = ?", (liability_id,)).fetchone()[0] == "closed"
         assert connection.execute("SELECT count(*) FROM cash_transactions").fetchone()[0] == 0
+        assert connection.execute("SELECT count(*) FROM debt_cash_events WHERE debt_id IS NULL").fetchone()[0] == 0
 
 
 def test_debt_grid_requires_explicit_target_and_matching_direction(tmp_path, monkeypatch):
@@ -71,13 +74,19 @@ def test_debt_grid_requires_explicit_target_and_matching_direction(tmp_path, mon
     initialize_database(database)
     monkeypatch.setenv("FINREP_STORAGE_BACKEND", "sqlite")
     monkeypatch.setenv("FINREP_SQLITE_PATH", str(database))
-    missing = _row("Погашение кредиторской задолженности", "-10", "missing")
+    missing = [
+        _row("Возникновение дебиторской задолженности", "-10", "missing-receivable"),
+        _row("Погашение дебиторской задолженности", "10", "missing-receivable-payment"),
+        _row("Возникновение кредиторской задолженности", "10", "missing-liability"),
+        _row("Погашение кредиторской задолженности", "-10", "missing-liability-payment"),
+    ]
     wrong_sign = _row("Возникновение кредиторской задолженности", "-10", "wrong-sign",
                       counterparty="Synthetic")
-    result = save_input_grid_to_transactions([missing, wrong_sign])
-    assert result["invalid_rows"] == 2
-    assert "выбери погашаемый долг" in result["remaining_rows"][0]["validation_error"]
-    assert "категория не соответствует знаку" in result["remaining_rows"][1]["validation_error"]
+    result = save_input_grid_to_transactions([*missing, wrong_sign])
+    assert result["invalid_rows"] == 5
+    assert all("укажи нового контрагента" in row["validation_error"] for row in result["remaining_rows"][::2][:2])
+    assert all("выбери погашаемый долг" in row["validation_error"] for row in result["remaining_rows"][1::2][:2])
+    assert "категория не соответствует знаку" in result["remaining_rows"][-1]["validation_error"]
     with connect_database(database) as connection:
         assert connection.execute("SELECT count(*) FROM debts").fetchone()[0] == 0
 
@@ -98,6 +107,40 @@ def test_debt_screen_drafts_publish_with_the_same_debt_link(tmp_path):
                           operation_key="publish")
     with connect_database(database) as connection:
         assert {row[0] for row in connection.execute("SELECT debt_id FROM debt_cash_events")} == {opening["debt_id"]}
+
+
+def test_unlinked_debt_draft_cannot_be_published(tmp_path):
+    database = tmp_path / "synthetic.sqlite3"
+    initialize_database(database)
+    opening = create_debt_record(
+        database, kind="liability", counterparty="Synthetic",
+        opened_on="2026-10-01", principal_amount="100", currency="RUB",
+        operation_key="open",
+    )
+    with connect_database(database, writable=True) as connection:
+        connection.execute("""UPDATE transaction_drafts
+            SET origin_kind = 'legacy', origin_key = 'unlinked'
+            WHERE id = ?""", (opening["draft_id"],))
+    with pytest.raises(ValueError, match="не привязана к долгу"):
+        publish_domain_drafts(database, draft_ids=[opening["draft_id"]], operation_key="publish")
+    with connect_database(database) as connection:
+        assert connection.execute("SELECT count(*) FROM debt_cash_events").fetchone()[0] == 0
+        assert connection.execute("SELECT status FROM transaction_drafts").fetchone()[0] == "ready"
+
+
+def test_debt_draft_cannot_be_linked_to_wrong_side(tmp_path):
+    database = tmp_path / "synthetic.sqlite3"
+    initialize_database(database)
+    opening = create_debt_record(
+        database, kind="receivable", counterparty="Synthetic",
+        opened_on="2026-10-01", principal_amount="100", currency="RUB",
+        operation_key="open",
+    )
+    with connect_database(database, writable=True) as connection:
+        connection.execute("""UPDATE transaction_drafts SET domain_action = 'liability_opening'
+            WHERE id = ?""", (opening["draft_id"],))
+    with pytest.raises(ValueError, match="Тип или валюта"):
+        publish_domain_drafts(database, draft_ids=[opening["draft_id"]], operation_key="publish")
 
 
 def test_v19_debt_events_gain_nullable_link_without_changing_history(tmp_path):
