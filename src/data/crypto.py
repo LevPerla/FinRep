@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+from decimal import Decimal
 from math import isfinite
 from pathlib import Path
 import re
@@ -73,10 +74,7 @@ EVM_RPC_URLS = {
 }
 TOKEN_DECIMALS = {"LINK": 18, "USDT": 6}
 TON_JETTONS = {
-    "USDT": {
-        "symbol": "USDt",
-        "master": "EQCxE6mXca2m3DqksTX4J9i5wK5Q9c3iH8YQ3q0A9m5a3rYw",
-    },
+    "USDT": "EQCxE6mUtQJKFnGfaROTKOt1lZbDiiX1kCixRv7Nw2Id_sDs",
 }
 EVM_ADDRESS_RE = re.compile(r"^0x[a-fA-F0-9]{40}$")
 
@@ -627,13 +625,13 @@ def _fetch_bitcoin_balance(address: str, timeout: int) -> str:
     response = requests.get(f"https://blockstream.info/api/address/{address}", timeout=timeout)
     response.raise_for_status()
     payload = response.json()
-    chain_stats = payload.get("chain_stats", {})
-    mempool_stats = payload.get("mempool_stats", {})
+    chain_stats = payload["chain_stats"]
+    mempool_stats = payload["mempool_stats"]
     sats = (
-        chain_stats.get("funded_txo_sum", 0)
-        - chain_stats.get("spent_txo_sum", 0)
-        + mempool_stats.get("funded_txo_sum", 0)
-        - mempool_stats.get("spent_txo_sum", 0)
+        chain_stats["funded_txo_sum"]
+        - chain_stats["spent_txo_sum"]
+        + mempool_stats["funded_txo_sum"]
+        - mempool_stats["spent_txo_sum"]
     )
     return str(float(sats) / 100_000_000)
 
@@ -697,9 +695,9 @@ def _fetch_ton_balance(address: str, timeout: int) -> str:
     )
     response.raise_for_status()
     payload = response.json()
-    if not payload.get("ok", True):
-        raise ValueError(payload)
-    return str(float(payload.get("result", 0)) / 10**9)
+    if payload["ok"] is not True:
+        raise ValueError("TON balance response is not ok")
+    return str(float(payload["result"]) / 10**9)
 
 
 def _fetch_ton_jetton_balance(address: str, asset: str, timeout: int) -> str:
@@ -709,15 +707,11 @@ def _fetch_ton_jetton_balance(address: str, asset: str, timeout: int) -> str:
     )
     response.raise_for_status()
     payload = response.json()
-    expected = TON_JETTONS[asset]
-    for item in payload.get("balances", []):
-        jetton = item.get("jetton", {})
-        symbol = str(jetton.get("symbol", "")).upper()
-        master = str(jetton.get("address", ""))
-        if symbol != expected["symbol"].upper() and master != expected["master"]:
+    expected_master = TON_JETTONS[asset]
+    for item in payload["balances"]:
+        if item["jetton"]["address"] != expected_master:
             continue
-        decimals = int(jetton.get("decimals", TOKEN_DECIMALS.get(asset, 6)))
-        return str(float(item.get("balance", 0)) / 10**decimals)
+        return str(Decimal(int(item["balance"])) / 10**TOKEN_DECIMALS[asset])
     return "0"
 
 
@@ -725,7 +719,7 @@ def _fetch_kaspa_balance(address: str, timeout: int) -> str:
     response = requests.get(f"https://api.kaspa.org/addresses/{address}/balance", timeout=timeout)
     response.raise_for_status()
     payload = response.json()
-    sompi = payload.get("balance", payload.get("balanceSompi", 0))
+    sompi = payload["balance"] if "balance" in payload else payload["balanceSompi"]
     return str(float(sompi) / 100_000_000)
 
 
@@ -739,12 +733,12 @@ def _fetch_xrp_balance(address: str, timeout: int) -> str:
         timeout=timeout,
     )
     response.raise_for_status()
-    result = response.json().get("result", {})
+    result = response.json()["result"]
     if result.get("error") == "actNotFound":
         return "0"
     if "error" in result:
         raise ValueError(result)
-    drops = result.get("account_data", {}).get("Balance", 0)
+    drops = result["account_data"]["Balance"]
     return str(float(drops) / 1_000_000)
 
 

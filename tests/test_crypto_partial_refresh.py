@@ -1,4 +1,5 @@
 from pathlib import Path
+from unittest.mock import Mock
 
 import pandas as pd
 import pytest
@@ -123,3 +124,76 @@ def test_removed_and_disabled_wallets_are_not_kept_in_current_cache(crypto_paths
 
     stored = crypto.read_crypto_balances(crypto_paths["balances"])
     assert stored["account"].tolist() == ["A"]
+
+
+@pytest.mark.parametrize("provider", ["bitcoin", "ton", "kaspa", "xrp"])
+def test_incomplete_provider_response_is_not_a_zero_balance(provider, monkeypatch):
+    response = Mock()
+    response.json.return_value = {}
+    monkeypatch.setattr(crypto.requests, "get", lambda *args, **kwargs: response)
+    monkeypatch.setattr(crypto.requests, "post", lambda *args, **kwargs: response)
+
+    with pytest.raises((KeyError, ValueError, TypeError)):
+        getattr(crypto, f"_fetch_{provider}_balance")("synthetic-address", 1)
+
+
+@pytest.mark.parametrize("provider,payload", [
+    ("bitcoin", {"chain_stats": {"funded_txo_sum": 0, "spent_txo_sum": 0},
+                 "mempool_stats": {"funded_txo_sum": 0, "spent_txo_sum": 0}}),
+    ("ton", {"ok": True, "result": 0}),
+    ("kaspa", {"balance": 0}),
+    ("xrp", {"result": {"error": "actNotFound"}}),
+])
+def test_explicit_provider_zero_is_kept(provider, payload, monkeypatch):
+    response = Mock()
+    response.json.return_value = payload
+    monkeypatch.setattr(crypto.requests, "get", lambda *args, **kwargs: response)
+    monkeypatch.setattr(crypto.requests, "post", lambda *args, **kwargs: response)
+
+    assert float(getattr(crypto, f"_fetch_{provider}_balance")("synthetic-address", 1)) == 0
+
+
+def test_ton_usdt_matches_official_master_not_symbol(monkeypatch):
+    response = Mock()
+    response.json.return_value = {"balances": [
+        {"jetton": {"symbol": "USDt", "address": "synthetic-fake-master", "decimals": 6},
+         "balance": "123000000"},
+        {"jetton": {"symbol": "USDt", "address": "EQCxE6mUtQJKFnGfaROTKOt1lZbDiiX1kCixRv7Nw2Id_sDs", "decimals": 6},
+         "balance": "1250000"},
+    ]}
+    monkeypatch.setattr(crypto.requests, "get", lambda *args, **kwargs: response)
+
+    assert crypto._fetch_ton_jetton_balance("synthetic-address", "USDT", 1) == "1.25"
+
+
+def test_ton_usdt_ignores_spoofed_symbol(monkeypatch):
+    response = Mock()
+    response.json.return_value = {"balances": [
+        {"jetton": {"symbol": "USDt", "address": "synthetic-fake-master", "decimals": 6},
+         "balance": "123000000"},
+    ]}
+    monkeypatch.setattr(crypto.requests, "get", lambda *args, **kwargs: response)
+
+    assert crypto._fetch_ton_jetton_balance("synthetic-address", "USDT", 1) == "0"
+
+
+def test_ton_jetton_incomplete_response_is_not_zero(monkeypatch):
+    response = Mock()
+    response.json.return_value = {}
+    monkeypatch.setattr(crypto.requests, "get", lambda *args, **kwargs: response)
+
+    with pytest.raises((KeyError, ValueError, TypeError)):
+        crypto._fetch_ton_jetton_balance("synthetic-address", "USDT", 1)
+
+
+def test_incomplete_response_preserves_cached_balance(crypto_paths, monkeypatch):
+    write_csv(crypto_paths["wallets"], [wallet("A")], crypto.WALLET_COLUMNS)
+    crypto.write_crypto_balances(pd.DataFrame([balance("A", "1")]), crypto_paths["balances"])
+    response = Mock()
+    response.json.return_value = {}
+    monkeypatch.setattr(crypto.requests, "get", lambda *args, **kwargs: response)
+
+    refreshed = crypto.refresh_crypto_balances(crypto_paths["wallets"], crypto_paths["balances"])
+
+    assert refreshed["balance"].tolist() == ["1"]
+    assert crypto.read_crypto_refresh_status(crypto_paths["status"])["status"].tolist() == ["error"]
