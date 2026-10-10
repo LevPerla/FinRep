@@ -15,7 +15,7 @@ from src import config
 from src.data.money import parse_money_amount
 
 
-SCHEMA_VERSION = 18
+SCHEMA_VERSION = 19
 _DIRECTIONS = {"income", "expense"}
 _DATASETS = {"cash_transactions", "asset_snapshots"}
 _ASSET_TYPES = (
@@ -320,6 +320,16 @@ _TABLES = (
         cash_currency_code TEXT NOT NULL REFERENCES currencies(code) ON DELETE RESTRICT,
         comment TEXT NOT NULL DEFAULT '',
         status TEXT NOT NULL CHECK (status = 'posted'),
+        created_at TEXT NOT NULL
+    ) STRICT""",
+    """CREATE TABLE debt_payment_plans (
+        id TEXT PRIMARY KEY,
+        debt_id TEXT NOT NULL REFERENCES debts(id) ON DELETE RESTRICT,
+        due_on TEXT NOT NULL CHECK (length(due_on) = 10),
+        amount_minor INTEGER NOT NULL CHECK (amount_minor > 0),
+        comment TEXT NOT NULL DEFAULT '',
+        operation_key TEXT NOT NULL UNIQUE,
+        confirmed_payment_id TEXT UNIQUE REFERENCES debt_payments(id) ON DELETE RESTRICT,
         created_at TEXT NOT NULL
     ) STRICT""",
     """CREATE TABLE instruments (
@@ -914,6 +924,17 @@ def _migrate_v17_to_v18(connection: sqlite3.Connection) -> None:
     connection.execute("PRAGMA user_version = 18")
 
 
+def _migrate_v18_to_v19(connection: sqlite3.Connection) -> None:
+    statement = next(statement for statement in _TABLES
+                     if statement.startswith("CREATE TABLE debt_payment_plans"))
+    connection.execute(statement.replace("CREATE TABLE", "CREATE TABLE IF NOT EXISTS", 1))
+    connection.execute(
+        "INSERT INTO schema_migrations VALUES (?, ?, ?, ?)",
+        (19, "debt_payment_plans", _schema_checksum(), _utc_now()),
+    )
+    connection.execute("PRAGMA user_version = 19")
+
+
 @contextmanager
 def connect_database(path: str | Path, *, writable: bool = False):
     database_path = Path(path).resolve()
@@ -964,6 +985,7 @@ def initialize_database(path: str | Path, *, data_mode: str = "synthetic") -> No
             _migrate_v15_to_v16(connection)
             _migrate_v16_to_v17(connection)
             _migrate_v17_to_v18(connection)
+            _migrate_v18_to_v19(connection)
             return
         if version == 8:
             _migrate_v8_to_v9(connection)
@@ -976,6 +998,7 @@ def initialize_database(path: str | Path, *, data_mode: str = "synthetic") -> No
             _migrate_v15_to_v16(connection)
             _migrate_v16_to_v17(connection)
             _migrate_v17_to_v18(connection)
+            _migrate_v18_to_v19(connection)
             return
         if version == 9:
             _migrate_v9_to_v10(connection)
@@ -987,6 +1010,7 @@ def initialize_database(path: str | Path, *, data_mode: str = "synthetic") -> No
             _migrate_v15_to_v16(connection)
             _migrate_v16_to_v17(connection)
             _migrate_v17_to_v18(connection)
+            _migrate_v18_to_v19(connection)
             return
         if version == 10:
             _migrate_v10_to_v11(connection)
@@ -997,6 +1021,7 @@ def initialize_database(path: str | Path, *, data_mode: str = "synthetic") -> No
             _migrate_v15_to_v16(connection)
             _migrate_v16_to_v17(connection)
             _migrate_v17_to_v18(connection)
+            _migrate_v18_to_v19(connection)
             return
         if version == 11:
             _migrate_v11_to_v12(connection)
@@ -1006,6 +1031,7 @@ def initialize_database(path: str | Path, *, data_mode: str = "synthetic") -> No
             _migrate_v15_to_v16(connection)
             _migrate_v16_to_v17(connection)
             _migrate_v17_to_v18(connection)
+            _migrate_v18_to_v19(connection)
             return
         if version == 12:
             _migrate_v12_to_v13(connection)
@@ -1014,6 +1040,7 @@ def initialize_database(path: str | Path, *, data_mode: str = "synthetic") -> No
             _migrate_v15_to_v16(connection)
             _migrate_v16_to_v17(connection)
             _migrate_v17_to_v18(connection)
+            _migrate_v18_to_v19(connection)
             return
         if version == 13:
             _migrate_v13_to_v14(connection)
@@ -1021,24 +1048,32 @@ def initialize_database(path: str | Path, *, data_mode: str = "synthetic") -> No
             _migrate_v15_to_v16(connection)
             _migrate_v16_to_v17(connection)
             _migrate_v17_to_v18(connection)
+            _migrate_v18_to_v19(connection)
             return
         if version == 14:
             _migrate_v14_to_v15(connection)
             _migrate_v15_to_v16(connection)
             _migrate_v16_to_v17(connection)
             _migrate_v17_to_v18(connection)
+            _migrate_v18_to_v19(connection)
             return
         if version == 15:
             _migrate_v15_to_v16(connection)
             _migrate_v16_to_v17(connection)
             _migrate_v17_to_v18(connection)
+            _migrate_v18_to_v19(connection)
             return
         if version == 16:
             _migrate_v16_to_v17(connection)
             _migrate_v17_to_v18(connection)
+            _migrate_v18_to_v19(connection)
             return
         if version == 17:
             _migrate_v17_to_v18(connection)
+            _migrate_v18_to_v19(connection)
+            return
+        if version == 18:
+            _migrate_v18_to_v19(connection)
             return
         has_tables = connection.execute(
             "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' LIMIT 1"
@@ -2792,6 +2827,95 @@ def record_debt_payment(path: str | Path, *, debt_id: str, occurred_on: str,
              'debt_payment', ?, ?, ?)""",
             (operation_key, payment_id, json.dumps(payload, sort_keys=True), now))
         return result
+
+
+def create_debt_payment_plan(path: str | Path, *, debt_id: str, due_on: str,
+                             amount, operation_key: str, comment: str = "") -> str:
+    """Save intent only; no payment, cash draft, or capital effect."""
+    if not operation_key.strip():
+        raise ValueError("operation key is required")
+    due_on = _iso_date(due_on, "due_on")
+    with connect_database(path, writable=True) as connection:
+        existing = connection.execute(
+            "SELECT * FROM debt_payment_plans WHERE operation_key = ?", (operation_key,)
+        ).fetchone()
+        if existing:
+            currency = connection.execute(
+                "SELECT principal_currency_code FROM debts WHERE id = ?", (existing["debt_id"],)
+            ).fetchone()[0]
+            if (existing["debt_id"] != debt_id or existing["due_on"] != due_on or
+                    existing["amount_minor"] != _minor_units(connection, currency, amount, allow_zero=False) or
+                    existing["comment"] != comment):
+                raise ValueError("operation key was reused with another plan")
+            return existing["id"]
+        debt = connection.execute("SELECT * FROM debts WHERE id = ?", (debt_id,)).fetchone()
+        if debt is None or debt["status"] != "active":
+            raise ValueError("choose an active debt")
+        if due_on < debt["opened_on"]:
+            raise ValueError("planned payment cannot precede debt opening")
+        amount_minor = _minor_units(connection, debt["principal_currency_code"], amount, allow_zero=False)
+        paid_minor = connection.execute(
+            "SELECT COALESCE(SUM(principal_amount_minor), 0) FROM debt_payments WHERE debt_id = ?",
+            (debt_id,),
+        ).fetchone()[0]
+        if amount_minor > debt["principal_amount_minor"] - paid_minor:
+            raise ValueError("planned payment exceeds outstanding principal")
+        plan_id = f"plan-{uuid4().hex[:12]}"
+        connection.execute("""INSERT INTO debt_payment_plans
+            (id, debt_id, due_on, amount_minor, comment, operation_key, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (plan_id, debt_id, due_on, amount_minor, comment, operation_key, _utc_now()))
+        return plan_id
+
+
+def list_debt_payment_plans(path: str | Path) -> list[dict]:
+    with connect_database(path) as connection:
+        rows = connection.execute("""SELECT p.id, p.debt_id, p.due_on, p.amount_minor,
+            d.principal_currency_code AS currency, c.minor_unit, d.counterparty,
+            p.comment, p.confirmed_payment_id
+            FROM debt_payment_plans p JOIN debts d ON d.id = p.debt_id
+            JOIN currencies c ON c.code = d.principal_currency_code
+            ORDER BY p.due_on, p.id""").fetchall()
+    return [{
+        "id": row["id"], "debt_id": row["debt_id"], "due_on": row["due_on"],
+        "amount": str(Decimal(row["amount_minor"]).scaleb(-row["minor_unit"])),
+        "currency": row["currency"], "counterparty": row["counterparty"],
+        "comment": row["comment"], "confirmed_payment_id": row["confirmed_payment_id"],
+    } for row in rows]
+
+
+def confirm_debt_payment_plan(path: str | Path, *, plan_id: str,
+                              occurred_on: str) -> dict:
+    """Turn one plan into one actual payment; a retry reuses its stable operation key."""
+    occurred_on = _iso_date(occurred_on, "occurred_on")
+    with connect_database(path) as connection:
+        plan = connection.execute(
+            "SELECT * FROM debt_payment_plans WHERE id = ?", (plan_id,)
+        ).fetchone()
+        if plan is None:
+            raise ValueError("unknown payment plan")
+        plan = dict(plan)
+        if plan["confirmed_payment_id"]:
+            return {"payment_id": plan["confirmed_payment_id"], "debt_id": plan["debt_id"]}
+        currency = connection.execute(
+            "SELECT principal_currency_code FROM debts WHERE id = ?", (plan["debt_id"],)
+        ).fetchone()[0]
+        minor_unit = connection.execute(
+            "SELECT minor_unit FROM currencies WHERE code = ?", (currency,)
+        ).fetchone()[0]
+        receipt = connection.execute(
+            "SELECT result_json FROM operation_receipts WHERE operation_key = ?",
+            (f"debt-plan-confirm:{plan_id}",),
+        ).fetchone()
+    result = json.loads(receipt[0])["result"] if receipt else record_debt_payment(
+        path, debt_id=plan["debt_id"], occurred_on=occurred_on,
+        amount=Decimal(plan["amount_minor"]).scaleb(-minor_unit),
+        operation_key=f"debt-plan-confirm:{plan_id}", comment=plan["comment"],
+    )
+    with connect_database(path, writable=True) as connection:
+        connection.execute("""UPDATE debt_payment_plans SET confirmed_payment_id = ?
+            WHERE id = ? AND confirmed_payment_id IS NULL""", (result["payment_id"], plan_id))
+    return result
 
 
 def record_investment_trade(
