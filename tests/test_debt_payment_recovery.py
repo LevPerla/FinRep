@@ -121,7 +121,7 @@ def test_dashboard_retry_with_same_request_id_does_not_duplicate_payment(
     with client.session_transaction() as session:
         session["authenticated"] = True
         session["data_mode"] = "live"
-    key = next(key for key in app.callback_map if "debt-payment-request-id.data" in key)
+    key = next(key for key in app.callback_map if "active-receivable-debts-grid.rowData" in key)
     callback = app.callback_map[key]
     values = {
         "debt-add-button": 0,
@@ -129,12 +129,16 @@ def test_dashboard_retry_with_same_request_id_does_not_duplicate_payment(
         "debt-migrate-button": 0,
         "dashboard-currency": "RUB",
         "debt-new-grid": [],
-        "debt-payment-id": payment_data,
-        "debt-payment-date": "2026-09-02",
-        "debt-payment-amount": 25,
-        "debt-payment-cash-currency": "RUB",
-        "debt-payment-comment": "synthetic",
-        "debt-payment-request-id": "browser-payment-A",
+        "debt-payment-grid": [{
+            "operation_id": "browser-payment-A",
+            "debt": f"Мне должны | Synthetic | 100 RUB | {payment_data}",
+            "date": "2026-09-02", "amount": 25,
+            "cash_currency": "RUB", "comment": "synthetic",
+        }, {
+            "operation_id": "browser-payment-invalid", "debt": "",
+            "date": "2026-09-02", "amount": 1,
+            "cash_currency": "RUB", "comment": "synthetic",
+        }],
         "dashboard-refresh-token": 0,
     }
     payload = {
@@ -153,6 +157,9 @@ def test_dashboard_retry_with_same_request_id_does_not_duplicate_payment(
 
     assert first.status_code == 200
     assert second.status_code == 200
+    remaining = first.get_json()["response"]["debt-payment-grid"]["rowData"]
+    assert len(remaining) == 1
+    assert "Выбери долг" in remaining[0]["validation_error"]
     assert len(debts.read_debt_payments()) == 1
     assert len(staging.read_transaction_drafts()) == 1
     assert debts.active_debt_balances("receivable", "RUB").iloc[0]["outstanding_amount"] == 75

@@ -3034,15 +3034,17 @@ def list_debt_payment_plans(path: str | Path) -> list[dict]:
     with connect_database(path) as connection:
         rows = connection.execute("""SELECT p.id, p.debt_id, p.due_on, p.amount_minor,
             d.principal_currency_code AS currency, c.minor_unit, d.counterparty,
-            p.comment, p.confirmed_payment_id
+            p.comment, p.confirmed_payment_id, a.occurred_on AS actual_date
             FROM debt_payment_plans p JOIN debts d ON d.id = p.debt_id
             JOIN currencies c ON c.code = d.principal_currency_code
+            LEFT JOIN debt_payments a ON a.id = p.confirmed_payment_id
             ORDER BY p.due_on, p.id""").fetchall()
     return [{
         "id": row["id"], "debt_id": row["debt_id"], "due_on": row["due_on"],
         "amount": str(Decimal(row["amount_minor"]).scaleb(-row["minor_unit"])),
         "currency": row["currency"], "counterparty": row["counterparty"],
         "comment": row["comment"], "confirmed_payment_id": row["confirmed_payment_id"],
+        "actual_date": row["actual_date"],
     } for row in rows]
 
 

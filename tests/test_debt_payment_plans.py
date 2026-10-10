@@ -33,6 +33,7 @@ def test_plan_stays_separate_until_confirmed_and_retry_does_not_duplicate(tmp_pa
     first = confirm_debt_payment_plan(database, plan_id=plan_id, occurred_on="2026-10-15")
     repeated = confirm_debt_payment_plan(database, plan_id=plan_id, occurred_on="2026-10-16")
     assert first["payment_id"] == repeated["payment_id"]
+    assert list_debt_payment_plans(database)[0]["actual_date"] == "2026-10-15"
     with sqlite3.connect(database) as connection:
         assert connection.execute("SELECT COUNT(*) FROM debt_payments").fetchone()[0] == 1
         assert connection.execute("SELECT COUNT(*) FROM transaction_drafts").fetchone()[0] == 2
@@ -121,14 +122,17 @@ def test_plan_ui_create_then_confirm(monkeypatch, tmp_path):
     with client.session_transaction() as session:
         session["authenticated"] = True
         session["data_mode"] = "live"
-    key = next(key for key in app.callback_map if "debt-plan-request-id.data" in key)
+    key = next(key for key in app.callback_map if "debt-plan-message.children" in key)
     callback = app.callback_map[key]
     values = {
         "debt-plan-add-button": 1, "debt-plan-confirm-button": 0,
-        "debt-plan-debt-id": debt_id, "debt-plan-date": "2026-11-01",
-        "debt-plan-amount": 25, "debt-plan-comment": "Synthetic",
-        "debt-plan-select": "", "debt-plan-actual-date": "2026-10-15",
-        "debt-plan-request-id": "ui-plan-1", "dashboard-refresh-token": 0,
+        "debt-plan-new-grid": [{
+            "operation_id": "ui-plan-1",
+            "debt": f"Мне должны | Synthetic | 100 RUB | {debt_id}",
+            "due_on": "2026-11-01", "amount": 25, "comment": "Synthetic",
+        }],
+        "debt-plans-grid": [],
+        "dashboard-refresh-token": 0,
     }
     payload = {
         "output": key,
@@ -144,7 +148,32 @@ def test_plan_ui_create_then_confirm(monkeypatch, tmp_path):
     assert plans, response.get_json()
     plan_id = plans[0]["id"]
     payload["inputs"][1]["value"] = 1
-    payload["state"][4]["value"] = plan_id
+    payload["state"][1]["value"] = [{"id": plan_id, "actual_date": "2026-10-15", "confirmed_payment_id": None}]
+    payload["state"][2]["value"] = [{"id": plan_id}]
     payload["changedPropIds"] = ["debt-plan-confirm-button.n_clicks"]
     assert client.post("/_dash-update-component", json=payload).status_code == 200
     assert list_debt_payment_plans(database)[0]["confirmed_payment_id"]
+
+
+def test_debt_entry_uses_editable_grids_without_standalone_forms(monkeypatch, tmp_path):
+    from src import config
+    from src.dashboard.app import _debt_input_layout
+
+    monkeypatch.setattr(config, "DATA_PATH", str(tmp_path))
+    monkeypatch.setenv("FINREP_STORAGE_BACKEND", "sqlite")
+    initialize_database(tmp_path / "finrep.sqlite3")
+    layout = _debt_input_layout("RUB", "dark")
+
+    def components(node):
+        if isinstance(node, (list, tuple)):
+            for child in node:
+                yield from components(child)
+        elif hasattr(node, "to_plotly_json"):
+            yield node
+            if hasattr(node, "children"):
+                yield from components(node.children)
+
+    ids = {component.id for component in components(layout) if getattr(component, "id", None)}
+    assert {"debt-new-grid", "debt-payment-grid", "debt-plan-new-grid", "debt-plans-grid"} <= ids
+    assert not {"debt-payment-id", "debt-payment-date", "debt-plan-debt-id",
+                "debt-plan-date", "debt-plan-select", "debt-plan-actual-date"} & ids

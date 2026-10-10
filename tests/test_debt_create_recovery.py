@@ -139,12 +139,7 @@ def test_dashboard_retry_with_same_request_id_does_not_duplicate_debt(
             "counterparty": "Synthetic", "principal_amount": 100,
             "principal_currency": "RUB", "comment": "test",
         }],
-        "debt-payment-id": "",
-        "debt-payment-date": "2026-09-01",
-        "debt-payment-amount": None,
-        "debt-payment-cash-currency": "RUB",
-        "debt-payment-comment": "",
-        "debt-payment-request-id": "browser-payment-A",
+        "debt-payment-grid": [],
         "dashboard-refresh-token": 0,
     }
     payload = {
