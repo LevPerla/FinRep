@@ -185,6 +185,10 @@ def test_existing_debt_due_date_can_be_edited_in_grid(tmp_path, monkeypatch):
     result = client.post("/_dash-update-component", json=payload).get_json()["response"]
     assert result["debt-input-message"]["color"] == "danger"
     assert "раньше даты начала" in result["debt-new-grid"]["rowData"][0]["validation_error"]
+    payload["state"][1]["value"] = [{**row, "due_date": "не дата"}]
+    result = client.post("/_dash-update-component", json=payload).get_json()["response"]
+    assert result["debt-input-message"]["color"] == "danger"
+    assert "ISO date" in result["debt-new-grid"]["rowData"][0]["validation_error"]
 
 
 def test_debt_entry_uses_editable_grids_without_standalone_forms(monkeypatch, tmp_path):
@@ -211,7 +215,16 @@ def test_debt_entry_uses_editable_grids_without_standalone_forms(monkeypatch, tm
     grid = next(component for component in components(layout) if getattr(component, "id", None) == "debt-new-grid")
     columns = {column["field"]: column for column in grid.columnDefs}
     assert {"opened_date", "due_date", "counterparty", "outstanding_amount"} <= columns.keys()
+    assert columns["due_date"]["headerName"] == "Дата ожидаемого погашения"
+    assert columns["due_date"]["cellDataType"] == "dateString"
+    assert columns["due_date"]["cellEditor"] == "agDateStringCellEditor"
     assert columns["counterparty"]["cellEditor"] == "agTextCellEditor"
     assert grid.dashGridOptions["singleClickEdit"] is True
+    payment_grid = next(component for component in components(layout) if getattr(component, "id", None) == "debt-payment-grid")
+    amount_column = next(column for column in payment_grid.columnDefs if column["field"] == "amount")
+    assert amount_column["width"] >= 180
+    draft_grid = next(component for component in components(layout) if getattr(component, "id", None) == "debt-transaction-drafts-grid")
+    assert next(column for column in draft_grid.columnDefs if column["field"] == "comment")["editable"] is True
+    assert "debt-draft-save-button" in ids
     assert not {"debt-payment-id", "debt-payment-date", "debt-plan-debt-id",
                 "debt-plan-date", "debt-plan-select", "debt-plan-actual-date"} & ids

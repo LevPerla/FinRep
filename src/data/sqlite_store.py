@@ -1497,6 +1497,27 @@ def transaction_drafts_snapshot(path: str | Path) -> tuple[list[dict], str]:
              for row in rows], revision)
 
 
+def update_debt_draft_comments(path: str | Path, *, rows: list[dict]) -> None:
+    """Save comments on unpublished debt cash drafts without changing debt records."""
+    with connect_database(path, writable=True) as connection:
+        for row in rows:
+            draft_id = str(row.get("draft_id", ""))
+            current = connection.execute(
+                "SELECT draft_kind, origin_kind, status, comment, row_version FROM transaction_drafts WHERE id = ?",
+                (draft_id,),
+            ).fetchone()
+            if current is None or current["draft_kind"] != "debt" or current["origin_kind"] != "debt" or current["status"] not in {"draft", "ready"}:
+                raise ValueError("Денежная операция по долгу уже обработана или не найдена. Обнови страницу.")
+            if current["row_version"] != row.get("row_version"):
+                raise StorageRevisionConflict("Денежная операция изменилась. Обнови страницу.")
+            comment = str(row.get("comment") or "")
+            if comment != current["comment"]:
+                connection.execute(
+                    "UPDATE transaction_drafts SET comment = ?, row_version = row_version + 1, updated_at = ? WHERE id = ?",
+                    (comment, _utc_now(), draft_id),
+                )
+
+
 def append_cash_drafts(path: str | Path, *, rows: list[dict],
                        expected_revision: str | None = None,
                        pending_replacements: dict[tuple[str, str], tuple[str, str]] | None = None) -> dict:

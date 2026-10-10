@@ -68,7 +68,8 @@ from src.data.staging import (
 from src.data.sqlite_bootstrap import ensure_default_live_database
 from src.data.sqlite_store import (
     cpi_observations, fx_rates, publish_domain_drafts,
-    remove_transaction_drafts, transaction_drafts_snapshot, update_debt_due_date,
+    remove_transaction_drafts, transaction_drafts_snapshot, update_debt_draft_comments,
+    update_debt_due_date,
 )
 from src.dashboard.expense_data import build_expense_dashboard_data
 from src.dashboard.income_data import build_income_dashboard_data
@@ -2446,29 +2447,40 @@ def register_callbacks(app: Dash) -> None:
         Output("debt-draft-message", "color"),
         Input("debt-draft-publish-button", "n_clicks", allow_optional=True),
         Input("debt-draft-skip-button", "n_clicks", allow_optional=True),
+        Input("debt-draft-save-button", "n_clicks", allow_optional=True),
         State("debt-transaction-drafts-grid", "selectedRows", allow_optional=True),
+        State("debt-transaction-drafts-grid", "rowData", allow_optional=True),
         prevent_initial_call=True,
     )
-    def resolve_debt_drafts(_publish, _skip, selected):
-        if not {"debt-draft-publish-button": _publish, "debt-draft-skip-button": _skip}.get(ctx.triggered_id):
+    def resolve_debt_drafts(_publish, _skip, _save, selected, grid_rows):
+        trigger = ctx.triggered_id
+        if not {"debt-draft-publish-button": _publish, "debt-draft-skip-button": _skip,
+                "debt-draft-save-button": _save}.get(trigger):
             raise PreventUpdate
-        if not selected:
+        if trigger != "debt-draft-save-button" and not selected:
             return no_update, no_update, "Выбери строки денежных операций.", "danger"
         try:
             config.require_writable_mode()
             if not config.use_sqlite_storage():
                 raise ValueError("Учёт черновиков доступен в режиме SQLite.")
+            if trigger == "debt-draft-save-button":
+                if not grid_rows:
+                    raise ValueError("Нет денежных операций для сохранения.")
+                update_debt_draft_comments(config.active_database_path(), rows=grid_rows)
+                return _debt_transaction_draft_records(), [], "Комментарии сохранены. Для учёта выбери строки снова.", "success"
             rows, revision = transaction_drafts_snapshot(config.active_database_path())
             selected_ids = sorted({str(row.get("draft_id", "")) for row in selected})
+            visible_rows = {str(row.get("draft_id", "")): row for row in grid_rows or []}
             eligible = {row["id"] for row in rows if row["origin_kind"] == "debt"
                         and row["status"] in {"draft", "ready"}}
-            if not selected_ids or any(draft_id not in eligible for draft_id in selected_ids):
+            if not selected_ids or any(draft_id not in eligible or draft_id not in visible_rows for draft_id in selected_ids):
                 raise ValueError("Выбранные черновики уже обработаны или не относятся к долгам. Обнови страницу.")
-            if ctx.triggered_id == "debt-draft-publish-button":
+            if trigger == "debt-draft-publish-button":
+                update_debt_draft_comments(config.active_database_path(), rows=[visible_rows[draft_id] for draft_id in selected_ids])
                 key = "debt-ui-publish:" + hashlib.sha256(",".join(selected_ids).encode()).hexdigest()
                 publish_domain_drafts(config.active_database_path(), draft_ids=selected_ids, operation_key=key)
                 message = f"Учтено денежных операций: {len(selected_ids)}."
-            elif ctx.triggered_id == "debt-draft-skip-button":
+            elif trigger == "debt-draft-skip-button":
                 remove_transaction_drafts(config.active_database_path(), draft_ids=selected_ids, expected_revision=revision)
                 message = f"Пропущено денежных операций: {len(selected_ids)}."
             else:
@@ -4254,8 +4266,8 @@ def _debt_payment_column_defs(currency: str, read_only: bool = False,
                               load_options: bool = True) -> list[dict]:
     return [
         _debt_entry_column(currency, read_only, load_options),
-        {"field": "date", "headerName": "Дата", "editable": not read_only, "width": 130},
-        {"field": "amount", "headerName": "Сумма платежа", "editable": not read_only, "width": 150},
+        {"field": "date", "headerName": "Дата", "editable": not read_only, "cellDataType": "dateString", "cellEditor": "agDateStringCellEditor", "width": 130},
+        {"field": "amount", "headerName": "Сумма платежа", "editable": not read_only, "width": 180},
         {"field": "cash_currency", "headerName": "Валюта платежа", "editable": not read_only,
          "width": 150, "cellEditor": "agSelectCellEditor", "cellEditorParams": {"values": list(config.UNIQUE_TICKERS)}},
         {"field": "comment", "headerName": "Комментарий", "editable": not read_only, "minWidth": 180, "flex": 1},
@@ -4284,8 +4296,8 @@ def _debt_input_layout(currency: str, theme: str | None, include_create: bool = 
                     _ag_grid_scroll(dag.AgGrid(
                         id="debt-new-grid", rowData=_debt_grid_records(currency) if load_records else [], selectedRows=[],
                         columnDefs=[
-                            {"field": "opened_date", "headerName": "Дата начала", "editable": {"function": "!params.data.debt_id"} if not read_only else False, "width": 140},
-                            {"field": "due_date", "headerName": "Ожидаемое погашение", "editable": (not read_only if config.use_sqlite_storage() else {"function": "!params.data.debt_id"} if not read_only else False), "width": 195},
+                            {"field": "opened_date", "headerName": "Дата начала", "editable": {"function": "!params.data.debt_id"} if not read_only else False, "cellDataType": "dateString", "cellEditor": "agDateStringCellEditor", "width": 140},
+                            {"field": "due_date", "headerName": "Дата ожидаемого погашения", "editable": (not read_only if config.use_sqlite_storage() else {"function": "!params.data.debt_id"} if not read_only else False), "cellDataType": "dateString", "cellEditor": "agDateStringCellEditor", "width": 245},
                             {"field": "type", "headerName": "Тип", "editable": {"function": "!params.data.debt_id"} if not read_only else False, "width": 145,
                              "cellEditor": "agSelectCellEditor", "cellEditorParams": {"values": ["Мне должны", "Я должен"]}},
                             {"field": "counterparty", "headerName": "Контрагент", "editable": {"function": "!params.data.debt_id"} if not read_only else False, "cellEditor": "agTextCellEditor", "minWidth": 180, "flex": 1},
@@ -4335,8 +4347,9 @@ def _debt_input_layout(currency: str, theme: str | None, include_create: bool = 
             html.Section(
                 [
                     html.H2("Денежные операции по долгам", className="h5 mb-2"),
-                    html.P("Долг и платёж уже записаны в реестр, но эти денежные движения ещё не учтены в cash-flow. Выбери строки и нажми «Учесть», если такой операции нет среди импортированных из банка; иначе «Пропустить», чтобы не считать её дважды.", className="small opacity-75"),
+                    html.P("Долг и платёж уже записаны в реестр, но эти денежные движения ещё не учтены в cash-flow. Комментарии можно сохранить отдельно или вместе с «Учесть». Выбери строки и нажми «Учесть», если такой операции нет среди импортированных из банка; иначе «Пропустить», чтобы не считать её дважды.", className="small opacity-75"),
                     html.Div([
+                        dbc.Button("Сохранить комментарии", id="debt-draft-save-button", color="secondary", outline=True, size="sm", disabled=read_only or not config.use_sqlite_storage()),
                         dbc.Button("Учесть выбранные", id="debt-draft-publish-button", color="primary", size="sm", disabled=read_only or not config.use_sqlite_storage()),
                         dbc.Button("Пропустить выбранные", id="debt-draft-skip-button", color="secondary", outline=True, size="sm", disabled=read_only or not config.use_sqlite_storage()),
                     ], className="d-flex flex-wrap gap-2 mb-2"),
@@ -4345,9 +4358,9 @@ def _debt_input_layout(currency: str, theme: str | None, include_create: bool = 
                         dag.AgGrid(
                             id="debt-transaction-drafts-grid", selectedRows=[],
                             rowData=_debt_transaction_draft_records() if load_records else [],
-                            columnDefs=_debt_transaction_draft_column_defs(),
+                            columnDefs=_debt_transaction_draft_column_defs(read_only),
                             defaultColDef=_ag_grid_default_col_def(),
-                            dashGridOptions={"pagination": False, "suppressFieldDotNotation": True, "rowSelection": "multiple"},
+                            dashGridOptions={"pagination": False, "suppressFieldDotNotation": True, "rowSelection": "multiple", "singleClickEdit": True, "stopEditingWhenCellsLoseFocus": True},
                             className=_ag_grid_class_name(theme),
                             style=_ag_grid_style("260px"),
                         )
@@ -5375,21 +5388,23 @@ def _debt_transaction_draft_records() -> list[dict]:
         return []
     if config.use_sqlite_storage():
         rows, _ = transaction_drafts_snapshot(config.active_database_path())
-        ids = {(row["origin_kind"], row["origin_key"]): row["id"] for row in rows}
-        data["draft_id"] = data["source_id"].map(lambda source_id: ids.get(("debt", source_id), ""))
+        drafts = {(row["origin_kind"], row["origin_key"]): row for row in rows}
+        data["draft_id"] = data["source_id"].map(lambda source_id: drafts.get(("debt", source_id), {}).get("id", ""))
+        data["row_version"] = data["source_id"].map(lambda source_id: drafts.get(("debt", source_id), {}).get("row_version", -1))
     return data.sort_values(["date", "category", "comment"], ascending=[False, True, True], kind="mergesort").to_dict("records")
 
 
-def _debt_transaction_draft_column_defs() -> list[dict]:
+def _debt_transaction_draft_column_defs(read_only: bool = False) -> list[dict]:
     return [
         {"field": "date", "headerName": "Дата", "width": 120},
         {"field": "category", "headerName": "Категория", "width": 180},
         {"field": "amount", "headerName": "Сумма", "width": 120},
         {"field": "currency", "headerName": "Валюта", "width": 100},
-        {"field": "comment", "headerName": "Комментарий", "flex": 1, "minWidth": 240},
+        {"field": "comment", "headerName": "Комментарий", "editable": not read_only, "cellEditor": "agTextCellEditor", "flex": 1, "minWidth": 240},
         {"field": "status", "headerName": "Статус", "width": 120},
         {"field": "source_id", "headerName": "ID", "flex": 1, "minWidth": 220},
         {"field": "draft_id", "hide": True},
+        {"field": "row_version", "hide": True},
     ]
 
 
