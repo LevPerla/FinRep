@@ -2,6 +2,8 @@ from decimal import Decimal
 
 from src.data.sqlite_store import (
     add_asset_account,
+    add_asset_snapshot,
+    archive_asset_accounts,
     asset_accounts,
     asset_snapshot_month,
     initialize_database,
@@ -118,3 +120,59 @@ def test_add_existing_asset_to_month_preserves_drafts_until_apply(tmp_path, monk
         ("Manual draft", "RUB", Decimal("7")),
         ("Registry asset", "KZT", Decimal("125")),
     }
+
+
+def test_copy_previous_month_adds_only_missing_active_balances(tmp_path, monkeypatch):
+    database, app, client = _app(tmp_path, monkeypatch)
+    for account_id, name in (("deposit", "Deposit"), ("card", "Card"), ("old", "Archived")):
+        add_asset_account(database, account_id, name)
+    for account_id, currency, amount in (
+        ("deposit", "RUB", "100"),
+        ("deposit", "USD", "50"),
+        ("card", "KZT", "200"),
+        ("old", "RUB", "300"),
+    ):
+        add_asset_snapshot(
+            database, snapshot_id=f"{account_id}-{currency}", account_id=account_id,
+            period="2025-12", amount=amount, currency=currency,
+        )
+    add_asset_snapshot(
+        database, snapshot_id="current-deposit-rub", account_id="deposit",
+        period="2026-01", amount="111", currency="RUB",
+    )
+    archive_asset_accounts(database, ["Archived"], period="2025-12")
+    edited = {"account": "Deposit", "amount": "999", "currency": "RUB"}
+    draft = {"account": "Manual draft", "amount": "7", "currency": "RUB"}
+    values = {
+        ("assets-copy-previous-button", "n_clicks"): 1,
+        ("dashboard-year", "value"): "2026",
+        ("dashboard-month", "value"): "01",
+        ("assets-input-grid", "rowData"): [edited, draft],
+        ("assets-input-grid", "selectedRows"): [],
+        ("dashboard-locale", "data"): "ru",
+        ("bank-statement-balances", "data"): [],
+    }
+
+    result = _callback(client, app, "assets-copy-previous-button", values)
+    rows = result["assets-input-grid"]["rowData"]
+    assert rows[:2] == [edited, draft]
+    assert {(row["account"], row["currency"], Decimal(row["amount"].replace(" ", "")))
+            for row in rows[2:]} == {
+        ("Deposit", "USD", Decimal("50")), ("Card", "KZT", Decimal("200")),
+    }
+    assert "2025-12: 2" in result["assets-input-message"]["children"]
+    assert [(row["account_id"], row["amount"])
+            for row in asset_snapshot_month(database, "2026-01")] == [
+        ("deposit", Decimal("111")),
+    ]
+
+    values[("assets-input-grid", "rowData")] = rows
+    repeated = _callback(client, app, "assets-copy-previous-button", values)
+    assert repeated["assets-input-grid"]["rowData"] == rows
+    assert "2025-12: 0" in repeated["assets-input-message"]["children"]
+
+    values[("dashboard-month", "value")] = "03"
+    missing = _callback(client, app, "assets-copy-previous-button", values)
+    assert missing["assets-input-message"]["color"] == "warning"
+    assert "2026-02" in missing["assets-input-message"]["children"]
+    assert missing["assets-input-grid"]["rowData"] == rows

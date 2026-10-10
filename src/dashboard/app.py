@@ -2407,6 +2407,7 @@ def register_callbacks(app: Dash) -> None:
         Output("asset-classification-grid", "rowData", allow_duplicate=True),
         Input("assets-load-button", "n_clicks", allow_optional=True),
         Input("assets-add-row-button", "n_clicks", allow_optional=True),
+        Input("assets-copy-previous-button", "n_clicks", allow_optional=True),
         Input("assets-add-from-registry-button", "n_clicks", allow_optional=True),
         Input("assets-delete-row-button", "n_clicks", allow_optional=True),
         Input("assets-apply-button", "n_clicks", allow_optional=True),
@@ -2424,6 +2425,7 @@ def register_callbacks(app: Dash) -> None:
     def sync_assets_snapshot(
         load_clicks,
         add_clicks,
+        copy_previous_clicks,
         add_from_registry_clicks,
         delete_clicks,
         apply_clicks,
@@ -2450,12 +2452,66 @@ def register_callbacks(app: Dash) -> None:
             )[0]
 
         try:
-            if trigger in {"assets-add-row-button", "assets-add-from-registry-button", "assets-delete-row-button", "assets-apply-button"}:
+            if trigger in {"assets-add-row-button", "assets-copy-previous-button", "assets-add-from-registry-button", "assets-delete-row-button", "assets-apply-button"}:
                 config.require_writable_mode()
             if trigger == "assets-add-row-button":
                 rows = list(row_data or [])
                 rows.append({"account": "", "amount": 0, "currency": DEFAULT_CURRENCY})
                 message = "An empty row was added. Enter the account, amount, and currency, then select Apply." if normalize_locale(locale) == "en" else "Добавлена пустая строка. Заполни счет, сумму и валюту, затем нажми Применить."
+                return with_statement_preview(rows), message, "secondary", no_update
+
+            if trigger == "assets-copy-previous-button":
+                previous = pd.Period(period, freq="M") - 1
+                previous_period = str(previous)
+                if config.use_sqlite_storage():
+                    from src.data.sqlite_store import asset_accounts, asset_snapshot_month
+
+                    previous_rows = asset_snapshot_month(config.active_database_path(), previous_period)
+                    active_ids = {
+                        account["id"] for account in asset_accounts(config.active_database_path())
+                        if account["active"]
+                    }
+                    source_rows = [
+                        row for row in _asset_input_records(str(previous.year), f"{previous.month:02d}", locale)
+                        if row["account_id"] in active_ids
+                    ] if previous_rows else []
+                else:
+                    source_rows = (
+                        _asset_input_records(str(previous.year), f"{previous.month:02d}", locale)
+                        if asset_snapshot_path(str(previous.year), f"{previous.month:02d}").exists()
+                        else []
+                    )
+                if not source_rows:
+                    message = (
+                        f"No saved assets found for {previous_period}."
+                        if normalize_locale(locale) == "en" else
+                        f"За {previous_period} нет сохранённых активов для добавления."
+                    )
+                    return row_data or [], message, "warning", no_update
+                rows = list(row_data or [])
+                existing_ids = {
+                    (row.get("account_id"), str(row.get("currency", "")).upper())
+                    for row in rows if row.get("account_id")
+                }
+                existing_names = {
+                    (str(row.get("account", "")).casefold(), str(row.get("currency", "")).upper())
+                    for row in rows
+                }
+                added = 0
+                for source in source_rows:
+                    currency_code = source["currency"].upper()
+                    if ((source.get("account_id"), currency_code) in existing_ids
+                            or (source["account"].casefold(), currency_code) in existing_names):
+                        continue
+                    rows.append({key: value for key, value in source.items() if key != "amount_sort"})
+                    existing_ids.add((source.get("account_id"), currency_code))
+                    existing_names.add((source["account"].casefold(), currency_code))
+                    added += 1
+                message = (
+                    f"Added {added} assets from {previous_period}. Review values and select Apply."
+                    if normalize_locale(locale) == "en" else
+                    f"Добавлено активов из {previous_period}: {added}. Проверь суммы и нажми «Применить»."
+                )
                 return with_statement_preview(rows), message, "secondary", no_update
 
             if trigger == "assets-add-from-registry-button":
@@ -4169,6 +4225,15 @@ def _asset_snapshot_input_layout(
                         [
                             dbc.Button(report_text("Загрузить", locale), id="assets-load-button", color="secondary", outline=True, size="sm"),
                             dbc.Button(report_text("Добавить строку", locale), id="assets-add-row-button", color="secondary", outline=True, size="sm", disabled=read_only),
+                            dbc.Button(
+                                "Add from previous month" if normalize_locale(locale) == "en"
+                                else "Добавить из прошлого месяца",
+                                id="assets-copy-previous-button",
+                                color="secondary",
+                                outline=True,
+                                size="sm",
+                                disabled=read_only,
+                            ),
                             dbc.Button(report_text("Отправить в архив", locale), id="assets-delete-row-button", color="warning", outline=True, size="sm", disabled=read_only),
                             dbc.Button(report_text("Применить", locale), id="assets-apply-button", color="primary", outline=True, size="sm", disabled=read_only),
                         ],
