@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+from decimal import Decimal, InvalidOperation
 from math import isfinite
 from pathlib import Path
 import re
@@ -73,10 +74,7 @@ EVM_RPC_URLS = {
 }
 TOKEN_DECIMALS = {"LINK": 18, "USDT": 6}
 TON_JETTONS = {
-    "USDT": {
-        "symbol": "USDt",
-        "master": "EQCxE6mXca2m3DqksTX4J9i5wK5Q9c3iH8YQ3q0A9m5a3rYw",
-    },
+    "USDT": "EQCxE6mUtQJKFnGfaROTKOt1lZbDiiX1kCixRv7Nw2Id_sDs",
 }
 EVM_ADDRESS_RE = re.compile(r"^0x[a-fA-F0-9]{40}$")
 
@@ -255,6 +253,8 @@ def _validate_crypto_numbers(data: pd.DataFrame, columns: list[str], allow_empty
             parsed = pd.to_numeric(value, errors="coerce")
             if pd.isna(parsed) or not isfinite(parsed):
                 raise ValueError(f"row {row_number}: {column} must be finite")
+            if column == "balance" and parsed < 0:
+                raise ValueError(f"row {row_number}: balance must be non-negative")
 
 
 def validate_crypto_wallets(data: pd.DataFrame | None = None, path: str | Path | None = None) -> list[CryptoValidationIssue]:
@@ -306,7 +306,7 @@ def refresh_crypto_balances(
                 status_rows.append(_refresh_status_row(fetched_at, wallet, row_number, "error", issue.message))
             continue
         try:
-            balance = _fetch_wallet_balance(wallet, timeout=timeout)
+            balance = _validated_balance(_fetch_wallet_balance(wallet, timeout=timeout))
             rows.append(
                 {
                     "fetched_at": fetched_at,
@@ -401,7 +401,7 @@ def _refresh_crypto_balances_sqlite(timeout: int) -> pd.DataFrame:
             errors.append(f"row {row_number}: {message}")
             continue
         try:
-            balance = _fetch_wallet_balance(wallet, timeout=timeout)
+            balance = _validated_balance(_fetch_wallet_balance(wallet, timeout=timeout))
             source = _provider_name(wallet)
             record_crypto_refresh(
                 config.active_database_path(), wallet_id=wallet_id, fetched_at=fetched_at,
@@ -491,10 +491,10 @@ def refresh_crypto_price_cache(
 
 def _fetch_crypto_price(asset: str, currency: str, timeout: int) -> tuple[float | None, str]:
     price = _fetch_coingecko_price(asset, currency, timeout)
-    if price is not None:
+    if price is not None and isfinite(price) and price > 0:
         return price, "coingecko"
     price = _fetch_binance_price(asset, currency, timeout)
-    if price is not None:
+    if price is not None and isfinite(price) and price > 0:
         return price, "binance"
     return None, ""
 
@@ -508,12 +508,13 @@ def _fetch_coingecko_price(asset: str, currency: str, timeout: int) -> float | N
             "https://api.coingecko.com/api/v3/simple/price",
             params={"ids": coin_id, "vs_currencies": currency.lower()},
             timeout=timeout,
+            allow_redirects=False,
         )
         response.raise_for_status()
         price = response.json().get(coin_id, {}).get(currency.lower())
+        return None if price is None else float(price)
     except Exception:
         return None
-    return None if price is None else float(price)
 
 
 def _fetch_binance_price(asset: str, currency: str, timeout: int) -> float | None:
@@ -529,12 +530,13 @@ def _fetch_binance_price(asset: str, currency: str, timeout: int) -> float | Non
             "https://api.binance.com/api/v3/ticker/price",
             params={"symbol": symbol},
             timeout=timeout,
+            allow_redirects=False,
         )
         response.raise_for_status()
         price = response.json().get("price")
+        return None if price is None else float(price)
     except Exception:
         return None
-    return None if price is None else float(price)
 
 
 def calculate_crypto_positions(currency: str) -> pd.DataFrame:
@@ -617,6 +619,27 @@ def _fetch_wallet_balance(wallet: pd.Series, timeout: int) -> str:
     raise ValueError(f"balance provider is not implemented for {chain}/{asset}")
 
 
+def _validated_balance(value) -> str:
+    try:
+        amount = Decimal(str(value))
+    except InvalidOperation as exc:
+        raise ValueError("provider balance must be a finite non-negative number") from exc
+    if not amount.is_finite() or amount < 0:
+        raise ValueError("provider balance must be a finite non-negative number")
+    return str(amount)
+
+
+def _scaled_units(value, decimals: int) -> str:
+    digits = str(value)
+    if not digits.isascii() or not digits.isdecimal():
+        raise ValueError("provider balance must contain integer base units")
+    digits = digits.zfill(decimals + 1)
+    if not decimals:
+        return digits
+    fraction = digits[-decimals:].rstrip("0")
+    return f"{digits[:-decimals]}.{fraction}" if fraction else digits[:-decimals]
+
+
 def _fetch_wallet_transactions(wallet: pd.Series, timeout: int) -> list[dict]:
     if wallet["chain"] == "bitcoin" and wallet["asset"] == "BTC":
         return _fetch_bitcoin_transactions(wallet, timeout)
@@ -624,22 +647,22 @@ def _fetch_wallet_transactions(wallet: pd.Series, timeout: int) -> list[dict]:
 
 
 def _fetch_bitcoin_balance(address: str, timeout: int) -> str:
-    response = requests.get(f"https://blockstream.info/api/address/{address}", timeout=timeout)
+    response = requests.get(f"https://blockstream.info/api/address/{address}", timeout=timeout, allow_redirects=False)
     response.raise_for_status()
     payload = response.json()
-    chain_stats = payload.get("chain_stats", {})
-    mempool_stats = payload.get("mempool_stats", {})
+    chain_stats = payload["chain_stats"]
+    mempool_stats = payload["mempool_stats"]
     sats = (
-        chain_stats.get("funded_txo_sum", 0)
-        - chain_stats.get("spent_txo_sum", 0)
-        + mempool_stats.get("funded_txo_sum", 0)
-        - mempool_stats.get("spent_txo_sum", 0)
+        chain_stats["funded_txo_sum"]
+        - chain_stats["spent_txo_sum"]
+        + mempool_stats["funded_txo_sum"]
+        - mempool_stats["spent_txo_sum"]
     )
-    return str(float(sats) / 100_000_000)
+    return _scaled_units(sats, 8)
 
 
 def _fetch_bitcoin_transactions(wallet: pd.Series, timeout: int) -> list[dict]:
-    response = requests.get(f"https://blockstream.info/api/address/{wallet['address']}/txs", timeout=timeout)
+    response = requests.get(f"https://blockstream.info/api/address/{wallet['address']}/txs", timeout=timeout, allow_redirects=False)
     response.raise_for_status()
     rows = []
     for tx in response.json():
@@ -671,12 +694,12 @@ def _fetch_evm_balance(wallet: pd.Series, timeout: int) -> str:
     address = wallet["address"]
     if asset in {"ETH"}:
         result = _evm_rpc(chain, "eth_getBalance", [address, "latest"], timeout)
-        return str(int(result, 16) / 10**18)
+        return _scaled_units(int(result, 16), 18)
     token_contract = _token_contract(wallet)
     decimals = TOKEN_DECIMALS.get(asset, 18)
     data = "0x70a08231" + address.lower().replace("0x", "").rjust(64, "0")
     result = _evm_rpc(chain, "eth_call", [{"to": token_contract, "data": data}, "latest"], timeout)
-    return str(int(result, 16) / 10**decimals)
+    return _scaled_units(int(result, 16), decimals)
 
 
 def _fetch_solana_balance(address: str, timeout: int) -> str:
@@ -684,9 +707,10 @@ def _fetch_solana_balance(address: str, timeout: int) -> str:
         "https://api.mainnet-beta.solana.com",
         json={"jsonrpc": "2.0", "id": 1, "method": "getBalance", "params": [address]},
         timeout=timeout,
+        allow_redirects=False,
     )
     response.raise_for_status()
-    return str(response.json()["result"]["value"] / 10**9)
+    return _scaled_units(response.json()["result"]["value"], 9)
 
 
 def _fetch_ton_balance(address: str, timeout: int) -> str:
@@ -694,39 +718,37 @@ def _fetch_ton_balance(address: str, timeout: int) -> str:
         "https://toncenter.com/api/v2/getAddressBalance",
         params={"address": address},
         timeout=timeout,
+        allow_redirects=False,
     )
     response.raise_for_status()
     payload = response.json()
-    if not payload.get("ok", True):
-        raise ValueError(payload)
-    return str(float(payload.get("result", 0)) / 10**9)
+    if payload["ok"] is not True:
+        raise ValueError("TON balance response is not ok")
+    return _scaled_units(payload["result"], 9)
 
 
 def _fetch_ton_jetton_balance(address: str, asset: str, timeout: int) -> str:
     response = requests.get(
         f"https://tonapi.io/v2/accounts/{address}/jettons",
         timeout=timeout,
+        allow_redirects=False,
     )
     response.raise_for_status()
     payload = response.json()
-    expected = TON_JETTONS[asset]
-    for item in payload.get("balances", []):
-        jetton = item.get("jetton", {})
-        symbol = str(jetton.get("symbol", "")).upper()
-        master = str(jetton.get("address", ""))
-        if symbol != expected["symbol"].upper() and master != expected["master"]:
+    expected_master = TON_JETTONS[asset]
+    for item in payload["balances"]:
+        if item["jetton"]["address"] != expected_master:
             continue
-        decimals = int(jetton.get("decimals", TOKEN_DECIMALS.get(asset, 6)))
-        return str(float(item.get("balance", 0)) / 10**decimals)
+        return _scaled_units(item["balance"], TOKEN_DECIMALS[asset])
     return "0"
 
 
 def _fetch_kaspa_balance(address: str, timeout: int) -> str:
-    response = requests.get(f"https://api.kaspa.org/addresses/{address}/balance", timeout=timeout)
+    response = requests.get(f"https://api.kaspa.org/addresses/{address}/balance", timeout=timeout, allow_redirects=False)
     response.raise_for_status()
     payload = response.json()
-    sompi = payload.get("balance", payload.get("balanceSompi", 0))
-    return str(float(sompi) / 100_000_000)
+    sompi = payload["balance"] if "balance" in payload else payload["balanceSompi"]
+    return _scaled_units(sompi, 8)
 
 
 def _fetch_xrp_balance(address: str, timeout: int) -> str:
@@ -737,15 +759,16 @@ def _fetch_xrp_balance(address: str, timeout: int) -> str:
             "params": [{"account": address, "ledger_index": "validated"}],
         },
         timeout=timeout,
+        allow_redirects=False,
     )
     response.raise_for_status()
-    result = response.json().get("result", {})
+    result = response.json()["result"]
     if result.get("error") == "actNotFound":
         return "0"
     if "error" in result:
         raise ValueError(result)
-    drops = result.get("account_data", {}).get("Balance", 0)
-    return str(float(drops) / 1_000_000)
+    drops = result["account_data"]["Balance"]
+    return _scaled_units(drops, 6)
 
 
 def _evm_rpc(chain: str, method: str, params: list, timeout: int):
@@ -756,6 +779,7 @@ def _evm_rpc(chain: str, method: str, params: list, timeout: int):
                 url,
                 json={"jsonrpc": "2.0", "id": 1, "method": method, "params": params},
                 timeout=timeout,
+                allow_redirects=False,
             )
             response.raise_for_status()
             payload = response.json()
