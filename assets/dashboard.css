@@ -594,6 +594,11 @@ body {
   color: #225f9f !important;
   font-weight: 600;
 }
+.kaspi-category-debt {
+  background-color: rgba(139, 104, 199, 0.20) !important;
+  color: #59328c !important;
+  font-weight: 600;
+}
 .kaspi-category-internal {
   background-color: rgba(150, 150, 150, 0.20) !important;
   color: #5b5b5b !important;
@@ -621,6 +626,7 @@ body {
 }
 .finrep-theme-dark .kaspi-category-income { color: #b8f4c6 !important; }
 .finrep-theme-dark .kaspi-category-saving { color: #b9ddff !important; }
+.finrep-theme-dark .kaspi-category-debt { color: #dac0ff !important; }
 .finrep-theme-dark .kaspi-category-internal { color: #d0d0d0 !important; }
 .finrep-theme-dark .kaspi-category-food { color: #ffdca3 !important; }
 .finrep-theme-dark .kaspi-category-transport { color: #d1c8ff !important; }

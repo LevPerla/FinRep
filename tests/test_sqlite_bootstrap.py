@@ -219,7 +219,7 @@ def test_v17_upgrade_preserves_legacy_comments_and_adds_source_comment(tmp_path)
                     'income.salary', 'Edited user comment', 'now', 'now')""")
         for table in ("cash_transactions", "transaction_drafts"):
             connection.execute(f"ALTER TABLE {table} DROP COLUMN source_comment")
-        connection.execute("DELETE FROM schema_migrations WHERE version = 18")
+        connection.execute("DELETE FROM schema_migrations WHERE version >= 18")
         connection.execute("""INSERT INTO schema_migrations VALUES
             (17, 'annual_goal_expense_months', ?, 'now')""", ("0" * 64,))
         connection.execute("PRAGMA user_version = 17")

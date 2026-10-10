@@ -65,6 +65,13 @@ dagfuncs.finrepCategoryCellChanged = function (params) {
     : finrepRestoreImportDecision(params.data || {});
   params.node.setDataValue("import_action", decision[0]);
   params.node.setDataValue("skip_reason", decision[1]);
+  if (["Возникновение дебиторской задолженности", "Возникновение кредиторской задолженности",
+       "Дебиторская задолженность", "Кредиторская задолженность"].includes(params.newValue)) {
+    params.node.setDataValue("debt_id", "");
+  } else if (["Погашение дебиторской задолженности", "Погашение кредиторской задолженности",
+              "Погашение деб. зад.", "Погашение кред. зад."].includes(params.newValue)) {
+    params.node.setDataValue("counterparty", "");
+  }
   params.api.refreshCells({
     rowNodes: [params.node],
     columns: ["category", "import_action", "skip_reason"],
@@ -77,7 +84,7 @@ dagfuncs.finrepInputCellChanged = function (params) {
     return;
   }
   var columnId = params.column.getColId();
-  if (["date", "category", "amount", "currency", "comment", "import_action"].includes(columnId)
+  if (["date", "category", "amount", "currency", "comment", "import_action", "counterparty", "debt_id"].includes(columnId)
       && params.data.validation_error) {
     params.node.setDataValue("validation_error", "");
   }

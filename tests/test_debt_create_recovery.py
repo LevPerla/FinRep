@@ -126,27 +126,24 @@ def test_dashboard_retry_with_same_request_id_does_not_duplicate_debt(
     with client.session_transaction() as session:
         session["authenticated"] = True
         session["data_mode"] = "live"
-    key = next(key for key in app.callback_map if "debt-create-request-id.data" in key)
+    key = next(key for key in app.callback_map if "active-receivable-debts-grid.rowData" in key)
     callback = app.callback_map[key]
     values = {
         "debt-add-button": 1,
         "debt-payment-button": 0,
         "debt-migrate-button": 0,
         "dashboard-currency": "RUB",
-        "debt-opened-date": "2026-09-01",
-        "debt-type": "receivable",
-        "debt-counterparty": "Synthetic",
-        "debt-principal-amount": 100,
-        "debt-principal-currency": "RUB",
-        "debt-cash-amount": None,
-        "debt-cash-currency": "RUB",
-        "debt-comment": "test",
+        "debt-new-grid": [{
+            "operation_id": "browser-request-A",
+            "opened_date": "2026-09-01", "type": "Мне должны",
+            "counterparty": "Synthetic", "principal_amount": 100,
+            "principal_currency": "RUB", "comment": "test",
+        }],
         "debt-payment-id": "",
         "debt-payment-date": "2026-09-01",
         "debt-payment-amount": None,
         "debt-payment-cash-currency": "RUB",
         "debt-payment-comment": "",
-        "debt-create-request-id": "browser-request-A",
         "debt-payment-request-id": "browser-payment-A",
         "dashboard-refresh-token": 0,
     }

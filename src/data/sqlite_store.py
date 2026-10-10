@@ -15,7 +15,7 @@ from src import config
 from src.data.money import parse_money_amount
 
 
-SCHEMA_VERSION = 18
+SCHEMA_VERSION = 20
 _DIRECTIONS = {"income", "expense"}
 _DATASETS = {"cash_transactions", "asset_snapshots"}
 _ASSET_TYPES = (
@@ -322,6 +322,16 @@ _TABLES = (
         status TEXT NOT NULL CHECK (status = 'posted'),
         created_at TEXT NOT NULL
     ) STRICT""",
+    """CREATE TABLE debt_payment_plans (
+        id TEXT PRIMARY KEY,
+        debt_id TEXT NOT NULL REFERENCES debts(id) ON DELETE RESTRICT,
+        due_on TEXT NOT NULL CHECK (length(due_on) = 10),
+        amount_minor INTEGER NOT NULL CHECK (amount_minor > 0),
+        comment TEXT NOT NULL DEFAULT '',
+        operation_key TEXT NOT NULL UNIQUE,
+        confirmed_payment_id TEXT UNIQUE REFERENCES debt_payments(id) ON DELETE RESTRICT,
+        created_at TEXT NOT NULL
+    ) STRICT""",
     """CREATE TABLE instruments (
         id TEXT PRIMARY KEY,
         ticker TEXT NOT NULL UNIQUE CHECK (trim(ticker) <> ''),
@@ -400,6 +410,7 @@ _TABLES = (
         id TEXT PRIMARY KEY, occurred_on TEXT NOT NULL CHECK (length(occurred_on) = 10),
         event_kind TEXT NOT NULL CHECK (event_kind IN ('issue', 'repayment')),
         side TEXT NOT NULL CHECK (side IN ('receivable', 'liability')),
+        debt_id TEXT REFERENCES debts(id) ON DELETE RESTRICT,
         amount_minor INTEGER NOT NULL CHECK (amount_minor > 0),
         currency_code TEXT NOT NULL REFERENCES currencies(code) ON DELETE RESTRICT,
         comment TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL
@@ -914,6 +925,30 @@ def _migrate_v17_to_v18(connection: sqlite3.Connection) -> None:
     connection.execute("PRAGMA user_version = 18")
 
 
+def _migrate_v18_to_v19(connection: sqlite3.Connection) -> None:
+    statement = next(statement for statement in _TABLES
+                     if statement.startswith("CREATE TABLE debt_payment_plans"))
+    connection.execute(statement.replace("CREATE TABLE", "CREATE TABLE IF NOT EXISTS", 1))
+    connection.execute(
+        "INSERT INTO schema_migrations VALUES (?, ?, ?, ?)",
+        (19, "debt_payment_plans", _schema_checksum(), _utc_now()),
+    )
+    connection.execute("PRAGMA user_version = 19")
+    _migrate_v19_to_v20(connection)
+
+
+def _migrate_v19_to_v20(connection: sqlite3.Connection) -> None:
+    if "debt_id" not in {row[1] for row in connection.execute("PRAGMA table_info(debt_cash_events)")}:
+        connection.execute(
+            "ALTER TABLE debt_cash_events ADD COLUMN debt_id TEXT REFERENCES debts(id) ON DELETE RESTRICT"
+        )
+    connection.execute(
+        "INSERT OR REPLACE INTO schema_migrations VALUES (?, ?, ?, ?)",
+        (20, "linked_debt_cash_events", _schema_checksum(), _utc_now()),
+    )
+    connection.execute("PRAGMA user_version = 20")
+
+
 @contextmanager
 def connect_database(path: str | Path, *, writable: bool = False):
     database_path = Path(path).resolve()
@@ -964,6 +999,7 @@ def initialize_database(path: str | Path, *, data_mode: str = "synthetic") -> No
             _migrate_v15_to_v16(connection)
             _migrate_v16_to_v17(connection)
             _migrate_v17_to_v18(connection)
+            _migrate_v18_to_v19(connection)
             return
         if version == 8:
             _migrate_v8_to_v9(connection)
@@ -976,6 +1012,7 @@ def initialize_database(path: str | Path, *, data_mode: str = "synthetic") -> No
             _migrate_v15_to_v16(connection)
             _migrate_v16_to_v17(connection)
             _migrate_v17_to_v18(connection)
+            _migrate_v18_to_v19(connection)
             return
         if version == 9:
             _migrate_v9_to_v10(connection)
@@ -987,6 +1024,7 @@ def initialize_database(path: str | Path, *, data_mode: str = "synthetic") -> No
             _migrate_v15_to_v16(connection)
             _migrate_v16_to_v17(connection)
             _migrate_v17_to_v18(connection)
+            _migrate_v18_to_v19(connection)
             return
         if version == 10:
             _migrate_v10_to_v11(connection)
@@ -997,6 +1035,7 @@ def initialize_database(path: str | Path, *, data_mode: str = "synthetic") -> No
             _migrate_v15_to_v16(connection)
             _migrate_v16_to_v17(connection)
             _migrate_v17_to_v18(connection)
+            _migrate_v18_to_v19(connection)
             return
         if version == 11:
             _migrate_v11_to_v12(connection)
@@ -1006,6 +1045,7 @@ def initialize_database(path: str | Path, *, data_mode: str = "synthetic") -> No
             _migrate_v15_to_v16(connection)
             _migrate_v16_to_v17(connection)
             _migrate_v17_to_v18(connection)
+            _migrate_v18_to_v19(connection)
             return
         if version == 12:
             _migrate_v12_to_v13(connection)
@@ -1014,6 +1054,7 @@ def initialize_database(path: str | Path, *, data_mode: str = "synthetic") -> No
             _migrate_v15_to_v16(connection)
             _migrate_v16_to_v17(connection)
             _migrate_v17_to_v18(connection)
+            _migrate_v18_to_v19(connection)
             return
         if version == 13:
             _migrate_v13_to_v14(connection)
@@ -1021,24 +1062,35 @@ def initialize_database(path: str | Path, *, data_mode: str = "synthetic") -> No
             _migrate_v15_to_v16(connection)
             _migrate_v16_to_v17(connection)
             _migrate_v17_to_v18(connection)
+            _migrate_v18_to_v19(connection)
             return
         if version == 14:
             _migrate_v14_to_v15(connection)
             _migrate_v15_to_v16(connection)
             _migrate_v16_to_v17(connection)
             _migrate_v17_to_v18(connection)
+            _migrate_v18_to_v19(connection)
             return
         if version == 15:
             _migrate_v15_to_v16(connection)
             _migrate_v16_to_v17(connection)
             _migrate_v17_to_v18(connection)
+            _migrate_v18_to_v19(connection)
             return
         if version == 16:
             _migrate_v16_to_v17(connection)
             _migrate_v17_to_v18(connection)
+            _migrate_v18_to_v19(connection)
             return
         if version == 17:
             _migrate_v17_to_v18(connection)
+            _migrate_v18_to_v19(connection)
+            return
+        if version == 18:
+            _migrate_v18_to_v19(connection)
+            return
+        if version == 19:
+            _migrate_v19_to_v20(connection)
             return
         has_tables = connection.execute(
             "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' LIMIT 1"
@@ -1571,6 +1623,28 @@ def remove_transaction_drafts(path: str | Path, *, draft_ids: list[str],
         return _draft_revision(connection)
 
 
+def _domain_draft_debt_id(connection: sqlite3.Connection, draft: sqlite3.Row) -> str:
+    if draft["origin_kind"] != "debt":
+        raise ValueError("Долговая операция не привязана к долгу; укажи долг перед сохранением.")
+    entity_id = draft["origin_key"].split(":", 1)[0]
+    if draft["domain_action"].endswith("_opening"):
+        row = connection.execute(
+            "SELECT id, kind, principal_currency_code FROM debts WHERE id = ?",
+            (entity_id,),
+        ).fetchone()
+    else:
+        row = connection.execute("""SELECT d.id, d.kind, d.principal_currency_code
+            FROM debt_payments p JOIN debts d ON d.id = p.debt_id WHERE p.id = ?""",
+            (entity_id,),
+        ).fetchone()
+    if row is None:
+        raise ValueError("Долговая операция не привязана к существующему долгу.")
+    if (row["kind"] != draft["domain_action"].split("_", 1)[0]
+            or row["principal_currency_code"] != draft["currency_code"]):
+        raise ValueError("Тип или валюта долговой операции не совпадает с выбранным долгом.")
+    return row["id"]
+
+
 def _draft_revision(connection: sqlite3.Connection) -> str:
     rows = connection.execute(
         "SELECT id, row_version, status FROM transaction_drafts ORDER BY id").fetchall()
@@ -1718,9 +1792,10 @@ def publish_transaction_draft_preview(
                 if draft["draft_kind"] == "debt":
                     event_kind, side = debt_actions[draft["domain_action"]]
                     connection.execute("""INSERT INTO debt_cash_events
-                        (id, occurred_on, event_kind, side, amount_minor,
-                         currency_code, comment, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                        (id, occurred_on, event_kind, side, debt_id, amount_minor,
+                         currency_code, comment, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                         (entity_id, draft["occurred_on"], event_kind, side,
+                         _domain_draft_debt_id(connection, draft),
                          draft["amount_minor"], draft["currency_code"], draft["comment"], now))
                     entity_type = "debt_cash_event"
                 else:
@@ -1867,10 +1942,11 @@ def publish_domain_drafts(path: str | Path, *, draft_ids: list[str],
                     raise ValueError("unsupported debt draft action")
                 event_kind, side = action
                 connection.execute("""INSERT INTO debt_cash_events
-                    (id, occurred_on, event_kind, side, amount_minor,
+                    (id, occurred_on, event_kind, side, debt_id, amount_minor,
                      currency_code, comment, created_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (entity_id, draft["occurred_on"], event_kind, side,
+                     _domain_draft_debt_id(connection, draft),
                      draft["amount_minor"], draft["currency_code"], draft["comment"], now))
                 entity_type = "debt_cash_event"
             elif draft["draft_kind"] == "investment":
@@ -2792,6 +2868,216 @@ def record_debt_payment(path: str | Path, *, debt_id: str, occurred_on: str,
              'debt_payment', ?, ?, ?)""",
             (operation_key, payment_id, json.dumps(payload, sort_keys=True), now))
         return result
+
+
+def record_reviewed_debt_transaction(path: str | Path, *, action: str, occurred_on: str,
+                                     amount, currency: str, source: str, source_id: str,
+                                     counterparty: str = "", debt_id: str = "",
+                                     comment: str = "", source_comment: str = "",
+                                     bank_status: str = "posted") -> dict:
+    """Publish one reviewed cash movement and its linked debt change atomically."""
+    actions = {
+        "receivable_opening": ("receivable", "issue"),
+        "receivable_payment": ("receivable", "repayment"),
+        "liability_opening": ("liability", "issue"),
+        "liability_payment": ("liability", "repayment"),
+    }
+    if action not in actions:
+        raise ValueError("unknown debt action")
+    if not source or not source_id:
+        raise ValueError("source identity is required")
+    if bank_status == "pending":
+        raise ValueError("pending bank transaction cannot change a debt")
+    occurred_on = _iso_date(occurred_on, "occurred_on")
+    currency = currency.upper()
+    counterparty = counterparty.strip()
+    debt_id = debt_id.strip()
+    if action.endswith("opening") and (not counterparty or debt_id):
+        raise ValueError("opening requires a new counterparty, not an existing debt")
+    if action.endswith("payment") and (not debt_id or counterparty):
+        raise ValueError("repayment requires an existing debt, not a new counterparty")
+    request = {
+        "action": action, "occurred_on": occurred_on,
+        "amount": str(parse_money_amount(amount)), "currency": currency,
+        "source": source, "source_id": source_id, "counterparty": counterparty,
+        "debt_id": debt_id, "comment": comment, "source_comment": source_comment,
+    }
+    operation_key = hashlib.sha256(f"reviewed-debt\0{source}\0{source_id}".encode()).hexdigest()
+    with connect_database(path, writable=True) as connection:
+        receipt = connection.execute(
+            "SELECT operation_kind, result_json FROM operation_receipts WHERE operation_key = ?",
+            (operation_key,),
+        ).fetchone()
+        if receipt is not None:
+            payload = json.loads(receipt["result_json"])
+            if receipt["operation_kind"] != "reviewed_debt_transaction" or payload["request"] != request:
+                raise ValueError("source row was already saved with different values")
+            return {**payload["result"], "already_published": True}
+        amount_minor = _minor_units(connection, currency, amount, allow_zero=False)
+        side, event_kind = actions[action]
+        now = _utc_now()
+        if event_kind == "issue":
+            debt_id = f"debt-{uuid4().hex[:12]}"
+            connection.execute("""INSERT INTO debts
+                (id, kind, counterparty, opened_on, principal_amount_minor,
+                 principal_currency_code, cash_amount_minor, cash_currency_code,
+                 comment, status, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)""",
+                (debt_id, side, counterparty, occurred_on, amount_minor,
+                 currency, amount_minor, currency, comment, now, now))
+        else:
+            debt = connection.execute("SELECT * FROM debts WHERE id = ?", (debt_id,)).fetchone()
+            if debt is None or debt["kind"] != side:
+                raise ValueError("selected debt does not match the category")
+            if debt["principal_currency_code"] != currency:
+                raise ValueError("transaction currency does not match the debt")
+            if occurred_on < debt["opened_on"]:
+                raise ValueError("debt payment cannot precede debt opening")
+            paid = connection.execute(
+                "SELECT COALESCE(SUM(principal_amount_minor), 0) FROM debt_payments WHERE debt_id = ?",
+                (debt_id,),
+            ).fetchone()[0]
+            remaining = debt["principal_amount_minor"] - paid
+            if debt["status"] != "active" or amount_minor > remaining:
+                raise ValueError("debt payment exceeds outstanding principal or debt is closed")
+            connection.execute("""INSERT INTO debt_payments
+                (id, debt_id, occurred_on, principal_amount_minor, cash_amount_minor,
+                 cash_currency_code, comment, status, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, 'posted', ?)""",
+                (f"payment-{uuid4().hex[:12]}", debt_id, occurred_on,
+                 amount_minor, amount_minor, currency, comment, now))
+            if amount_minor == remaining:
+                connection.execute("UPDATE debts SET status = 'closed', updated_at = ? WHERE id = ?",
+                                   (now, debt_id))
+        draft = connection.execute("""SELECT id, status, source_record_id
+            FROM transaction_drafts WHERE origin_kind = ? AND origin_key = ?""",
+            (source, source_id)).fetchone()
+        if draft is not None and draft["status"] not in {"draft", "ready"}:
+            raise ValueError("source row was already published or ignored")
+        draft_id = (draft["id"] if draft else
+                    hashlib.sha256(f"reviewed-debt-draft\0{source}\0{source_id}".encode()).hexdigest()[:32])
+        if draft is None:
+            connection.execute("""INSERT INTO transaction_drafts
+                (id, occurred_on, draft_kind, domain_action, amount_minor, currency_code,
+                 comment, source_comment, origin_kind, origin_key, bank_status, status,
+                 created_at, updated_at)
+                VALUES (?, ?, 'debt', ?, ?, ?, ?, ?, ?, ?, 'posted', 'exported', ?, ?)""",
+                (draft_id, occurred_on, action, amount_minor, currency, comment,
+                 source_comment, source, source_id, now, now))
+        else:
+            connection.execute("""UPDATE transaction_drafts SET occurred_on = ?,
+                draft_kind = 'debt', domain_action = ?, flow_direction = NULL,
+                amount_minor = ?, currency_code = ?, category_id = NULL, comment = ?,
+                status = 'exported', row_version = row_version + 1, updated_at = ?
+                WHERE id = ?""",
+                (occurred_on, action, amount_minor, currency, comment, now, draft_id))
+        event_id = hashlib.sha256(f"domain-cash-event\0{draft_id}".encode()).hexdigest()[:32]
+        connection.execute("""INSERT INTO debt_cash_events
+            (id, occurred_on, event_kind, side, debt_id, amount_minor, currency_code,
+             comment, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (event_id, occurred_on, event_kind, side, debt_id, amount_minor,
+             currency, comment, now))
+        if draft is not None and draft["source_record_id"]:
+            connection.execute("""INSERT INTO entity_source_links
+                VALUES ('debt_cash_event', ?, ?, 'original')""",
+                (event_id, draft["source_record_id"]))
+        result = {"debt_id": debt_id, "event_id": event_id, "draft_id": draft_id}
+        connection.execute("""INSERT INTO operation_receipts
+            (operation_key, operation_kind, result_entity_type, result_entity_id,
+             result_json, created_at)
+            VALUES (?, 'reviewed_debt_transaction', 'debt_cash_event', ?, ?, ?)""",
+            (operation_key, event_id,
+             json.dumps({"request": request, "result": result}, sort_keys=True), now))
+        return result
+
+
+def create_debt_payment_plan(path: str | Path, *, debt_id: str, due_on: str,
+                             amount, operation_key: str, comment: str = "") -> str:
+    """Save intent only; no payment, cash draft, or capital effect."""
+    if not operation_key.strip():
+        raise ValueError("operation key is required")
+    due_on = _iso_date(due_on, "due_on")
+    with connect_database(path, writable=True) as connection:
+        existing = connection.execute(
+            "SELECT * FROM debt_payment_plans WHERE operation_key = ?", (operation_key,)
+        ).fetchone()
+        if existing:
+            currency = connection.execute(
+                "SELECT principal_currency_code FROM debts WHERE id = ?", (existing["debt_id"],)
+            ).fetchone()[0]
+            if (existing["debt_id"] != debt_id or existing["due_on"] != due_on or
+                    existing["amount_minor"] != _minor_units(connection, currency, amount, allow_zero=False) or
+                    existing["comment"] != comment):
+                raise ValueError("operation key was reused with another plan")
+            return existing["id"]
+        debt = connection.execute("SELECT * FROM debts WHERE id = ?", (debt_id,)).fetchone()
+        if debt is None or debt["status"] != "active":
+            raise ValueError("choose an active debt")
+        if due_on < debt["opened_on"]:
+            raise ValueError("planned payment cannot precede debt opening")
+        amount_minor = _minor_units(connection, debt["principal_currency_code"], amount, allow_zero=False)
+        paid_minor = connection.execute(
+            "SELECT COALESCE(SUM(principal_amount_minor), 0) FROM debt_payments WHERE debt_id = ?",
+            (debt_id,),
+        ).fetchone()[0]
+        if amount_minor > debt["principal_amount_minor"] - paid_minor:
+            raise ValueError("planned payment exceeds outstanding principal")
+        plan_id = f"plan-{uuid4().hex[:12]}"
+        connection.execute("""INSERT INTO debt_payment_plans
+            (id, debt_id, due_on, amount_minor, comment, operation_key, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (plan_id, debt_id, due_on, amount_minor, comment, operation_key, _utc_now()))
+        return plan_id
+
+
+def list_debt_payment_plans(path: str | Path) -> list[dict]:
+    with connect_database(path) as connection:
+        rows = connection.execute("""SELECT p.id, p.debt_id, p.due_on, p.amount_minor,
+            d.principal_currency_code AS currency, c.minor_unit, d.counterparty,
+            p.comment, p.confirmed_payment_id
+            FROM debt_payment_plans p JOIN debts d ON d.id = p.debt_id
+            JOIN currencies c ON c.code = d.principal_currency_code
+            ORDER BY p.due_on, p.id""").fetchall()
+    return [{
+        "id": row["id"], "debt_id": row["debt_id"], "due_on": row["due_on"],
+        "amount": str(Decimal(row["amount_minor"]).scaleb(-row["minor_unit"])),
+        "currency": row["currency"], "counterparty": row["counterparty"],
+        "comment": row["comment"], "confirmed_payment_id": row["confirmed_payment_id"],
+    } for row in rows]
+
+
+def confirm_debt_payment_plan(path: str | Path, *, plan_id: str,
+                              occurred_on: str) -> dict:
+    """Turn one plan into one actual payment; a retry reuses its stable operation key."""
+    occurred_on = _iso_date(occurred_on, "occurred_on")
+    with connect_database(path) as connection:
+        plan = connection.execute(
+            "SELECT * FROM debt_payment_plans WHERE id = ?", (plan_id,)
+        ).fetchone()
+        if plan is None:
+            raise ValueError("unknown payment plan")
+        plan = dict(plan)
+        if plan["confirmed_payment_id"]:
+            return {"payment_id": plan["confirmed_payment_id"], "debt_id": plan["debt_id"]}
+        currency = connection.execute(
+            "SELECT principal_currency_code FROM debts WHERE id = ?", (plan["debt_id"],)
+        ).fetchone()[0]
+        minor_unit = connection.execute(
+            "SELECT minor_unit FROM currencies WHERE code = ?", (currency,)
+        ).fetchone()[0]
+        receipt = connection.execute(
+            "SELECT result_json FROM operation_receipts WHERE operation_key = ?",
+            (f"debt-plan-confirm:{plan_id}",),
+        ).fetchone()
+    result = json.loads(receipt[0])["result"] if receipt else record_debt_payment(
+        path, debt_id=plan["debt_id"], occurred_on=occurred_on,
+        amount=Decimal(plan["amount_minor"]).scaleb(-minor_unit),
+        operation_key=f"debt-plan-confirm:{plan_id}", comment=plan["comment"],
+    )
+    with connect_database(path, writable=True) as connection:
+        connection.execute("""UPDATE debt_payment_plans SET confirmed_payment_id = ?
+            WHERE id = ? AND confirmed_payment_id IS NULL""", (result["payment_id"], plan_id))
+    return result
 
 
 def record_investment_trade(
