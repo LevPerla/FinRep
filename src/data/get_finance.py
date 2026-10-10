@@ -25,6 +25,7 @@ FX_MAX_AGE_DAYS = 7
 _FX_NETWORK_ENABLED = ContextVar("finrep_fx_network_enabled", default=False)
 _FX_CACHE_DF: dict[str, pd.DataFrame] = {}
 _CBR_SERIES_CACHE = {}
+_NBK_DAILY_CACHE = {}
 _CBR_VALUTE_IDS = {
     'USD': 'R01235',
     'EUR': 'R01239',
@@ -384,15 +385,23 @@ def _ensure_currency_cached(currency: str, min_date: pd.Timestamp, max_date: pd.
 
     fetch_dates = _fetchable_missing_dates(currency, missing_dates)
     if _FX_NETWORK_ENABLED.get() and fetch_dates:
-        fetched = _fetch_missing_usd_rates(currency, min(fetch_dates), max(fetch_dates))
-        if not fetched.empty:
-            fetched = fetched.loc[(fetched.index >= min_date) & (fetched.index <= max_date)]
-            if not fetched.empty:
-                _append_cache_rows(currency, fetched, fetched.name or 'provider')
-                missing_dates = _missing_dates(currency, min_date, max_date)
-                fetch_dates = _fetchable_missing_dates(currency, missing_dates)
-                if not fetch_dates:
-                    return
+        for provider_name in config.FX_PROVIDER_ORDER:
+            provider = _PROVIDERS.get(provider_name)
+            if provider is None:
+                logger.warning("Unknown FX provider configured: %s", provider_name)
+                continue
+            try:
+                fetched = _clean_rate_series(provider(currency, min(fetch_dates), max(fetch_dates)))
+            except Exception as exc:
+                logger.warning("FX provider %s failed for %s/USD: %s", provider_name, currency, exc)
+                continue
+            fetched = fetched[fetched.index.isin(fetch_dates)]
+            if fetched.empty:
+                continue
+            _append_cache_rows(currency, fetched, provider_name)
+            fetch_dates = _fetchable_missing_dates(currency, _missing_dates(currency, min_date, max_date))
+            if not fetch_dates:
+                return
 
     if _FX_NETWORK_ENABLED.get() and fetch_dates:
         preview_dates = ", ".join(date.date().isoformat() for date in fetch_dates[:5])
@@ -403,23 +412,6 @@ def _ensure_currency_cached(currency: str, min_date: pd.Timestamp, max_date: pd.
             preview_dates,
             suffix,
         )
-
-
-def _fetch_missing_usd_rates(currency: str, min_date: pd.Timestamp, max_date: pd.Timestamp) -> pd.Series:
-    for provider_name in config.FX_PROVIDER_ORDER:
-        provider = _PROVIDERS.get(provider_name)
-        if provider is None:
-            logger.warning("Unknown FX provider configured: %s", provider_name)
-            continue
-        try:
-            series = provider(currency, min_date, max_date)
-            series = _clean_rate_series(series)
-            if not series.empty:
-                series.name = provider_name
-                return series
-        except Exception as e:
-            logger.warning("FX provider %s failed for %s/USD: %s", provider_name, currency, e)
-    return pd.Series(dtype=float)
 
 
 def _fetch_provider_series(currency: str, min_date: pd.Timestamp, max_date: pd.Timestamp, provider_names):
@@ -541,8 +533,52 @@ def _fetch_cbr_usd_rate(currency: str, min_date: pd.Timestamp, max_date: pd.Time
     return currency_rub / usd_rub
 
 
+def _fetch_nbk_usd_rate(currency: str, min_date: pd.Timestamp, max_date: pd.Timestamp) -> pd.Series:
+    if not _FX_NETWORK_ENABLED.get():
+        return pd.Series(dtype=float)
+    values = {}
+    for day in pd.date_range(min_date, max_date, freq='B'):
+        try:
+            rates = _nbk_daily_rates(day)
+        except (requests.RequestException, ET.ParseError, ValueError) as exc:
+            logger.warning("NBK rates unavailable for %s: %s", day.date(), exc)
+            continue
+        usd = rates.get('USD')
+        value = 1 if currency.upper() == 'KZT' else rates.get(currency.upper())
+        if usd and value:
+            values[day] = value / usd
+    return pd.Series(values, dtype=float).sort_index()
+
+
+def _nbk_daily_rates(day: pd.Timestamp) -> dict[str, float]:
+    key = day.strftime('%d.%m.%Y')
+    if key not in _NBK_DAILY_CACHE:
+        response = requests.get(
+            'https://nationalbank.kz/rss/get_rates.cfm',
+            params={'fdate': key}, timeout=(3, 5),
+        )
+        response.raise_for_status()
+        root = ET.fromstring(response.content)
+        if root.findtext('date') != key:
+            raise ValueError(f"NBK returned a different rate date for {key}")
+        rates = {}
+        for item in root.findall('item'):
+            code = item.findtext('title')
+            amount = item.findtext('description')
+            quantity = item.findtext('quant')
+            if code and amount and quantity:
+                value = float(amount.replace(',', '.')) / float(quantity.replace(',', '.'))
+                if np.isfinite(value) and value > 0:
+                    rates[code.upper()] = value
+        if not rates.get('USD'):
+            raise ValueError(f"NBK returned no USD rate for {key}")
+        _NBK_DAILY_CACHE[key] = rates
+    return _NBK_DAILY_CACHE[key]
+
+
 _PROVIDERS = {
     'yfinance': _fetch_yfinance_usd_rate,
+    'nbk': _fetch_nbk_usd_rate,
     'cbr': _fetch_cbr_usd_rate,
 }
 

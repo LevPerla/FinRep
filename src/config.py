@@ -45,7 +45,7 @@ DEBT_PAYMENTS_CSV_PATH = os.path.join(DEBTS_PATH, 'debt_payments.csv')
 
 STOCK_API = 'yf'  # yf, td
 FX_BASE_CURRENCY = 'USD'
-FX_PROVIDER_ORDER = ['yfinance', 'cbr']
+FX_PROVIDER_ORDER = ['yfinance', 'nbk']
 
 INCOME_CATEGORY_LABELS = ['Зарплата', 'Проценты', 'Инвест доход', 'Прочие доходы']
 UNCLASSIFIED_INCOME_LABEL = 'Доход без категории'

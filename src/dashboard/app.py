@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+from concurrent.futures import ThreadPoolExecutor
 from decimal import Decimal
 from datetime import datetime, timedelta, timezone
 from io import BytesIO
@@ -104,6 +105,9 @@ ASSETS_FOLDER = PROJECT_ROOT / "assets"
 logger = logging.getLogger(__name__)
 DashboardTab = tuple[str, str, str]
 _REFERENCE_REFRESH_LOCK = Lock()
+_REFERENCE_TASK_LOCK = Lock()
+_REFERENCE_REFRESH_POOL = ThreadPoolExecutor(max_workers=1)
+_REFERENCE_REFRESH_TASK = None
 
 
 def _reference_refresh_due(rows: list[dict], now: datetime | None = None) -> bool:
@@ -119,14 +123,15 @@ def _reference_refresh_due(rows: list[dict], now: datetime | None = None) -> boo
     return not timestamps or max(timestamps) < current - timedelta(days=FX_MAX_AGE_DAYS)
 
 
-def _refresh_stale_reference_data(now: datetime | None = None):
+def _refresh_stale_reference_data(now: datetime | None = None, *, force_fx: bool = False,
+                                  include_cpi: bool = True):
     if config.is_test_mode() or not config.use_sqlite_storage():
         return no_update, no_update
     with _REFERENCE_REFRESH_LOCK:
         database = config.active_database_path()
         current = now or datetime.now(timezone.utc)
         fx_result = cpi_result = no_update
-        if _reference_refresh_due(fx_rates(database), current):
+        if force_fx or _reference_refresh_due(fx_rates(database), current):
             try:
                 end = pd.Timestamp(current.date())
                 with fx_network_mode(True):
@@ -139,7 +144,7 @@ def _refresh_stale_reference_data(now: datetime | None = None):
             except Exception:
                 logger.exception("Automatic FX refresh failed; cached rates retained")
                 fx_result = {"request": "auto", "status": "error"}
-        if _reference_refresh_due(cpi_observations(database), current):
+        if include_cpi and _reference_refresh_due(cpi_observations(database), current):
             try:
                 cpi_result = refresh_official_cpi(database)
                 if cpi_result.get("status") != "done":
@@ -152,6 +157,34 @@ def _refresh_stale_reference_data(now: datetime | None = None):
                                  "message": "Automatic refresh failed."}],
                 }
         return fx_result, cpi_result
+
+
+def _start_reference_refresh(*, force_fx: bool = False, include_cpi: bool = True) -> bool:
+    if config.is_test_mode() or not config.use_sqlite_storage():
+        return False
+    global _REFERENCE_REFRESH_TASK
+    with _REFERENCE_TASK_LOCK:
+        if _REFERENCE_REFRESH_TASK is None:
+            _REFERENCE_REFRESH_TASK = _REFERENCE_REFRESH_POOL.submit(
+                _refresh_stale_reference_data, force_fx=force_fx, include_cpi=include_cpi)
+    return True
+
+
+def _take_reference_refresh_result():
+    global _REFERENCE_REFRESH_TASK
+    with _REFERENCE_TASK_LOCK:
+        task = _REFERENCE_REFRESH_TASK
+        if task is None:
+            return True, {"status": "unavailable"}, no_update
+        if not task.done():
+            return False, no_update, no_update
+        _REFERENCE_REFRESH_TASK = None
+    try:
+        fx_result, cpi_result = task.result()
+    except Exception:
+        logger.exception("Reference refresh failed")
+        return True, {"status": "error"}, no_update
+    return True, fx_result, cpi_result
 
 
 MAIN_DASHBOARD_TABS: list[DashboardTab] = [
@@ -406,6 +439,7 @@ def create_layout():
             dcc.Store(id="dashboard-refresh-token", data=0),
             dcc.Store(id="fx-refresh-result"),
             dcc.Store(id="cpi-refresh-result"),
+            dcc.Interval(id="reference-refresh-poll", interval=1_000, disabled=True),
             dcc.Store(id="cpi-base-period"),
             dcc.Store(id="transaction-save-result", storage_type="memory"),
             dcc.Store(id="bank-statement-balance", storage_type="memory"),
@@ -792,20 +826,40 @@ def register_callbacks(app: Dash) -> None:
 
     @app.callback(
         Output("dashboard-refresh-token", "data"),
-        Output("fx-refresh-result", "data", allow_duplicate=True),
-        Output("cpi-refresh-result", "data", allow_duplicate=True),
+        Output("reference-refresh-poll", "disabled"),
         Input("refresh-reports", "n_clicks"),
+        Input("refresh-fx-rates", "n_clicks"),
         State("dashboard-refresh-token", "data"),
         prevent_initial_call=True,
     )
-    def refresh_reports(n_clicks: int | None, current_token: int | None):
-        if not n_clicks:
+    def refresh_reports(n_clicks: int | None, fx_clicks: int | None,
+                        current_token: int | None):
+        if not n_clicks and not fx_clicks:
             raise PreventUpdate
-        fx_result, cpi_result = _refresh_stale_reference_data()
+        fx_only = ctx.triggered_id == "refresh-fx-rates"
+        started = _start_reference_refresh(force_fx=fx_only, include_cpi=not fx_only)
         clear_data_cache()
         clear_table_cache()
         clear_main_dashboard_cache()
-        return int(current_token or 0) + 1, fx_result, cpi_result
+        return int(current_token or 0) + 1, not started
+
+    @app.callback(
+        Output("dashboard-refresh-token", "data", allow_duplicate=True),
+        Output("fx-refresh-result", "data", allow_duplicate=True),
+        Output("cpi-refresh-result", "data", allow_duplicate=True),
+        Output("reference-refresh-poll", "disabled", allow_duplicate=True),
+        Input("reference-refresh-poll", "n_intervals"),
+        State("dashboard-refresh-token", "data"),
+        prevent_initial_call=True,
+    )
+    def finish_reference_refresh(_intervals: int, current_token: int | None):
+        done, fx_result, cpi_result = _take_reference_refresh_result()
+        if not done:
+            raise PreventUpdate
+        clear_data_cache()
+        clear_table_cache()
+        clear_main_dashboard_cache()
+        return int(current_token or 0) + 1, fx_result, cpi_result, True
 
     @app.callback(
         Output("dashboard-refresh-token", "data", allow_duplicate=True),
@@ -1019,7 +1073,6 @@ def register_callbacks(app: Dash) -> None:
         Input("dashboard-theme", "data"),
         Input("dashboard-locale", "data"),
         Input("dashboard-refresh-token", "data"),
-        Input("refresh-fx-rates", "n_clicks"),
         Input("cpi-refresh-result", "data"),
         Input("transaction-save-result", "data"),
         State("crypto-refresh-status", "data"),
@@ -1027,28 +1080,16 @@ def register_callbacks(app: Dash) -> None:
     def render_dashboard_content(currency: str, year: str, month: str,
                                  cpi_base_period: str | None, active_tab: str,
                                  main_section: str, theme: str, locale: str,
-                                 refresh_token: int, fx_refresh_clicks: int | None,
+                                 refresh_token: int,
                                  _cpi_refresh_result: dict | None,
                                  transaction_save_result: dict | None,
                                  crypto_status: dict | None):
         if ctx.triggered_id == "transaction-save-result":
             raise PreventUpdate
-        fx_network_enabled = ctx.triggered_id == "refresh-fx-rates" and not config.is_test_mode()
+        fx_network_enabled = False
 
         def finish(content):
-            if not fx_network_enabled:
-                return content, no_update
-            if active_tab in {"input", "debts"} or (
-                active_tab == "main" and main_section == "statistics"
-            ):
-                status = "unavailable"
-            else:
-                status = "error" if isinstance(content, dbc.Alert) and content.color == "danger" else "done"
-            return content, {"request": fx_refresh_clicks, "status": status}
-
-        if fx_network_enabled:
-            clear_table_cache()
-            clear_main_dashboard_cache()
+            return content, no_update
 
         if active_tab == "main" and main_section == "expenses":
             try:
