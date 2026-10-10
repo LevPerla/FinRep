@@ -118,6 +118,10 @@ def test_assets_input_shows_account_classification_with_history_context(tmp_path
         column for column in grid.columnDefs if column["field"] == "closed_period"
     )["editable"] is False
     assert _component(snapshot_layout, "assets-delete-row-button").children == "Отправить в архив"
+    assert _component(snapshot_layout, "assets-copy-previous-button") is None
+    reset = _component(snapshot_layout, "assets-reset-confirm")
+    assert reset.children.children == "Сбросить правки"
+    assert "Несохранённые изменения будут потеряны" in reset.message
     assert _component(settings_layout, "asset-account-restore-button") is not None
     assert grid.dashGridOptions["rowSelection"] == "multiple"
     assert next(
@@ -158,6 +162,15 @@ def test_assets_input_shows_account_classification_with_history_context(tmp_path
     assert "Устаревших оценок: 0" in message.children
     assert snapshot_grid.style["height"] == "220px"
     assert grid.style["height"] == "220px"
+
+
+def test_copy_previous_button_remains_available_for_csv(monkeypatch):
+    from src.dashboard.app import _asset_snapshot_input_layout
+
+    monkeypatch.setenv("FINREP_STORAGE_BACKEND", "csv")
+    layout = _asset_snapshot_input_layout("2026", "01", "dark", load_records=False)
+
+    assert _component(layout, "assets-copy-previous-button") is not None
 
 
 def test_asset_classification_callback_saves_all_rows_and_refreshes_capital(

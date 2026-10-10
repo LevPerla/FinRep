@@ -513,12 +513,12 @@ def test_load_callback_displays_error_and_does_not_invent_zero(assets_root, monk
         context["data_mode"] = "live"
     key = next(key for key in app.callback_map if "assets-input-message.children" in key)
     callback = app.callback_map[key]
-    values = {"assets-load-button":1,"assets-add-row-button":0,"assets-delete-row-button":0,"assets-apply-button":0,
+    values = {"assets-reset-confirm":1,"assets-add-row-button":0,"assets-delete-row-button":0,"assets-apply-button":0,
               "dashboard-year":"2026","dashboard-month":"01","assets-input-grid":[],"dashboard-locale":"ru"}
     payload = {"output":key,"outputs":[{"id":item.component_id,"property":item.component_property} for item in callback["output"]],
                "inputs":[{**item,"value":values.get(item["id"])} for item in callback["inputs"]],
                "state":[{**item,"value":values.get(item["id"])} for item in callback["state"]],
-               "changedPropIds":["assets-load-button.n_clicks"]}
+               "changedPropIds":["assets-reset-confirm.submit_n_clicks"]}
     before = files(assets_root)
     response = client.post("/_dash-update-component",json=payload)
     assert response.status_code == 200

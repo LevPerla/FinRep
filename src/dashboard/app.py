@@ -2411,7 +2411,7 @@ def register_callbacks(app: Dash) -> None:
         Output("assets-input-message", "children"),
         Output("assets-input-message", "color"),
         Output("asset-classification-grid", "rowData", allow_duplicate=True),
-        Input("assets-load-button", "n_clicks", allow_optional=True),
+        Input("assets-reset-confirm", "submit_n_clicks", allow_optional=True),
         Input("assets-add-row-button", "n_clicks", allow_optional=True),
         Input("assets-copy-previous-button", "n_clicks", allow_optional=True),
         Input("assets-add-from-registry-button", "n_clicks", allow_optional=True),
@@ -2469,24 +2469,11 @@ def register_callbacks(app: Dash) -> None:
             if trigger == "assets-copy-previous-button":
                 previous = pd.Period(period, freq="M") - 1
                 previous_period = str(previous)
-                if config.use_sqlite_storage():
-                    from src.data.sqlite_store import asset_accounts, asset_snapshot_month
-
-                    previous_rows = asset_snapshot_month(config.active_database_path(), previous_period)
-                    active_ids = {
-                        account["id"] for account in asset_accounts(config.active_database_path())
-                        if account["active"]
-                    }
-                    source_rows = [
-                        row for row in _asset_input_records(str(previous.year), f"{previous.month:02d}", locale)
-                        if row["account_id"] in active_ids
-                    ] if previous_rows else []
-                else:
-                    source_rows = (
-                        _asset_input_records(str(previous.year), f"{previous.month:02d}", locale)
-                        if asset_snapshot_path(str(previous.year), f"{previous.month:02d}").exists()
-                        else []
-                    )
+                source_rows = (
+                    _asset_input_records(str(previous.year), f"{previous.month:02d}", locale)
+                    if asset_snapshot_path(str(previous.year), f"{previous.month:02d}").exists()
+                    else []
+                )
                 if not source_rows:
                     message = (
                         f"No saved assets found for {previous_period}."
@@ -4250,7 +4237,18 @@ def _asset_snapshot_input_layout(
                     html.H2(title, className="h5 mb-0"),
                     html.Div(
                         [
-                            dbc.Button(report_text("Загрузить", locale), id="assets-load-button", color="secondary", outline=True, size="sm"),
+                            dcc.ConfirmDialogProvider(
+                                dbc.Button(
+                                    "Reset edits" if normalize_locale(locale) == "en" else "Сбросить правки",
+                                    color="secondary", outline=True, size="sm",
+                                ),
+                                id="assets-reset-confirm",
+                                message=(
+                                    "Discard unsaved changes and reload assets for this month?"
+                                    if normalize_locale(locale) == "en" else
+                                    "Несохранённые изменения будут потеряны. Загрузить активы за этот месяц заново?"
+                                ),
+                            ),
                             dbc.Button(report_text("Добавить строку", locale), id="assets-add-row-button", color="secondary", outline=True, size="sm", disabled=read_only),
                             dbc.Button(
                                 "Add from previous month" if normalize_locale(locale) == "en"
@@ -4260,7 +4258,7 @@ def _asset_snapshot_input_layout(
                                 outline=True,
                                 size="sm",
                                 disabled=read_only,
-                            ),
+                            ) if not config.use_sqlite_storage() else None,
                             dbc.Button(report_text("Отправить в архив", locale), id="assets-delete-row-button", color="warning", outline=True, size="sm", disabled=read_only),
                             dbc.Button(report_text("Применить", locale), id="assets-apply-button", color="primary", outline=True, size="sm", disabled=read_only),
                         ],
