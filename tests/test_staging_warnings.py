@@ -36,6 +36,7 @@ def test_first_draft_append_does_not_concat_an_empty_frame():
             "currency": "RUB",
             "amount": "10.25",
             "comment": "synthetic",
+            "source_comment": "",
             "source": "manual",
             "source_id": "manual:sim-07d4",
             "direction": "",

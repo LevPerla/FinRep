@@ -32,6 +32,14 @@ def test_category_column_has_multi_cell_selection_rule():
     assert "sort" not in category_column
 
 
+def test_income_category_highlight_uses_current_registry():
+    category_column = next(
+        column for column in _kaspi_import_column_defs() if column["field"] == "category"
+    )
+
+    assert "incomeCategories" in category_column["cellClassRules"]["kaspi-category-income"]
+
+
 def test_action_column_reuses_multi_cell_clipboard():
     action = next(
         column for column in _kaspi_import_column_defs() if column["field"] == "import_action"
