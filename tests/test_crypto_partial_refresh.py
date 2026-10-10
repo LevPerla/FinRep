@@ -112,6 +112,16 @@ def test_failed_wallet_without_cached_balance_remains_unknown(crypto_paths, monk
     assert "cached balance retained" not in status.loc[status["account"] == "B", "message"].iloc[0]
 
 
+def test_negative_provider_balance_cannot_replace_cached_csv_balance(crypto_paths, monkeypatch):
+    write_csv(crypto_paths["wallets"], [wallet("A")], crypto.WALLET_COLUMNS)
+    crypto.write_crypto_balances(pd.DataFrame([balance("A", "1")]), crypto_paths["balances"])
+    monkeypatch.setattr(crypto, "_fetch_wallet_balance", lambda row, timeout: "-2")
+
+    result = crypto.refresh_crypto_balances(crypto_paths["wallets"], crypto_paths["balances"])
+    assert crypto.read_crypto_balances(crypto_paths["balances"])["balance"].tolist() == ["1"]
+    assert "non-negative" in result.attrs["errors"][0]
+
+
 def test_removed_and_disabled_wallets_are_not_kept_in_current_cache(crypto_paths, monkeypatch):
     write_csv(crypto_paths["wallets"], [wallet("A"), wallet("B", enabled="0")], crypto.WALLET_COLUMNS)
     crypto.write_crypto_balances(
@@ -151,6 +161,21 @@ def test_explicit_provider_zero_is_kept(provider, payload, monkeypatch):
     monkeypatch.setattr(crypto.requests, "post", lambda *args, **kwargs: response)
 
     assert float(getattr(crypto, f"_fetch_{provider}_balance")("synthetic-address", 1)) == 0
+
+
+def test_provider_smallest_units_do_not_round_through_float(monkeypatch):
+    satoshis = 10**18 + 1
+    response = Mock()
+    response.json.return_value = {
+        "chain_stats": {"funded_txo_sum": satoshis, "spent_txo_sum": 0},
+        "mempool_stats": {"funded_txo_sum": 0, "spent_txo_sum": 0},
+    }
+    monkeypatch.setattr(crypto.requests, "get", lambda *args, **kwargs: response)
+    assert crypto._fetch_bitcoin_balance("synthetic-address", 1) == "10000000000.00000001"
+
+    monkeypatch.setattr(crypto, "_evm_rpc", lambda *args: hex(10**40 + 1))
+    evm = pd.Series({"chain": "ethereum", "asset": "ETH", "address": "0x" + "a" * 40})
+    assert crypto._fetch_evm_balance(evm, 1) == f"{10**22}.000000000000000001"
 
 
 def test_ton_usdt_matches_official_master_not_symbol(monkeypatch):
@@ -197,3 +222,46 @@ def test_incomplete_response_preserves_cached_balance(crypto_paths, monkeypatch)
 
     assert refreshed["balance"].tolist() == ["1"]
     assert crypto.read_crypto_refresh_status(crypto_paths["status"])["status"].tolist() == ["error"]
+
+
+@pytest.mark.parametrize("bad_price", ["NaN", "Infinity", "-1", "0", "not-a-price"])
+def test_bad_coingecko_price_falls_back_without_poisoning_cache(bad_price, monkeypatch):
+    response = Mock()
+    response.json.return_value = {"bitcoin": {"usd": bad_price}}
+    seen = []
+
+    def fake_get(*args, **kwargs):
+        seen.append(kwargs)
+        return response
+
+    monkeypatch.setattr(crypto.requests, "get", fake_get)
+    monkeypatch.setattr(crypto, "_fetch_binance_price", lambda *args: 123.0)
+
+    assert crypto._fetch_crypto_price("BTC", "USD", 1) == (123.0, "binance")
+    assert seen[0]["allow_redirects"] is False
+
+
+def test_direct_crypto_refresh_requires_login_and_test_mode_cannot_call_providers(monkeypatch):
+    monkeypatch.setenv("FINREP_DASH_PASSWORD", "synthetic-password")
+    monkeypatch.setenv("FINREP_DASH_SECRET_KEY", "synthetic-secret")
+    from src.dashboard import app as dashboard_app
+
+    app = dashboard_app.create_app()
+    client = app.server.test_client()
+    key = next(key for key in app.callback_map if "crypto-refresh-status.data" in key)
+    callback = app.callback_map[key]
+    payload = {
+        "output": key,
+        "outputs": [{"id": item.component_id, "property": item.component_property}
+                    for item in callback["output"]],
+        "inputs": [{"id": "crypto-refresh-button", "property": "n_clicks", "value": 1}],
+        "state": [{"id": "dashboard-refresh-token", "property": "data", "value": 0}],
+        "changedPropIds": ["crypto-refresh-button.n_clicks"],
+    }
+    assert client.post("/_dash-update-component", json=payload).status_code == 401
+    client.post("/login", data={"data_mode": "test"})
+    monkeypatch.setattr(dashboard_app, "refresh_crypto_balances",
+                        lambda: pytest.fail("provider called in TEST"))
+    response = client.post("/_dash-update-component", json=payload)
+    assert response.status_code == 200
+    assert "read-only" in response.get_data(as_text=True).lower() or "test" in response.get_data(as_text=True).lower()
