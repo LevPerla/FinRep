@@ -2285,9 +2285,8 @@ def add_asset_snapshot(path: str | Path, *, snapshot_id: str, account_id: str,
         _mark_period(connection, period, "asset_snapshots")
 
 
-def upsert_asset_snapshot(path: str | Path, *, account_id: str, period: str,
-                          amount, currency: str, reason: str) -> dict:
-    """Set one account balance without replacing the rest of the month."""
+def _upsert_asset_snapshot(connection: sqlite3.Connection, *, account_id: str,
+                           period: str, amount, currency: str, reason: str) -> dict:
     if not account_id:
         raise ValueError("asset account is required")
     if not reason.strip():
@@ -2295,58 +2294,57 @@ def upsert_asset_snapshot(path: str | Path, *, account_id: str, period: str,
     period = _period(period)
     currency = currency.upper()
     now = _utc_now()
-    with connect_database(path, writable=True) as connection:
-        account = connection.execute(
-            "SELECT id, name, active FROM asset_accounts WHERE id = ?", (account_id,)
-        ).fetchone()
-        if account is None:
-            raise ValueError("unknown asset account")
-        if not account["active"]:
-            raise ValueError("asset account is archived")
-        amount_minor = _minor_units(connection, currency, amount, allow_zero=True)
-        current = connection.execute(
-            """SELECT * FROM asset_snapshots
+    account = connection.execute(
+        "SELECT id, name, active FROM asset_accounts WHERE id = ?", (account_id,)
+    ).fetchone()
+    if account is None:
+        raise ValueError("unknown asset account")
+    if not account["active"]:
+        raise ValueError("asset account is archived")
+    amount_minor = _minor_units(connection, currency, amount, allow_zero=True)
+    current = connection.execute(
+        """SELECT * FROM asset_snapshots
             WHERE account_id = ? AND period = ? AND currency_code = ?""",
-            (account_id, period, currency),
-        ).fetchone()
-        if current is None:
-            snapshot_id = hashlib.sha256(
-                f"asset-snapshot\0{account_id}\0{period}\0{currency}".encode()
-            ).hexdigest()[:32]
-            connection.execute(
-                """INSERT INTO asset_snapshots
+        (account_id, period, currency),
+    ).fetchone()
+    if current is None:
+        snapshot_id = hashlib.sha256(
+            f"asset-snapshot\0{account_id}\0{period}\0{currency}".encode()
+        ).hexdigest()[:32]
+        connection.execute(
+            """INSERT INTO asset_snapshots
                 (id, account_id, period, currency_code, amount_minor, created_at, updated_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                (snapshot_id, account_id, period, currency, amount_minor, now, now),
-            )
-            action = "inserted"
-        elif current["amount_minor"] == amount_minor:
-            snapshot_id = current["id"]
-            action = "unchanged"
-        else:
-            snapshot_id = current["id"]
-            connection.execute(
-                """UPDATE asset_snapshots SET amount_minor = ?,
+            (snapshot_id, account_id, period, currency, amount_minor, now, now),
+        )
+        action = "inserted"
+    elif current["amount_minor"] == amount_minor:
+        snapshot_id = current["id"]
+        action = "unchanged"
+    else:
+        snapshot_id = current["id"]
+        connection.execute(
+            """UPDATE asset_snapshots SET amount_minor = ?,
                 row_version = row_version + 1, updated_at = ? WHERE id = ?""",
-                (amount_minor, now, snapshot_id),
-            )
-            after = connection.execute(
-                "SELECT * FROM asset_snapshots WHERE id = ?", (snapshot_id,)
-            ).fetchone()
-            connection.execute(
-                """INSERT INTO audit_events
+            (amount_minor, now, snapshot_id),
+        )
+        after = connection.execute(
+            "SELECT * FROM asset_snapshots WHERE id = ?", (snapshot_id,)
+        ).fetchone()
+        connection.execute(
+            """INSERT INTO audit_events
                 (entity_type, entity_id, action, before_json, after_json, reason, occurred_at)
                 VALUES ('asset_snapshot', ?, 'amount_changed', ?, ?, ?, ?)""",
-                (
-                    snapshot_id,
-                    json.dumps(dict(current), ensure_ascii=False, sort_keys=True),
-                    json.dumps(dict(after), ensure_ascii=False, sort_keys=True),
-                    reason.strip(),
-                    now,
-                ),
-            )
-            action = "updated"
-        _mark_period(connection, period, "asset_snapshots")
+            (
+                snapshot_id,
+                json.dumps(dict(current), ensure_ascii=False, sort_keys=True),
+                json.dumps(dict(after), ensure_ascii=False, sort_keys=True),
+                reason.strip(),
+                now,
+            ),
+        )
+        action = "updated"
+    _mark_period(connection, period, "asset_snapshots")
     return {
         "action": action,
         "snapshot_id": snapshot_id,
@@ -2354,6 +2352,25 @@ def upsert_asset_snapshot(path: str | Path, *, account_id: str, period: str,
         "period": period,
         "currency": currency,
     }
+
+
+def upsert_asset_snapshot(path: str | Path, *, account_id: str, period: str,
+                          amount, currency: str, reason: str) -> dict:
+    """Set one account balance without replacing the rest of the month."""
+    with connect_database(path, writable=True) as connection:
+        return _upsert_asset_snapshot(
+            connection, account_id=account_id, period=period,
+            amount=amount, currency=currency, reason=reason,
+        )
+
+
+def upsert_asset_snapshot_batch(path: str | Path, rows: list[dict], *, reason: str) -> list[dict]:
+    """Atomically set selected balances without replacing other accounts."""
+    with connect_database(path, writable=True) as connection:
+        return [
+            _upsert_asset_snapshot(connection, reason=reason, **row)
+            for row in rows
+        ]
 
 
 def asset_snapshots(path: str | Path) -> list[dict]:

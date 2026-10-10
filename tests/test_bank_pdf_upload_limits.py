@@ -87,8 +87,21 @@ def test_dashboard_reports_upload_limits_and_sets_transport_backstop(monkeypatch
 
     assert app.server.config["MAX_CONTENT_LENGTH"] == bank_pdf.MAX_BANK_PDF_REQUEST_BYTES
     assert "до 10 MiB и 50 страниц" in str(layout)
-    assert "Остальные остатки не сохраняются автоматически" in str(layout)
+    assert "Выбери актив в каждой строке" in str(layout)
     assert "data-max-total-bytes" in str(layout)
+
+
+def test_upload_progress_clientside_callback_keeps_valid_newline_escape(monkeypatch):
+    monkeypatch.setenv("FINREP_DASH_PASSWORD", "synthetic-password")
+    monkeypatch.setenv("FINREP_DASH_SECRET_KEY", "synthetic-key")
+    from src.dashboard.app import create_app
+
+    app = create_app()
+    script = next(
+        script for script in app._inline_scripts
+        if '"parsing"' in script and '"queued"' in script
+    )
+    assert ').join("\\n");' in script
 
 
 def test_transport_backstop_rejects_request_body_before_dash_callback(monkeypatch):
@@ -331,34 +344,38 @@ def test_dashboard_batch_keeps_ready_files_and_marks_cross_file_duplicates(
     assert len(rows) == 2
     assert {row["source_file"] for row in rows} == {"first.pdf", "third.pdf"}
     assert {row["import_action"] for row in rows} == {"review"}
-    assert "broken.pdf — ошибка" in result["bank-upload-status"]["children"]
+    statuses = result["bank-upload-status"]["children"]
+    assert len(statuses) == 3
+    assert statuses[1]["props"]["children"][0]["props"]["children"][0]["props"]["children"] == "broken.pdf"
+    assert statuses[1]["props"]["children"][0]["props"]["children"][1]["props"]["children"] == "Ошибка"
     assert result["kaspi-import-message"]["color"] == "danger"
     assert "broken.pdf: PDF содержит 51 стр.; максимум 50." in result["kaspi-import-message"]["children"]
     balances = result["bank-statement-balances"]["data"]
     assert [item["source_file"] for item in balances] == ["first.pdf", "third.pdf"]
-    assert result["bank-statement-balance"]["data"] == balances[0]
-
-    source_key = next(
-        key for key in app.callback_map
-        if "bank-statement-balance-source-container.style" in key
-    )
-    source_callback = app.callback_map[source_key]
-    source_response = client.post("/_dash-update-component", json={
-        "output": source_key,
+    table_key = next(key for key in app.callback_map if "bank-statement-balance-table.children" in key)
+    table_callback = app.callback_map[table_key]
+    table_response = client.post("/_dash-update-component", json={
+        "output": table_key,
         "outputs": [
             {"id": item.component_id, "property": item.component_property}
-            for item in source_callback["output"]
+            for item in table_callback["output"]
         ],
-        "inputs": [{**source_callback["inputs"][0], "value": balances}],
-        "state": [{**source_callback["state"][0], "value": None}],
+        "inputs": [
+            {**item, "value": {
+                "bank-statement-balances": balances,
+                "dashboard-locale": "ru",
+                "dashboard-year": "2026",
+                "dashboard-month": "10",
+            }[item["id"]]}
+            for item in table_callback["inputs"]
+        ],
+        "state": [{**item, "value": []} for item in table_callback["state"]],
         "changedPropIds": ["bank-statement-balances.data"],
     })
-    source_result = source_response.get_json()["response"]
-    assert source_result["bank-statement-balance-source-container"]["style"] == {
-        "display": "block"
-    }
-    source = source_result["bank-statement-balance-source"]
-    assert source["value"] == 0
-    assert [item["label"].split(" · ")[0] for item in source["options"]] == [
+    assert table_response.status_code == 200
+    table = table_response.get_json()["response"]["bank-statement-balance-table"]["children"]
+    rows = table["props"]["children"][1]["props"]["children"]
+    assert len(rows) == 2
+    assert [row["props"]["children"][0]["props"]["children"] for row in rows] == [
         "first.pdf", "third.pdf",
     ]

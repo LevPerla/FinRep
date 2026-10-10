@@ -1,14 +1,14 @@
 var dagfuncs = window.dashAgGridFunctions = window.dashAgGridFunctions || {};
 
-function finrepCategorySelection(api) {
-  if (!api.__finrepCategorySelection) {
-    api.__finrepCategorySelection = new Set();
+function finrepCellSelection(api) {
+  if (!api.__finrepCellSelection) {
+    api.__finrepCellSelection = new Set();
   }
-  return api.__finrepCategorySelection;
+  return api.__finrepCellSelection;
 }
 
-function finrepRefreshCategoryCells(api) {
-  api.refreshCells({columns: ["category"], force: true});
+function finrepRefreshSelectedCells(api) {
+  api.refreshCells({columns: ["category", "import_action"], force: true});
 }
 
 function finrepCategoriesForRow(params) {
@@ -81,6 +81,10 @@ dagfuncs.finrepInputCellChanged = function (params) {
       && params.data.validation_error) {
     params.node.setDataValue("validation_error", "");
   }
+  if (columnId === "import_action") {
+    params.node.setDataValue("skip_reason", params.newValue === "skip" ? "manual_skip" : "");
+    return;
+  }
   if (columnId !== "amount" || params.data.source !== "manual_grid") {
     return;
   }
@@ -112,25 +116,33 @@ dagfuncs.finrepInputCellChanged = function (params) {
   params.api.refreshCells({rowNodes: [params.node], columns: ["amount", "category"], force: true});
 };
 
-dagfuncs.finrepCategorySelectionReset = function (params) {
-  params.api.__finrepCategorySelection = new Set();
-  params.api.__finrepCategoryAnchor = null;
-  finrepRefreshCategoryCells(params.api);
+dagfuncs.finrepInputSelectionReset = function (params) {
+  params.api.__finrepCellSelection = new Set();
+  params.api.__finrepCellAnchor = null;
+  params.api.__finrepSelectedColumn = null;
+  finrepRefreshSelectedCells(params.api);
 };
 
-dagfuncs.finrepCategoryCellClicked = function (params) {
-  if (!params.column || params.column.getColId() !== "category" || !params.node) {
+dagfuncs.finrepInputCellClicked = function (params) {
+  var columnId = params.column?.getColId();
+  if (!params.node || !["category", "import_action"].includes(columnId)) {
+    window.__finrepInputClipboardContext = null;
     return;
   }
 
-  var selection = finrepCategorySelection(params.api);
+  var selection = finrepCellSelection(params.api);
+  if (params.api.__finrepSelectedColumn !== columnId) {
+    selection.clear();
+    params.api.__finrepCellAnchor = null;
+  }
+  params.api.__finrepSelectedColumn = columnId;
   var event = params.event || {};
   var rowId = params.node.id;
 
-  if (event.shiftKey && Number.isInteger(params.api.__finrepCategoryAnchor)) {
+  if (event.shiftKey && Number.isInteger(params.api.__finrepCellAnchor)) {
     selection.clear();
-    var start = Math.min(params.api.__finrepCategoryAnchor, params.rowIndex);
-    var end = Math.max(params.api.__finrepCategoryAnchor, params.rowIndex);
+    var start = Math.min(params.api.__finrepCellAnchor, params.rowIndex);
+    var end = Math.max(params.api.__finrepCellAnchor, params.rowIndex);
     params.api.forEachNodeAfterFilterAndSort(function (node, index) {
       if (index >= start && index <= end) {
         selection.add(node.id);
@@ -142,48 +154,49 @@ dagfuncs.finrepCategoryCellClicked = function (params) {
     } else {
       selection.add(rowId);
     }
-    params.api.__finrepCategoryAnchor = params.rowIndex;
+    params.api.__finrepCellAnchor = params.rowIndex;
   } else {
     selection.clear();
     selection.add(rowId);
-    params.api.__finrepCategoryAnchor = params.rowIndex;
+    params.api.__finrepCellAnchor = params.rowIndex;
   }
 
-  window.__finrepCategoryClipboardContext = params;
-  finrepRefreshCategoryCells(params.api);
+  window.__finrepInputClipboardContext = params;
+  finrepRefreshSelectedCells(params.api);
 };
 
-function finrepActiveCategoryContext() {
-  return window.__finrepCategoryClipboardContext || null;
+function finrepActiveInputContext() {
+  return window.__finrepInputClipboardContext || null;
 }
 
-function finrepCopyCategory(event) {
-  var context = finrepActiveCategoryContext();
+function finrepCopyInputCell(event) {
+  var context = finrepActiveInputContext();
   if (!context || !event.clipboardData) {
     return;
   }
   event.clipboardData.setData(
     "text/plain",
-    String(context.node?.data?.category || context.value || "")
+    String(context.node?.data?.[context.column.getColId()] || context.value || "")
   );
   event.preventDefault();
 }
 
-function finrepPasteCategory(event) {
-  var context = finrepActiveCategoryContext();
+function finrepPasteInputCell(event) {
+  var context = finrepActiveInputContext();
   if (!context || !event.clipboardData) {
     return;
   }
-  var category = String(event.clipboardData.getData("text/plain") || "")
+  var value = String(event.clipboardData.getData("text/plain") || "")
     .split(/[\t\r\n]/, 1)[0]
     .trim();
-  var categories = finrepCategoriesForRow(context);
-  if (!category || !categories.includes(category)) {
+  var columnId = context.column.getColId();
+  if (columnId === "import_action" ? !["import", "skip"].includes(value)
+      : !value || !finrepCategoriesForRow(context).includes(value)) {
     return;
   }
 
   event.preventDefault();
-  var selection = finrepCategorySelection(context.api);
+  var selection = finrepCellSelection(context.api);
   if (selection.size === 0 && context.node) {
     selection.add(context.node.id);
   }
@@ -192,21 +205,22 @@ function finrepPasteCategory(event) {
       colDef: context.column.getColDef(),
       data: node.data
     };
-    if (selection.has(node.id) && finrepCategoriesForRow(nodeParams).includes(category)) {
-      node.setDataValue("category", category);
+    if (selection.has(node.id) && (columnId === "import_action"
+        || finrepCategoriesForRow(nodeParams).includes(value))) {
+      node.setDataValue(columnId, value);
     }
   });
-  finrepRefreshCategoryCells(context.api);
+  finrepRefreshSelectedCells(context.api);
 }
 
 if (!window.__finrepCategoryClipboardListenersInstalled) {
   document.addEventListener("click", function (event) {
     var grid = document.getElementById("kaspi-import-grid");
     if (!grid || !event.target || !grid.contains(event.target)) {
-      window.__finrepCategoryClipboardContext = null;
+      window.__finrepInputClipboardContext = null;
     }
   });
-  document.addEventListener("copy", finrepCopyCategory);
-  document.addEventListener("paste", finrepPasteCategory);
+  document.addEventListener("copy", finrepCopyInputCell);
+  document.addEventListener("paste", finrepPasteInputCell);
   window.__finrepCategoryClipboardListenersInstalled = true;
 }
