@@ -5322,6 +5322,7 @@ def _asset_input_column_defs(locale: str = DEFAULT_LOCALE) -> list[dict]:
             "field": "amount",
             "headerName": "Сумма",
             "editable": True,
+            "cellDataType": "text",
             "flex": 1,
             "minWidth": 160,
             "cellClassRules": {

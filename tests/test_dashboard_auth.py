@@ -55,6 +55,12 @@ def _component_text(node) -> str:
     return _component_text(getattr(node, "children", None))
 
 
+def test_example_env_does_not_enable_live_with_public_credentials():
+    lines = (Path(__file__).resolve().parents[1] / ".env.example").read_text().splitlines()
+    assert "FINREP_DASH_PASSWORD=" in lines
+    assert "FINREP_DASH_SECRET_KEY=" in lines
+
+
 def test_authentication_protects_dash_but_not_healthcheck():
     app = create_app()
     client = app.server.test_client()
