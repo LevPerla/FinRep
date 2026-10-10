@@ -3,9 +3,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
+import json
 from math import isfinite
 from pathlib import Path
 import re
+from time import monotonic
 
 import pandas as pd
 import requests
@@ -60,6 +62,9 @@ DEFAULT_TOKEN_CONTRACTS = {
     ("ethereum", "LINK"): "0x514910771af9ca656af840dff83e8264ecf986ca",
     ("ethereum", "USDT"): "0xdac17f958d2ee523a2206206994597c13d831ec7",
 }
+MAX_RESPONSE_BYTES = 1_000_000
+REFRESH_BUDGET_SECONDS = 60
+EVM_CHAIN_IDS = {"ethereum": "0x1", "base": "0x2105"}
 EVM_RPC_URLS = {
     "ethereum": [
         "https://eth.llamarpc.com",
@@ -277,8 +282,9 @@ def refresh_crypto_balances(
     balances_path: str | Path | None = None,
     timeout: int = 20,
 ) -> pd.DataFrame:
+    deadline = monotonic() + REFRESH_BUDGET_SECONDS
     if wallets_path is None and balances_path is None and config.use_sqlite_storage():
-        return _refresh_crypto_balances_sqlite(timeout)
+        return _refresh_crypto_balances_sqlite(timeout, deadline)
     wallets = read_crypto_wallets(wallets_path)
     existing = read_crypto_balances(balances_path)
     balance_key_columns = ["account", "chain", "asset", "address"]
@@ -306,7 +312,7 @@ def refresh_crypto_balances(
                 status_rows.append(_refresh_status_row(fetched_at, wallet, row_number, "error", issue.message))
             continue
         try:
-            balance = _validated_balance(_fetch_wallet_balance(wallet, timeout=timeout))
+            balance = _validated_balance(_fetch_wallet_balance(wallet, timeout=_remaining_timeout(deadline, timeout)))
             rows.append(
                 {
                     "fetched_at": fetched_at,
@@ -322,7 +328,7 @@ def refresh_crypto_balances(
             statuses.append(f"row {row_number}: {wallet['chain']}/{wallet['asset']} ok, {message}")
             status_rows.append(_refresh_status_row(fetched_at, wallet, row_number, "ok", message))
         except Exception as exc:
-            message = f"{wallet['chain']}/{wallet['asset']} balance refresh failed: {exc}"
+            message = f"{wallet['chain']}/{wallet['asset']} balance refresh failed: {_safe_error(exc, wallet['address'])}"
             cached = cached_by_key.get(wallet_key)
             if cached is not None:
                 message += f"; cached balance retained from {cached['fetched_at']}"
@@ -350,8 +356,9 @@ def refresh_crypto_transactions(
     transactions_path: str | Path | None = None,
     timeout: int = 20,
 ) -> pd.DataFrame:
+    deadline = monotonic() + REFRESH_BUDGET_SECONDS
     if wallets_path is None and transactions_path is None and config.use_sqlite_storage():
-        return _refresh_crypto_transactions_sqlite(timeout)
+        return _refresh_crypto_transactions_sqlite(timeout, deadline)
     wallets = read_crypto_wallets(wallets_path)
     issues = validate_crypto_wallets(wallets)
     if issues:
@@ -361,7 +368,7 @@ def refresh_crypto_transactions(
     for _, wallet in wallets.iterrows():
         if _is_disabled(wallet):
             continue
-        rows.extend(_fetch_wallet_transactions(wallet, timeout=timeout))
+        rows.extend(_fetch_wallet_transactions(wallet, timeout=_remaining_timeout(deadline, timeout)))
 
     if not rows:
         transactions = read_crypto_transactions(transactions_path)
@@ -375,7 +382,7 @@ def refresh_crypto_transactions(
     return transactions
 
 
-def _refresh_crypto_balances_sqlite(timeout: int) -> pd.DataFrame:
+def _refresh_crypto_balances_sqlite(timeout: int, deadline: float) -> pd.DataFrame:
     from src.data.sqlite_store import record_crypto_refresh, upsert_crypto_wallet
 
     wallets = read_crypto_wallets()
@@ -401,7 +408,7 @@ def _refresh_crypto_balances_sqlite(timeout: int) -> pd.DataFrame:
             errors.append(f"row {row_number}: {message}")
             continue
         try:
-            balance = _validated_balance(_fetch_wallet_balance(wallet, timeout=timeout))
+            balance = _validated_balance(_fetch_wallet_balance(wallet, timeout=_remaining_timeout(deadline, timeout)))
             source = _provider_name(wallet)
             record_crypto_refresh(
                 config.active_database_path(), wallet_id=wallet_id, fetched_at=fetched_at,
@@ -409,7 +416,7 @@ def _refresh_crypto_balances_sqlite(timeout: int) -> pd.DataFrame:
                 message=f"balance={balance}")
             statuses.append(f"row {row_number}: {wallet['chain']}/{wallet['asset']} ok, balance={balance}")
         except Exception as exc:
-            message = f"{wallet['chain']}/{wallet['asset']} balance refresh failed: {exc}"
+            message = f"{wallet['chain']}/{wallet['asset']} balance refresh failed: {_safe_error(exc, wallet['address'])}"
             record_crypto_refresh(
                 config.active_database_path(), wallet_id=wallet_id, fetched_at=fetched_at,
                 status="error", operation_key=operation_key, source=_provider_name(wallet),
@@ -422,7 +429,7 @@ def _refresh_crypto_balances_sqlite(timeout: int) -> pd.DataFrame:
     return balances
 
 
-def _refresh_crypto_transactions_sqlite(timeout: int) -> pd.DataFrame:
+def _refresh_crypto_transactions_sqlite(timeout: int, deadline: float) -> pd.DataFrame:
     from src.data.sqlite_store import record_crypto_refresh, upsert_crypto_wallet
 
     wallets = read_crypto_wallets()
@@ -440,7 +447,7 @@ def _refresh_crypto_transactions_sqlite(timeout: int) -> pd.DataFrame:
             enabled=True)
         operation_key = f"crypto-transactions:{fetched_at}:{wallet_id}"
         try:
-            rows = _fetch_wallet_transactions(wallet, timeout=timeout)
+            rows = _fetch_wallet_transactions(wallet, timeout=_remaining_timeout(deadline, timeout))
             transactions = [{
                 "occurred_on": row["date"], "chain_tx_id": row["tx_id"],
                 "operation": row["operation"], "quantity": row.get("quantity"),
@@ -455,7 +462,7 @@ def _refresh_crypto_transactions_sqlite(timeout: int) -> pd.DataFrame:
             record_crypto_refresh(
                 config.active_database_path(), wallet_id=wallet_id, fetched_at=fetched_at,
                 status="error", operation_key=operation_key, source=_provider_name(wallet),
-                message=f"transaction refresh failed: {exc}")
+                message=f"transaction refresh failed: {_safe_error(exc, wallet['address'])}")
     return read_crypto_transactions()
 
 
@@ -465,11 +472,15 @@ def refresh_crypto_price_cache(
     price_cache_path: str | Path | None = None,
     timeout: int = 20,
 ) -> pd.DataFrame:
+    deadline = monotonic() + REFRESH_BUDGET_SECONDS
     assets = sorted({str(asset).upper() for asset in (assets or SUPPORTED_ASSETS)})
     fetched_at = datetime.now().isoformat(timespec="seconds")
     rows = []
     for asset in assets:
-        price, source = _fetch_crypto_price(asset, currency, timeout)
+        try:
+            price, source = _fetch_crypto_price(asset, currency, _remaining_timeout(deadline, timeout))
+        except TimeoutError:
+            break
         if price is None:
             continue
         rows.append(
@@ -509,9 +520,9 @@ def _fetch_coingecko_price(asset: str, currency: str, timeout: int) -> float | N
             params={"ids": coin_id, "vs_currencies": currency.lower()},
             timeout=timeout,
             allow_redirects=False,
+            stream=True,
         )
-        response.raise_for_status()
-        price = response.json().get(coin_id, {}).get(currency.lower())
+        price = _response_json(response, timeout).get(coin_id, {}).get(currency.lower())
         return None if price is None else float(price)
     except Exception:
         return None
@@ -531,9 +542,9 @@ def _fetch_binance_price(asset: str, currency: str, timeout: int) -> float | Non
             params={"symbol": symbol},
             timeout=timeout,
             allow_redirects=False,
+            stream=True,
         )
-        response.raise_for_status()
-        price = response.json().get("price")
+        price = _response_json(response, timeout).get("price")
         return None if price is None else float(price)
     except Exception:
         return None
@@ -647,9 +658,8 @@ def _fetch_wallet_transactions(wallet: pd.Series, timeout: int) -> list[dict]:
 
 
 def _fetch_bitcoin_balance(address: str, timeout: int) -> str:
-    response = requests.get(f"https://blockstream.info/api/address/{address}", timeout=timeout, allow_redirects=False)
-    response.raise_for_status()
-    payload = response.json()
+    response = requests.get(f"https://blockstream.info/api/address/{address}", timeout=timeout, allow_redirects=False, stream=True)
+    payload = _response_json(response, timeout)
     chain_stats = payload["chain_stats"]
     mempool_stats = payload["mempool_stats"]
     sats = (
@@ -662,10 +672,9 @@ def _fetch_bitcoin_balance(address: str, timeout: int) -> str:
 
 
 def _fetch_bitcoin_transactions(wallet: pd.Series, timeout: int) -> list[dict]:
-    response = requests.get(f"https://blockstream.info/api/address/{wallet['address']}/txs", timeout=timeout, allow_redirects=False)
-    response.raise_for_status()
+    response = requests.get(f"https://blockstream.info/api/address/{wallet['address']}/txs", timeout=timeout, allow_redirects=False, stream=True)
     rows = []
-    for tx in response.json():
+    for tx in _response_json(response, timeout):
         status = tx.get("status", {})
         block_time = status.get("block_time")
         date = datetime.fromtimestamp(block_time).date().isoformat() if block_time else datetime.now().date().isoformat()
@@ -708,9 +717,9 @@ def _fetch_solana_balance(address: str, timeout: int) -> str:
         json={"jsonrpc": "2.0", "id": 1, "method": "getBalance", "params": [address]},
         timeout=timeout,
         allow_redirects=False,
+        stream=True,
     )
-    response.raise_for_status()
-    return _scaled_units(response.json()["result"]["value"], 9)
+    return _scaled_units(_response_json(response, timeout)["result"]["value"], 9)
 
 
 def _fetch_ton_balance(address: str, timeout: int) -> str:
@@ -719,9 +728,9 @@ def _fetch_ton_balance(address: str, timeout: int) -> str:
         params={"address": address},
         timeout=timeout,
         allow_redirects=False,
+        stream=True,
     )
-    response.raise_for_status()
-    payload = response.json()
+    payload = _response_json(response, timeout)
     if payload["ok"] is not True:
         raise ValueError("TON balance response is not ok")
     return _scaled_units(payload["result"], 9)
@@ -732,9 +741,9 @@ def _fetch_ton_jetton_balance(address: str, asset: str, timeout: int) -> str:
         f"https://tonapi.io/v2/accounts/{address}/jettons",
         timeout=timeout,
         allow_redirects=False,
+        stream=True,
     )
-    response.raise_for_status()
-    payload = response.json()
+    payload = _response_json(response, timeout)
     expected_master = TON_JETTONS[asset]
     for item in payload["balances"]:
         if item["jetton"]["address"] != expected_master:
@@ -744,9 +753,8 @@ def _fetch_ton_jetton_balance(address: str, asset: str, timeout: int) -> str:
 
 
 def _fetch_kaspa_balance(address: str, timeout: int) -> str:
-    response = requests.get(f"https://api.kaspa.org/addresses/{address}/balance", timeout=timeout, allow_redirects=False)
-    response.raise_for_status()
-    payload = response.json()
+    response = requests.get(f"https://api.kaspa.org/addresses/{address}/balance", timeout=timeout, allow_redirects=False, stream=True)
+    payload = _response_json(response, timeout)
     sompi = payload["balance"] if "balance" in payload else payload["balanceSompi"]
     return _scaled_units(sompi, 8)
 
@@ -760,9 +768,9 @@ def _fetch_xrp_balance(address: str, timeout: int) -> str:
         },
         timeout=timeout,
         allow_redirects=False,
+        stream=True,
     )
-    response.raise_for_status()
-    result = response.json()["result"]
+    result = _response_json(response, timeout)["result"]
     if result.get("error") == "actNotFound":
         return "0"
     if "error" in result:
@@ -772,23 +780,55 @@ def _fetch_xrp_balance(address: str, timeout: int) -> str:
 
 
 def _evm_rpc(chain: str, method: str, params: list, timeout: int):
+    deadline = monotonic() + timeout
     errors = []
     for url in EVM_RPC_URLS[chain]:
         try:
-            response = requests.post(
-                url,
-                json={"jsonrpc": "2.0", "id": 1, "method": method, "params": params},
-                timeout=timeout,
-                allow_redirects=False,
-            )
-            response.raise_for_status()
-            payload = response.json()
-            if "error" in payload:
-                raise ValueError(payload["error"])
-            return payload["result"]
+            if _evm_rpc_call(url, "eth_chainId", [], _remaining_timeout(deadline, timeout)) != EVM_CHAIN_IDS[chain]:
+                raise ValueError("RPC chain ID mismatch")
+            return _evm_rpc_call(url, method, params, _remaining_timeout(deadline, timeout))
         except Exception as exc:
-            errors.append(f"{url}: {exc}")
-    raise ValueError("all EVM RPC providers failed: " + " | ".join(errors))
+            errors.append(type(exc).__name__)
+    raise ValueError("all EVM RPC providers failed: " + ", ".join(errors))
+
+
+def _evm_rpc_call(url: str, method: str, params: list, timeout: float):
+    response = requests.post(
+        url, json={"jsonrpc": "2.0", "id": 1, "method": method, "params": params},
+        timeout=timeout, allow_redirects=False, stream=True,
+    )
+    payload = _response_json(response, timeout)
+    if "error" in payload:
+        raise ValueError("RPC returned an error")
+    return payload["result"]
+
+
+def _response_json(response, timeout: float):
+    deadline = monotonic() + timeout
+    try:
+        response.raise_for_status()
+        body = bytearray()
+        for chunk in response.iter_content(chunk_size=65_536):
+            if monotonic() > deadline:
+                raise TimeoutError("provider response time budget exceeded")
+            body.extend(chunk)
+            if len(body) > MAX_RESPONSE_BYTES:
+                raise ValueError("provider response exceeds size limit")
+        return json.loads(body)
+    finally:
+        response.close()
+
+
+def _remaining_timeout(deadline: float, timeout: float) -> float:
+    remaining = deadline - monotonic()
+    if remaining <= 0:
+        raise TimeoutError("crypto refresh time budget exceeded")
+    return min(timeout, remaining)
+
+
+def _safe_error(exc: Exception, address: str) -> str:
+    message = str(exc).replace(str(address), "[address]") if address else str(exc)
+    return re.sub(r"https?://\S+", "[provider URL]", message)
 
 
 def _conversion_rate(from_currency: str, to_currency: str, as_of_date=None) -> float:
@@ -849,10 +889,10 @@ def _validate_wallet_row(row: pd.Series | dict, row_number: int) -> list[CryptoV
         issues.append(CryptoValidationIssue(row_number, f"{chain} address should look like 0x + 40 hex chars"))
     if chain == "xrp" and address and not address.startswith("r"):
         issues.append(CryptoValidationIssue(row_number, "xrp address should start with 'r'"))
-    if token_contract and not EVM_ADDRESS_RE.match(token_contract):
-        issues.append(CryptoValidationIssue(row_number, "token_contract should look like 0x + 40 hex chars"))
-    if asset in TOKEN_DECIMALS and chain in EVM_RPC_URLS and not token_contract:
-        issues.append(CryptoValidationIssue(row_number, f"token_contract is required for {asset} on {chain}"))
+    if chain in EVM_RPC_URLS and asset != "ETH":
+        expected = DEFAULT_TOKEN_CONTRACTS.get((chain, asset))
+        if not expected or token_contract != expected:
+            issues.append(CryptoValidationIssue(row_number, f"unverified token contract for {asset} on {chain}"))
     return issues
 
 
