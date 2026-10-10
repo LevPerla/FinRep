@@ -37,6 +37,7 @@ from src.data.debts import (
 )
 from src.data.importers.bank_pdf import (
     BANK_PDF_UPLOAD_LIMIT_LABEL,
+    MAX_BANK_PDF_BYTES,
     MAX_BANK_PDF_BATCH_BYTES,
     MAX_BANK_PDF_BATCH_FILES,
     MAX_BANK_PDF_REQUEST_BYTES,
@@ -1492,8 +1493,8 @@ def register_callbacks(app: Dash) -> None:
         return (
             _merge_input_grid_rows(current_rows, _dataframe_records(data)),
             _localized_input_column_defs(_kaspi_import_column_defs(locale), locale),
-            message,
-            "warning" if errors else "secondary",
+            f"{message} {'; '.join(error_messages)}" if errors else message,
+            "danger" if errors else "secondary",
             period_options,
             period_value,
             balances[0] if balances else None,
@@ -3481,6 +3482,17 @@ def _transaction_input_layout(
                             **_section_style(theme),
                         },
                     ),
+                    html.Div(
+                        id="bank-upload-client-error",
+                        role="alert",
+                        className="alert alert-danger mt-2",
+                        style={"display": "none"},
+                        **{
+                            "data-max-files": MAX_BANK_PDF_BATCH_FILES,
+                            "data-max-file-bytes": MAX_BANK_PDF_BYTES,
+                            "data-max-total-bytes": MAX_BANK_PDF_BATCH_BYTES,
+                        },
+                    ),
                     dcc.Loading(
                         html.Div(
                             id="bank-upload-status",
@@ -3508,7 +3520,7 @@ def _transaction_input_layout(
                             html.Div(
                                 [
                                     dbc.Label(
-                                        "Statement" if normalize_locale(locale) == "en" else "Выписка",
+                                        "Statement balance" if normalize_locale(locale) == "en" else "Остаток из выписки",
                                         html_for="bank-statement-balance-source",
                                         className="small mb-1",
                                     ),
@@ -3518,6 +3530,16 @@ def _transaction_input_layout(
                                         value=None,
                                         clearable=False,
                                         className="dash-dropdown",
+                                    ),
+                                    html.Div(
+                                        (
+                                            "For each balance, select a statement, choose its asset, "
+                                            "and click Apply balance. Other balances are not saved automatically."
+                                            if normalize_locale(locale) == "en" else
+                                            "Для каждого остатка выбери выписку, затем актив и нажми «Применить остаток». "
+                                            "Остальные остатки не сохраняются автоматически."
+                                        ),
+                                        className="small opacity-75 mt-1",
                                     ),
                                 ],
                                 id="bank-statement-balance-source-container",

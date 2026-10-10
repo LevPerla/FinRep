@@ -87,6 +87,8 @@ def test_dashboard_reports_upload_limits_and_sets_transport_backstop(monkeypatch
 
     assert app.server.config["MAX_CONTENT_LENGTH"] == bank_pdf.MAX_BANK_PDF_REQUEST_BYTES
     assert "до 10 MiB и 50 страниц" in str(layout)
+    assert "Остальные остатки не сохраняются автоматически" in str(layout)
+    assert "data-max-total-bytes" in str(layout)
 
 
 def test_transport_backstop_rejects_request_body_before_dash_callback(monkeypatch):
@@ -281,7 +283,7 @@ def test_dashboard_batch_keeps_ready_files_and_marks_cross_file_duplicates(
 
     parser = Mock(side_effect=[
         parsed("kaspi_pdf", "100"),
-        bank_pdf.BankPdfReadError("Не удалось прочитать PDF."),
+        bank_pdf.BankPdfLimitError("PDF содержит 51 стр.; максимум 50."),
         parsed("ozon_pdf", "200"),
     ])
     monkeypatch.setattr(dashboard_app, "parse_bank_upload_contents", parser)
@@ -330,7 +332,8 @@ def test_dashboard_batch_keeps_ready_files_and_marks_cross_file_duplicates(
     assert {row["source_file"] for row in rows} == {"first.pdf", "third.pdf"}
     assert {row["import_action"] for row in rows} == {"review"}
     assert "broken.pdf — ошибка" in result["bank-upload-status"]["children"]
-    assert result["kaspi-import-message"]["color"] == "warning"
+    assert result["kaspi-import-message"]["color"] == "danger"
+    assert "broken.pdf: PDF содержит 51 стр.; максимум 50." in result["kaspi-import-message"]["children"]
     balances = result["bank-statement-balances"]["data"]
     assert [item["source_file"] for item in balances] == ["first.pdf", "third.pdf"]
     assert result["bank-statement-balance"]["data"] == balances[0]
@@ -354,4 +357,8 @@ def test_dashboard_batch_keeps_ready_files_and_marks_cross_file_duplicates(
     assert source_result["bank-statement-balance-source-container"]["style"] == {
         "display": "block"
     }
-    assert len(source_result["bank-statement-balance-source"]["options"]) == 2
+    source = source_result["bank-statement-balance-source"]
+    assert source["value"] == 0
+    assert [item["label"].split(" · ")[0] for item in source["options"]] == [
+        "first.pdf", "third.pdf",
+    ]
