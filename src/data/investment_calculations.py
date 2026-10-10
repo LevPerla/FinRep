@@ -33,9 +33,11 @@ def calculate_portfolio(currency: str) -> dict[str, pd.DataFrame]:
 
 
 def _combined_positions(investment_positions: pd.DataFrame, crypto_positions: pd.DataFrame) -> pd.DataFrame:
-    positions = pd.concat([investment_positions, crypto_positions], ignore_index=True, sort=False).fillna("")
-    if positions.empty:
+    populated = [frame for frame in (investment_positions, crypto_positions) if not frame.empty]
+    if not populated:
         return _empty_positions()
+    columns = investment_positions.columns.union(crypto_positions.columns, sort=False)
+    positions = pd.concat(populated, ignore_index=True, sort=False).reindex(columns=columns).fillna("")
     for column in ["quantity", "average_cost", "latest_price", "cost_basis", "market_value", "unrealized_pnl", "realized_pnl", "total_pnl", "sold_quantity"]:
         if column in positions.columns:
             positions[column] = pd.to_numeric(positions[column], errors="coerce").fillna(0.0)

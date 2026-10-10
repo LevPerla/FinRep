@@ -1,4 +1,5 @@
 from contextlib import nullcontext
+from concurrent.futures import Future
 from datetime import datetime, timezone
 
 from src.dashboard import app as app_module
@@ -62,3 +63,28 @@ def test_refresh_stale_reference_data_never_uses_network_in_test_mode(monkeypatc
 
     assert app_module._refresh_stale_reference_data() == (
         app_module.no_update, app_module.no_update)
+
+
+def test_reference_refresh_returns_immediately_and_reports_completion(monkeypatch):
+    task = Future()
+    submitted = []
+
+    class Pool:
+        def submit(self, fn, **kwargs):
+            submitted.append((fn, kwargs))
+            return task
+
+    monkeypatch.setattr(app_module.config, "is_test_mode", lambda: False)
+    monkeypatch.setattr(app_module.config, "use_sqlite_storage", lambda: True)
+    monkeypatch.setattr(app_module, "_REFERENCE_REFRESH_POOL", Pool())
+    monkeypatch.setattr(app_module, "_REFERENCE_REFRESH_TASK", None)
+
+    assert app_module._start_reference_refresh(force_fx=True, include_cpi=False)
+    assert app_module._take_reference_refresh_result() == (
+        False, app_module.no_update, app_module.no_update)
+    assert submitted == [(app_module._refresh_stale_reference_data,
+                          {"force_fx": True, "include_cpi": False})]
+
+    task.set_result(({"request": "auto", "status": "done"}, app_module.no_update))
+    assert app_module._take_reference_refresh_result() == (
+        True, {"request": "auto", "status": "done"}, app_module.no_update)
