@@ -4642,12 +4642,15 @@ def _mark_cross_file_duplicates(data: pd.DataFrame) -> pd.DataFrame:
     if data.empty or "source_file" not in data:
         return data
     result = data.copy(deep=True)
+    source_comments = result.get("source_comment", result["comment"]).where(
+        lambda values: values.astype(str).str.strip().ne(""), result["comment"]
+    )
     keys = pd.DataFrame({
         "date": result["date"].astype(str),
         "currency": result["currency"].astype(str).str.upper(),
         "amount": pd.to_numeric(result["amount"], errors="coerce").round(2),
         "direction": result["direction"].astype(str).str.lower(),
-        "comment": result["comment"].astype(str).str.replace(
+        "comment": source_comments.astype(str).str.replace(
             r"\s+", " ", regex=True).str.upper().str.strip(),
     })
     cross_file = pd.Series(False, index=result.index)
@@ -5391,7 +5394,9 @@ def _kaspi_import_column_defs(locale: str = DEFAULT_LOCALE) -> list[dict]:
             "params.api.__finrepCellSelection && "
             "params.api.__finrepCellSelection.has(params.node.id)"
         ),
-        "kaspi-category-income": "params.value == 'Доход'",
+        "kaspi-category-income": (
+            "params.colDef.context.incomeCategories.includes(params.value)"
+        ),
         "kaspi-category-saving": "params.value == 'Сбережения' || params.value == 'Инвестиции'",
         "kaspi-category-internal": "params.value == 'Внутренний перевод'",
         "kaspi-category-food": "params.value == 'Пища'",

@@ -8,6 +8,7 @@ import pytest
 from src import config
 from src.data import staging
 from src.data.importers import common
+from src.data.sqlite_store import add_cash_transaction, connect_database, initialize_database
 
 
 @pytest.fixture
@@ -97,3 +98,104 @@ def test_same_rows_from_another_statement_are_not_exact_duplicates(import_data):
         second = common.import_frame_from_rows(_rows("Same Shop"), statement_id="B")
 
     assert first.iloc[0]["source_id"] != second.iloc[0]["source_id"]
+
+
+def test_sqlite_reimport_matches_original_statement_comment_after_edit(tmp_path, monkeypatch):
+    database = tmp_path / "finrep.sqlite3"
+    initialize_database(database)
+    monkeypatch.setenv("FINREP_STORAGE_BACKEND", "sqlite")
+    monkeypatch.setenv("FINREP_SQLITE_PATH", str(database))
+    rows = [{"date": "2026-10-01", "signed_amount": 100, "currency": "RUB",
+             "details": "Partner distribution 4711"}]
+    preview = common.import_frame_from_rows(rows, statement_id="statement-a")
+    edited = preview.to_dict("records")
+    edited[0]["comment"] = "My investment income"
+
+    saved = common.save_input_grid_to_transactions(edited)
+
+    assert saved["published_rows"] == 1
+    with connect_database(database) as connection:
+        assert tuple(connection.execute(
+            "SELECT comment, source_comment FROM cash_transactions"
+        ).fetchone()) == ("My investment income", "Partner distribution 4711")
+    repeated = common.import_frame_from_rows(rows, statement_id="statement-b")
+    assert repeated.iloc[0]["duplicate_in_source"] == True
+    assert repeated.iloc[0]["import_action"] == "review"
+    approved = repeated.to_dict("records")
+    approved[0]["import_action"] = "import"
+    assert common.save_input_grid_to_transactions(approved)["published_rows"] == 1
+
+
+def test_sqlite_legacy_income_duplicate_uses_saved_comment(tmp_path, monkeypatch):
+    database = tmp_path / "finrep.sqlite3"
+    initialize_database(database)
+    monkeypatch.setenv("FINREP_STORAGE_BACKEND", "sqlite")
+    monkeypatch.setenv("FINREP_SQLITE_PATH", str(database))
+    add_cash_transaction(
+        database, transaction_id="legacy-income", occurred_on="2026-10-01",
+        flow_direction="income", category_id="income.salary", amount="100",
+        currency="RUB", comment="Salary October",
+    )
+
+    repeated = common.import_frame_from_rows([{
+        "date": "2026-10-01", "signed_amount": 100, "currency": "RUB",
+        "details": "Salary October",
+    }], statement_id="another-statement")
+
+    assert repeated.iloc[0]["duplicate_in_source"] == True
+
+
+def test_statement_comment_cannot_be_rewritten_with_draft_comment(tmp_path, monkeypatch):
+    database = tmp_path / "finrep.sqlite3"
+    initialize_database(database)
+    monkeypatch.setenv("FINREP_STORAGE_BACKEND", "sqlite")
+    monkeypatch.setenv("FINREP_SQLITE_PATH", str(database))
+    preview = common.import_frame_from_rows([{
+        "date": "2026-10-01", "signed_amount": -100, "currency": "RUB",
+        "details": "Merchant reference 4711",
+    }], statement_id="statement-a")
+    assert common.save_import_to_staging(preview.to_dict("records"))["accepted_rows"] == 1
+
+    staging.update_transaction_draft(
+        preview.iloc[0]["source"], preview.iloc[0]["source_id"],
+        {"comment": "My note", "source_comment": "forged"},
+    )
+
+    with connect_database(database) as connection:
+        assert tuple(connection.execute(
+            "SELECT comment, source_comment FROM transaction_drafts"
+        ).fetchone()) == ("My note", "Merchant reference 4711")
+
+
+def test_csv_exported_draft_keeps_statement_comment_for_duplicates(tmp_path, monkeypatch):
+    monkeypatch.setenv("FINREP_STORAGE_BACKEND", "csv")
+    monkeypatch.setattr(config, "DATA_PATH", str(tmp_path))
+    staging.write_transaction_drafts(pd.DataFrame([{
+        "date": "2026-10-01", "category": "Прочее", "currency": "RUB",
+        "amount": "100", "comment": "My note",
+        "source_comment": "Merchant reference 4711", "source": "kaspi_pdf",
+        "source_id": "prior-statement", "direction": "debit", "status": "exported",
+    }]))
+    with patch.object(common, "get_transactions", return_value=pd.DataFrame()):
+        repeated = common.import_frame_from_rows([{
+            "date": "2026-10-01", "signed_amount": -100, "currency": "RUB",
+            "details": "Merchant reference 4711",
+        }], statement_id="another-statement")
+
+    assert repeated.iloc[0]["duplicate_in_source"] == True
+
+
+def test_sqlite_new_duplicate_after_preview_is_skipped(tmp_path, monkeypatch):
+    database = tmp_path / "finrep.sqlite3"
+    initialize_database(database)
+    monkeypatch.setenv("FINREP_STORAGE_BACKEND", "sqlite")
+    monkeypatch.setenv("FINREP_SQLITE_PATH", str(database))
+    rows = [{"date": "2026-10-01", "signed_amount": -100, "currency": "RUB",
+             "details": "Merchant reference 4711"}]
+    first = common.import_frame_from_rows(rows, statement_id="statement-a")
+    second = common.import_frame_from_rows(rows, statement_id="statement-b")
+    assert common.save_input_grid_to_transactions(first.to_dict("records"))["published_rows"] == 1
+
+    result = common.save_input_grid_to_transactions(second.to_dict("records"))
+    assert result["published_rows"] == 0
+    assert result["already_published_rows"] == 1

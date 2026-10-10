@@ -3,7 +3,7 @@ from unittest.mock import patch
 import pandas as pd
 
 from src.data.importers import common
-from src.data.sqlite_store import connect_database, initialize_database
+from src.data.sqlite_store import add_cash_transaction, connect_database, initialize_database
 
 
 def test_category_comes_from_latest_transaction_with_same_comment():
@@ -108,3 +108,22 @@ def test_positive_transactions_receive_concrete_income_categories(
         "Проценты": "Проценты",
         "Cashback": "Прочие доходы",
     }
+
+
+def test_income_category_is_reused_from_sqlite_history(tmp_path, monkeypatch):
+    database = tmp_path / "target.sqlite3"
+    initialize_database(database)
+    monkeypatch.setenv("FINREP_STORAGE_BACKEND", "sqlite")
+    monkeypatch.setenv("FINREP_SQLITE_PATH", str(database))
+    add_cash_transaction(
+        database, transaction_id="previous-income", occurred_on="2026-09-01",
+        flow_direction="income", category_id="income.investment", amount="100",
+        currency="RUB", comment="Partner distribution",
+    )
+
+    preview = common.import_frame_from_rows([{
+        "date": "2026-10-01", "signed_amount": 50, "currency": "RUB",
+        "details": "Partner distribution",
+    }])
+
+    assert preview.iloc[0]["category"] == "Инвест доход"

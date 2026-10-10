@@ -29,6 +29,7 @@ DRAFT_COLUMNS = [
     "currency",
     "amount",
     "comment",
+    "source_comment",
     "source",
     "source_id",
     "direction",
@@ -384,7 +385,8 @@ def update_transaction_draft(source: str, source_id: str, updates: dict, path: s
         if not mask.any():
             raise KeyError(f"draft transaction not found: {source}/{source_id}")
         row = data.loc[mask].iloc[0].to_dict()
-        row.update({key: value for key, value in updates.items() if key in DRAFT_COLUMNS})
+        row.update({key: value for key, value in updates.items()
+                    if key in DRAFT_COLUMNS and key != "source_comment"})
         _update_sqlite_draft_rows([row], revision)
         return read_transaction_drafts()
     draft_path = _draft_path(path)
@@ -397,7 +399,8 @@ def update_transaction_draft(source: str, source_id: str, updates: dict, path: s
             raise ValueError(
                 "Проведённую операцию нельзя изменить через staging. Исправь данные в Preview до подтверждения."
             )
-        allowed_updates = {key: value for key, value in updates.items() if key in DRAFT_COLUMNS}
+        allowed_updates = {key: value for key, value in updates.items()
+                           if key in DRAFT_COLUMNS and key != "source_comment"}
         for key, value in allowed_updates.items():
             data.loc[mask, key] = value
         _write_transaction_drafts_unlocked(data, draft_path)
@@ -1184,6 +1187,7 @@ def _sqlite_drafts_frame() -> tuple[pd.DataFrame, str]:
             "date": row["occurred_on"], "category": category,
             "currency": row["currency_code"], "amount": format_money_amount(row["amount"]),
             "comment": row["comment"], "source": row["origin_kind"],
+            "source_comment": row["source_comment"],
             "source_id": row["origin_key"], "direction": direction,
             "bank_status": row["bank_status"] or "",
             "bank_reference": row["bank_reference"],
@@ -1328,6 +1332,7 @@ def _sqlite_cash_draft_payload(row: pd.Series | dict) -> dict:
         "occurred_on": str(row.get("date", "")), "flow_direction": direction,
         "category_id": category_id, "amount": row.get("amount"),
         "currency": str(row.get("currency", "")), "comment": row.get("comment", ""),
+        "source_comment": str(row.get("source_comment", "")),
         "origin_kind": str(row.get("source", "manual")),
         "origin_key": str(row.get("source_id", "")),
         "bank_status": str(row.get("bank_status", "")) or None,

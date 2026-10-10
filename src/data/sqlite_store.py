@@ -15,7 +15,7 @@ from src import config
 from src.data.money import parse_money_amount
 
 
-SCHEMA_VERSION = 17
+SCHEMA_VERSION = 18
 _DIRECTIONS = {"income", "expense"}
 _DATASETS = {"cash_transactions", "asset_snapshots"}
 _ASSET_TYPES = (
@@ -150,7 +150,8 @@ _TABLES = (
         amount_minor INTEGER NOT NULL CHECK (amount_minor > 0),
         currency_code TEXT NOT NULL REFERENCES currencies(code) ON DELETE RESTRICT,
         category_id TEXT NOT NULL REFERENCES categories(id) ON DELETE RESTRICT,
-        comment TEXT NOT NULL DEFAULT '', classification_method TEXT,
+        comment TEXT NOT NULL DEFAULT '', source_comment TEXT NOT NULL DEFAULT '',
+        classification_method TEXT,
         status TEXT NOT NULL DEFAULT 'posted' CHECK (status IN ('posted', 'void')),
         row_version INTEGER NOT NULL DEFAULT 1 CHECK (row_version >= 1),
         created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
@@ -216,6 +217,7 @@ _TABLES = (
         amount_minor INTEGER NOT NULL CHECK (amount_minor > 0),
         currency_code TEXT NOT NULL REFERENCES currencies(code) ON DELETE RESTRICT,
         category_id TEXT REFERENCES categories(id) ON DELETE RESTRICT, comment TEXT NOT NULL DEFAULT '',
+        source_comment TEXT NOT NULL DEFAULT '',
         source_record_id TEXT UNIQUE REFERENCES source_records(id) ON DELETE RESTRICT,
         origin_kind TEXT NOT NULL CHECK (trim(origin_kind) <> ''),
         origin_key TEXT NOT NULL CHECK (trim(origin_key) <> ''),
@@ -898,6 +900,20 @@ def _migrate_v16_to_v17(connection: sqlite3.Connection) -> None:
     connection.execute("PRAGMA user_version = 17")
 
 
+def _migrate_v17_to_v18(connection: sqlite3.Connection) -> None:
+    for table in ("transaction_drafts", "cash_transactions"):
+        columns = {row["name"] for row in connection.execute(f"PRAGMA table_info({table})")}
+        if "source_comment" not in columns:
+            connection.execute(
+                f"ALTER TABLE {table} ADD COLUMN source_comment TEXT NOT NULL DEFAULT ''"
+            )
+    connection.execute(
+        "INSERT INTO schema_migrations VALUES (?, ?, ?, ?)",
+        (18, "preserve_statement_comment", _schema_checksum(), _utc_now()),
+    )
+    connection.execute("PRAGMA user_version = 18")
+
+
 @contextmanager
 def connect_database(path: str | Path, *, writable: bool = False):
     database_path = Path(path).resolve()
@@ -947,6 +963,7 @@ def initialize_database(path: str | Path, *, data_mode: str = "synthetic") -> No
             _migrate_v14_to_v15(connection)
             _migrate_v15_to_v16(connection)
             _migrate_v16_to_v17(connection)
+            _migrate_v17_to_v18(connection)
             return
         if version == 8:
             _migrate_v8_to_v9(connection)
@@ -958,6 +975,7 @@ def initialize_database(path: str | Path, *, data_mode: str = "synthetic") -> No
             _migrate_v14_to_v15(connection)
             _migrate_v15_to_v16(connection)
             _migrate_v16_to_v17(connection)
+            _migrate_v17_to_v18(connection)
             return
         if version == 9:
             _migrate_v9_to_v10(connection)
@@ -968,6 +986,7 @@ def initialize_database(path: str | Path, *, data_mode: str = "synthetic") -> No
             _migrate_v14_to_v15(connection)
             _migrate_v15_to_v16(connection)
             _migrate_v16_to_v17(connection)
+            _migrate_v17_to_v18(connection)
             return
         if version == 10:
             _migrate_v10_to_v11(connection)
@@ -977,6 +996,7 @@ def initialize_database(path: str | Path, *, data_mode: str = "synthetic") -> No
             _migrate_v14_to_v15(connection)
             _migrate_v15_to_v16(connection)
             _migrate_v16_to_v17(connection)
+            _migrate_v17_to_v18(connection)
             return
         if version == 11:
             _migrate_v11_to_v12(connection)
@@ -985,6 +1005,7 @@ def initialize_database(path: str | Path, *, data_mode: str = "synthetic") -> No
             _migrate_v14_to_v15(connection)
             _migrate_v15_to_v16(connection)
             _migrate_v16_to_v17(connection)
+            _migrate_v17_to_v18(connection)
             return
         if version == 12:
             _migrate_v12_to_v13(connection)
@@ -992,24 +1013,32 @@ def initialize_database(path: str | Path, *, data_mode: str = "synthetic") -> No
             _migrate_v14_to_v15(connection)
             _migrate_v15_to_v16(connection)
             _migrate_v16_to_v17(connection)
+            _migrate_v17_to_v18(connection)
             return
         if version == 13:
             _migrate_v13_to_v14(connection)
             _migrate_v14_to_v15(connection)
             _migrate_v15_to_v16(connection)
             _migrate_v16_to_v17(connection)
+            _migrate_v17_to_v18(connection)
             return
         if version == 14:
             _migrate_v14_to_v15(connection)
             _migrate_v15_to_v16(connection)
             _migrate_v16_to_v17(connection)
+            _migrate_v17_to_v18(connection)
             return
         if version == 15:
             _migrate_v15_to_v16(connection)
             _migrate_v16_to_v17(connection)
+            _migrate_v17_to_v18(connection)
             return
         if version == 16:
             _migrate_v16_to_v17(connection)
+            _migrate_v17_to_v18(connection)
+            return
+        if version == 17:
+            _migrate_v17_to_v18(connection)
             return
         has_tables = connection.execute(
             "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' LIMIT 1"
@@ -1451,12 +1480,13 @@ def append_cash_drafts(path: str | Path, *, rows: list[dict],
             _require_active_category(connection, category_id, flow_direction)
             values = (
                 occurred_on, flow_direction, amount_minor, currency, category_id,
-                str(row.get("comment", "")), row.get("source_record_id"), origin_kind,
+                str(row.get("comment", "")), str(row.get("source_comment", "")),
+                row.get("source_record_id"), origin_kind,
                 origin_key, bank_status, str(row.get("bank_reference", "")),
                 str(row.get("bank_account_id", "")), status,
             )
             existing = connection.execute("""SELECT id, occurred_on, flow_direction,
-                amount_minor, currency_code, category_id, comment, source_record_id,
+                amount_minor, currency_code, category_id, comment, source_comment, source_record_id,
                 origin_kind, origin_key, bank_status, bank_reference, bank_account_id, status
                 FROM transaction_drafts WHERE origin_kind = ? AND origin_key = ?""",
                 (origin_kind, origin_key)).fetchone()
@@ -1468,9 +1498,10 @@ def append_cash_drafts(path: str | Path, *, rows: list[dict],
             draft_id = str(row.get("draft_id") or uuid4().hex)
             connection.execute("""INSERT INTO transaction_drafts
                 (id, occurred_on, draft_kind, domain_action, flow_direction, amount_minor,
-                 currency_code, category_id, comment, source_record_id, origin_kind, origin_key,
+                 currency_code, category_id, comment, source_comment, source_record_id,
+                 origin_kind, origin_key,
                  bank_status, bank_reference, bank_account_id, status, created_at, updated_at)
-                VALUES (?, ?, 'cash', NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                VALUES (?, ?, 'cash', NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (draft_id, *values, now, now))
             accepted += 1
         revision = _draft_revision(connection)
@@ -1670,11 +1701,11 @@ def publish_transaction_draft_preview(
                     f"cash-transaction\0{draft['id']}".encode()).hexdigest()[:32]
                 connection.execute("""INSERT INTO cash_transactions
                     (id, occurred_on, flow_direction, amount_minor, currency_code, category_id,
-                     comment, classification_method, created_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, 'user', ?, ?)""",
+                     comment, source_comment, classification_method, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'user', ?, ?)""",
                     (entity_id, draft["occurred_on"], draft["flow_direction"],
                      draft["amount_minor"], draft["currency_code"], draft["category_id"],
-                     draft["comment"], now, now))
+                     draft["comment"], draft["source_comment"], now, now))
                 if draft["source_record_id"]:
                     connection.execute(
                         "INSERT INTO transaction_source_links VALUES (?, ?, 'original', NULL)",
@@ -1762,11 +1793,11 @@ def publish_cash_drafts(path: str | Path, *, draft_ids: list[str], operation_key
                 f"cash-transaction\0{draft['id']}".encode()).hexdigest()[:32]
             connection.execute("""INSERT INTO cash_transactions
                 (id, occurred_on, flow_direction, amount_minor, currency_code, category_id,
-                 comment, classification_method, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, 'user', ?, ?)""",
+                 comment, source_comment, classification_method, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'user', ?, ?)""",
                 (transaction_id, draft["occurred_on"], draft["flow_direction"],
                  draft["amount_minor"], draft["currency_code"], draft["category_id"],
-                 draft["comment"], now, now))
+                 draft["comment"], draft["source_comment"], now, now))
             if draft["source_record_id"]:
                 connection.execute("INSERT INTO transaction_source_links VALUES (?, ?, 'original', NULL)",
                                    (transaction_id, draft["source_record_id"]))

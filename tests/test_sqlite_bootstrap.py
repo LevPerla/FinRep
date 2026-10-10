@@ -205,7 +205,35 @@ def test_live_bootstrap_upgrades_existing_v16_database(monkeypatch, tmp_path):
         assert "target_expense_months" in {
             row[1] for row in connection.execute("PRAGMA table_info(annual_goals)")
         }
-    assert database.with_name("finrep.pre-v17.sqlite3").is_file()
+    assert database.with_name(f"finrep.pre-v{SCHEMA_VERSION}.sqlite3").is_file()
+
+
+def test_v17_upgrade_preserves_legacy_comments_and_adds_source_comment(tmp_path):
+    database = tmp_path / "synthetic.sqlite3"
+    initialize_database(database)
+    with sqlite3.connect(database) as connection:
+        connection.execute("""INSERT INTO cash_transactions
+            (id, occurred_on, flow_direction, amount_minor, currency_code,
+             category_id, comment, created_at, updated_at)
+            VALUES ('legacy', '2026-10-01', 'income', 10000, 'RUB',
+                    'income.salary', 'Edited user comment', 'now', 'now')""")
+        for table in ("cash_transactions", "transaction_drafts"):
+            connection.execute(f"ALTER TABLE {table} DROP COLUMN source_comment")
+        connection.execute("DELETE FROM schema_migrations WHERE version = 18")
+        connection.execute("""INSERT INTO schema_migrations VALUES
+            (17, 'annual_goal_expense_months', ?, 'now')""", ("0" * 64,))
+        connection.execute("PRAGMA user_version = 17")
+
+    initialize_database(database)
+
+    with sqlite3.connect(database) as connection:
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
+        assert connection.execute(
+            "SELECT comment, source_comment FROM cash_transactions WHERE id = 'legacy'"
+        ).fetchone() == ("Edited user comment", "")
+        assert "source_comment" in {
+            row[1] for row in connection.execute("PRAGMA table_info(transaction_drafts)")
+        }
 
 
 def test_empty_install_creates_live_database_once(monkeypatch, tmp_path):

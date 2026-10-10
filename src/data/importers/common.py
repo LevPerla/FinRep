@@ -58,6 +58,7 @@ def import_frame_from_rows(
         lambda value: "credit" if float(value) > 0 else "debit"
     )
     data["comment"] = data["details"].map(_clean_comment)
+    data["source_comment"] = data["details"].astype(str)
     data["source"] = source
     data["source_id"] = _source_ids(data, statement_id or _rows_statement_id(rows))
     if "bank_status" not in data.columns:
@@ -211,19 +212,20 @@ def save_import_to_transactions(import_rows: list[dict]) -> dict:
     rows_to_stage = actionable[
         [key not in exported_keys for key in actionable_keys]
     ].copy(deep=True)
-    existing_source_keys = _existing_source_keys()
-    history_duplicate_mask = rows_to_stage.apply(
-        lambda row: _source_key(row) in existing_source_keys, axis=1
-    )
-    history_duplicate_keys = set(zip(
-        rows_to_stage.loc[history_duplicate_mask, "source"].astype(str),
-        rows_to_stage.loc[history_duplicate_mask, "source_id"].astype(str),
+    new_history_duplicate_mask = pd.Series(False, index=rows_to_stage.index)
+    if not rows_to_stage.empty:
+        existing_source_keys = _existing_source_keys()
+        new_history_duplicate_mask = rows_to_stage.apply(
+            lambda row: _source_key(row) in existing_source_keys, axis=1
+        ) & ~_as_bool_series(rows_to_stage["duplicate_in_source"])
+    new_history_duplicate_keys = set(zip(
+        rows_to_stage.loc[new_history_duplicate_mask, "source"].astype(str),
+        rows_to_stage.loc[new_history_duplicate_mask, "source_id"].astype(str),
     ))
+    rows_to_stage = rows_to_stage.loc[~new_history_duplicate_mask]
     stage_result = {"accepted_rows": 0, "skipped_rows": 0}
     if not rows_to_stage.empty:
         rows_to_stage["staging_revision"] = current_revision
-        rows_to_stage["duplicate_in_source"] = history_duplicate_mask
-        rows_to_stage.loc[history_duplicate_mask, "import_action"] = "skip"
         stage_result = save_import_to_staging(rows_to_stage.to_dict("records"))
 
     stored_after, _ = read_transaction_drafts_snapshot()
@@ -233,17 +235,17 @@ def save_import_to_transactions(import_rows: list[dict]) -> dict:
     ))
     rows_to_publish = actionable[
         [
-            key in stored_keys and key not in history_duplicate_keys
+            key in stored_keys and key not in new_history_duplicate_keys
             for key in actionable_keys
         ]
     ]
     publish_result = publish_transaction_draft_rows(
         rows_to_publish.to_dict("records"))
-    publish_result["already_published_rows"] += len(history_duplicate_keys)
+    publish_result["already_published_rows"] += len(new_history_duplicate_keys)
     return {
         "accepted_rows": int(stage_result["accepted_rows"]),
         "skipped_rows": int(len(incoming) - len(actionable))
-        + len(history_duplicate_keys),
+        + len(new_history_duplicate_keys),
         **publish_result,
     }
 
@@ -665,12 +667,28 @@ def _sort_import_preview(data: pd.DataFrame) -> pd.DataFrame:
 
 
 def _existing_source_keys() -> set[tuple[str, str, float, str, str]]:
+    if config.use_sqlite_storage():
+        from src.data.sqlite_store import connect_database
+
+        if not config.active_database_path().exists():
+            return set()
+        with connect_database(config.active_database_path()) as connection:
+            rows = connection.execute("""SELECT t.occurred_on, t.currency_code,
+                t.amount_minor, c.minor_unit, t.flow_direction,
+                COALESCE(NULLIF(t.source_comment, ''), t.comment) AS source_comment
+                FROM cash_transactions t JOIN currencies c ON c.code = t.currency_code
+                WHERE t.status = 'posted'""").fetchall()
+        return {
+            (row["occurred_on"], row["currency_code"],
+             round(row["amount_minor"] / (10 ** row["minor_unit"]), 2),
+             _normalize_text(row["source_comment"]),
+             "credit" if row["flow_direction"] == "income" else "debit")
+            for row in rows
+        }
     try:
         transactions = get_transactions()
     except Exception:
-        return set()
-    if transactions.empty:
-        return set()
+        transactions = pd.DataFrame()
     keys = set()
     for _, row in transactions.iterrows():
         date = pd.to_datetime(row.get("Дата"), errors="coerce")
@@ -689,6 +707,13 @@ def _existing_source_keys() -> set[tuple[str, str, float, str, str]]:
                 direction,
             )
         )
+    drafts, _ = read_transaction_drafts_snapshot()
+    exported = drafts[drafts["status"].eq("exported") & drafts["source_comment"].ne("")]
+    for _, row in exported.iterrows():
+        try:
+            keys.add(_source_key(row))
+        except ValueError:
+            continue
     return keys
 
 
@@ -696,14 +721,15 @@ def _source_key(row: pd.Series) -> tuple[str, str, float, str, str]:
     return (
         str(row["date"]),
         str(row["currency"]).upper(),
-        round(abs(float(row["amount"])), 2),
-        _normalize_text(row.get("comment", "")),
+        round(abs(float(parse_money_amount(row["amount"]))), 2),
+        _normalize_text(row.get("source_comment") or row.get("details") or row.get("comment", "")),
         str(row.get("direction", "")).lower(),
     )
 
 
 def _stored_transaction_direction(category: str) -> str:
-    if category in {"Доход", "Погашение деб. зад.", "Кредиторская задолженность"}:
+    if (_category_direction(category) == "income"
+            or category in {"Погашение деб. зад.", "Кредиторская задолженность"}):
         return "credit"
     return "debit"
 
