@@ -77,10 +77,14 @@ def test_asset_grid_record_preserves_large_amount_for_editing(assets_root, monke
     monkeypatch.setenv("FINREP_DASH_PASSWORD", "synthetic-password")
     monkeypatch.setenv("FINREP_DASH_SECRET_KEY", "synthetic-key")
     _put_snapshot(assets_root, "99999999999999.99|RUB")
-    from src.dashboard.app import _asset_input_records
+    from src.dashboard.app import _asset_input_column_defs, _asset_input_records
 
     records = _asset_input_records("2026", "01")
 
     assert records[0]["amount"] == "99 999 999 999 999.99"
     assert records[0]["amount_sort"] == 1
+    amount_column = next(
+        column for column in _asset_input_column_defs() if column["field"] == "amount"
+    )
+    assert amount_column["cellDataType"] == "text"
     json.dumps(records)

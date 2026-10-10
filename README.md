@@ -222,13 +222,32 @@ date;currency;usd_rate;source;fetched_at
 
 ## Docker
 
-Copy `.env.example` to `.env`, then choose either demo data or private server paths:
+Copy `.env.example` to `.env`, then choose either read-only demo or a private LIVE install:
 
 ```bash
 cp .env.example .env
 docker compose up -d --build
 docker compose ps
 ```
+
+With both secrets blank, only the demo is available. For LIVE, set distinct strong
+`FINREP_DASH_PASSWORD` and `FINREP_DASH_SECRET_KEY` values in the git-ignored
+`.env`, and set `FINREP_DATA_DIR` and `FINREP_REPORTS_DIR` to dedicated,
+persistent host directories. Keep the SQLite path at `/app/data/finrep.sqlite3`
+inside the container. On an empty data directory, first LIVE startup creates the
+database and 14 active categories; it does not import the bundled demo data.
+If legacy CSV data already exists in that directory, startup stops and requires
+the one-time migration instead of creating an empty database over it.
+
+Check `docker compose ps` for `healthy`, then log in to LIVE, save one operation
+and one typed asset with its first monthly balance. Restart with
+`docker compose restart` and confirm those entries remain. Before using real
+data, make an initial SQLite online backup to a **separate** location (for
+example, `sqlite3 /path/to/data/finrep.sqlite3 ".backup '/path/to/backups/finrep-initial.sqlite3'"`),
+verify it with `PRAGMA integrity_check`, and include the persistent data and
+reports directories in your regular backup process. Rebuilding with
+`docker compose up -d --build` preserves the bind-mounted data; do not remove
+or replace those directories during upgrades.
 
 By default the compose file binds to `127.0.0.1`. Keep it that way unless the host is protected by a firewall, VPN, or SSH tunnel.
 
