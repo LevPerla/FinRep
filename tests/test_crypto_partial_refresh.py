@@ -1,4 +1,5 @@
 from pathlib import Path
+import json
 from unittest.mock import Mock
 
 import pandas as pd
@@ -6,6 +7,12 @@ import pytest
 
 from src import config
 from src.data import crypto
+
+
+def provider_response(payload):
+    response = Mock()
+    response.iter_content.return_value = [json.dumps(payload).encode()]
+    return response
 
 
 @pytest.fixture
@@ -138,8 +145,7 @@ def test_removed_and_disabled_wallets_are_not_kept_in_current_cache(crypto_paths
 
 @pytest.mark.parametrize("provider", ["bitcoin", "ton", "kaspa", "xrp"])
 def test_incomplete_provider_response_is_not_a_zero_balance(provider, monkeypatch):
-    response = Mock()
-    response.json.return_value = {}
+    response = provider_response({})
     monkeypatch.setattr(crypto.requests, "get", lambda *args, **kwargs: response)
     monkeypatch.setattr(crypto.requests, "post", lambda *args, **kwargs: response)
 
@@ -155,8 +161,7 @@ def test_incomplete_provider_response_is_not_a_zero_balance(provider, monkeypatc
     ("xrp", {"result": {"error": "actNotFound"}}),
 ])
 def test_explicit_provider_zero_is_kept(provider, payload, monkeypatch):
-    response = Mock()
-    response.json.return_value = payload
+    response = provider_response(payload)
     monkeypatch.setattr(crypto.requests, "get", lambda *args, **kwargs: response)
     monkeypatch.setattr(crypto.requests, "post", lambda *args, **kwargs: response)
 
@@ -165,11 +170,10 @@ def test_explicit_provider_zero_is_kept(provider, payload, monkeypatch):
 
 def test_provider_smallest_units_do_not_round_through_float(monkeypatch):
     satoshis = 10**18 + 1
-    response = Mock()
-    response.json.return_value = {
+    response = provider_response({
         "chain_stats": {"funded_txo_sum": satoshis, "spent_txo_sum": 0},
         "mempool_stats": {"funded_txo_sum": 0, "spent_txo_sum": 0},
-    }
+    })
     monkeypatch.setattr(crypto.requests, "get", lambda *args, **kwargs: response)
     assert crypto._fetch_bitcoin_balance("synthetic-address", 1) == "10000000000.00000001"
 
@@ -179,32 +183,29 @@ def test_provider_smallest_units_do_not_round_through_float(monkeypatch):
 
 
 def test_ton_usdt_matches_official_master_not_symbol(monkeypatch):
-    response = Mock()
-    response.json.return_value = {"balances": [
+    response = provider_response({"balances": [
         {"jetton": {"symbol": "USDt", "address": "synthetic-fake-master", "decimals": 6},
          "balance": "123000000"},
         {"jetton": {"symbol": "USDt", "address": "EQCxE6mUtQJKFnGfaROTKOt1lZbDiiX1kCixRv7Nw2Id_sDs", "decimals": 6},
          "balance": "1250000"},
-    ]}
+    ]})
     monkeypatch.setattr(crypto.requests, "get", lambda *args, **kwargs: response)
 
     assert crypto._fetch_ton_jetton_balance("synthetic-address", "USDT", 1) == "1.25"
 
 
 def test_ton_usdt_ignores_spoofed_symbol(monkeypatch):
-    response = Mock()
-    response.json.return_value = {"balances": [
+    response = provider_response({"balances": [
         {"jetton": {"symbol": "USDt", "address": "synthetic-fake-master", "decimals": 6},
          "balance": "123000000"},
-    ]}
+    ]})
     monkeypatch.setattr(crypto.requests, "get", lambda *args, **kwargs: response)
 
     assert crypto._fetch_ton_jetton_balance("synthetic-address", "USDT", 1) == "0"
 
 
 def test_ton_jetton_incomplete_response_is_not_zero(monkeypatch):
-    response = Mock()
-    response.json.return_value = {}
+    response = provider_response({})
     monkeypatch.setattr(crypto.requests, "get", lambda *args, **kwargs: response)
 
     with pytest.raises((KeyError, ValueError, TypeError)):
@@ -214,8 +215,7 @@ def test_ton_jetton_incomplete_response_is_not_zero(monkeypatch):
 def test_incomplete_response_preserves_cached_balance(crypto_paths, monkeypatch):
     write_csv(crypto_paths["wallets"], [wallet("A")], crypto.WALLET_COLUMNS)
     crypto.write_crypto_balances(pd.DataFrame([balance("A", "1")]), crypto_paths["balances"])
-    response = Mock()
-    response.json.return_value = {}
+    response = provider_response({})
     monkeypatch.setattr(crypto.requests, "get", lambda *args, **kwargs: response)
 
     refreshed = crypto.refresh_crypto_balances(crypto_paths["wallets"], crypto_paths["balances"])
@@ -226,8 +226,7 @@ def test_incomplete_response_preserves_cached_balance(crypto_paths, monkeypatch)
 
 @pytest.mark.parametrize("bad_price", ["NaN", "Infinity", "-1", "0", "not-a-price"])
 def test_bad_coingecko_price_falls_back_without_poisoning_cache(bad_price, monkeypatch):
-    response = Mock()
-    response.json.return_value = {"bitcoin": {"usd": bad_price}}
+    response = provider_response({"bitcoin": {"usd": bad_price}})
     seen = []
 
     def fake_get(*args, **kwargs):
@@ -239,6 +238,72 @@ def test_bad_coingecko_price_falls_back_without_poisoning_cache(bad_price, monke
 
     assert crypto._fetch_crypto_price("BTC", "USD", 1) == (123.0, "binance")
     assert seen[0]["allow_redirects"] is False
+
+
+def test_provider_response_size_is_bounded_and_closed():
+    response = Mock()
+    response.iter_content.return_value = [b"x" * (crypto.MAX_RESPONSE_BYTES + 1)]
+    with pytest.raises(ValueError, match="size limit"):
+        crypto._response_json(response, 1)
+    response.close.assert_called_once()
+
+
+def test_slow_provider_response_hits_time_budget(monkeypatch):
+    response = provider_response({"result": "1"})
+    clock = iter([0, 2])
+    monkeypatch.setattr(crypto, "monotonic", lambda: next(clock))
+    with pytest.raises(TimeoutError, match="response time budget"):
+        crypto._response_json(response, 1)
+    response.close.assert_called_once()
+
+
+def test_refresh_budget_stops_later_wallets_without_losing_cache(crypto_paths, monkeypatch):
+    write_csv(crypto_paths["wallets"], [wallet("A"), wallet("B")], crypto.WALLET_COLUMNS)
+    crypto.write_crypto_balances(pd.DataFrame([balance("B", "2")]), crypto_paths["balances"])
+    clock = iter([0, 0, crypto.REFRESH_BUDGET_SECONDS + 1])
+    monkeypatch.setattr(crypto, "monotonic", lambda: next(clock))
+    fetched = []
+    monkeypatch.setattr(crypto, "_fetch_wallet_balance", lambda row, timeout: fetched.append(row["account"]) or "1")
+
+    result = crypto.refresh_crypto_balances(crypto_paths["wallets"], crypto_paths["balances"])
+
+    assert fetched == ["A"]
+    assert result.set_index("account").loc["B", "balance"] == "2"
+    assert "TimeoutError" not in result.attrs["errors"][0]
+    assert "time budget exceeded" in result.attrs["errors"][0]
+
+
+def test_only_verified_evm_token_contracts_are_accepted():
+    address = "0x" + "a" * 40
+    ethereum_usdt = pd.DataFrame([{
+        **wallet("synthetic"), "chain": "ethereum", "asset": "USDT",
+        "address": address, "token_contract": "",
+    }])
+    assert crypto.validate_crypto_wallets(ethereum_usdt) == []
+    ethereum_usdt.loc[0, "token_contract"] = "0x" + "b" * 40
+    assert "unverified token contract" in str(crypto.validate_crypto_wallets(ethereum_usdt)[0])
+    ethereum_usdt.loc[0, "chain"] = "base"
+    assert "unverified token contract" in str(crypto.validate_crypto_wallets(ethereum_usdt)[0])
+
+
+def test_evm_rpc_rejects_wrong_chain_before_balance(monkeypatch):
+    methods = []
+
+    def post(*args, **kwargs):
+        methods.append(kwargs["json"]["method"])
+        return provider_response({"result": "0x2105"})
+
+    monkeypatch.setattr(crypto.requests, "post", post)
+    with pytest.raises(ValueError, match="all EVM RPC providers failed"):
+        crypto._evm_rpc("ethereum", "eth_getBalance", ["synthetic", "latest"], 1)
+    assert methods == ["eth_chainId"] * len(crypto.EVM_RPC_URLS["ethereum"])
+
+
+def test_provider_error_does_not_store_wallet_address_or_url():
+    address = "synthetic-private-address"
+    message = crypto._safe_error(ValueError(f"https://example.test/{address}: failed {address}"), address)
+    assert address not in message
+    assert "example.test" not in message
 
 
 def test_direct_crypto_refresh_requires_login_and_test_mode_cannot_call_providers(monkeypatch):
