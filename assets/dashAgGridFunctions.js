@@ -33,6 +33,12 @@ dagfuncs.finrepCategoryEditorParams = function (params) {
   return {values: finrepCategoriesForRow(params)};
 };
 
+dagfuncs.finrepDayAmountFormatter = function (params) {
+  return params.value == null ? "" : Number(params.value).toLocaleString("ru-RU", {
+    minimumFractionDigits: 2, maximumFractionDigits: 2
+  });
+};
+
 function finrepTruthy(value) {
   return value === true || ["true", "1", "yes"].includes(
     String(value || "").toLowerCase()

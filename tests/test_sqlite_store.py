@@ -1089,6 +1089,34 @@ def test_income_transaction_edit_updates_category_and_comment_with_revision_chec
         )
 
 
+def test_day_transaction_amount_edit_and_void_are_validated_and_audited(tmp_path):
+    database = tmp_path / "synthetic.sqlite3"
+    initialize_database(database)
+    add_cash_transaction(
+        database, transaction_id="tx", occurred_on="2026-02-03",
+        flow_direction="expense", category_id="expense.other",
+        amount="10.00", currency="RUB", comment="Original",
+    )
+
+    with pytest.raises(ValueError, match="positive"):
+        update_cash_transaction(database, "tx", category_id="expense.other", comment="Original",
+                                amount="0", expected_row_version=1, reason="day modal edit")
+    update_cash_transaction(database, "tx", category_id="expense.other", comment="Revised",
+                            amount="12.50", expected_row_version=1, reason="day modal edit")
+    assert cash_transactions(database)[0]["amount_minor"] == 1250
+    with pytest.raises(StorageRevisionConflict, match="reload"):
+        void_cash_transaction(database, "tx", reason="day modal delete", expected_row_version=1)
+    void_cash_transaction(database, "tx", reason="day modal delete", expected_row_version=2)
+    assert cash_transactions(database) == []
+    with connect_database(database) as connection:
+        events = connection.execute(
+            "SELECT action, reason FROM audit_events WHERE entity_id = 'tx' ORDER BY id"
+        ).fetchall()
+    assert [tuple(row) for row in events] == [
+        ("updated", "day modal edit"), ("voided", "day modal delete"),
+    ]
+
+
 def test_source_lineage_is_idempotent_and_many_to_many(tmp_path):
     database = tmp_path / "synthetic.sqlite3"
     initialize_database(database)

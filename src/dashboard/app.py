@@ -19,7 +19,7 @@ from dash.exceptions import PreventUpdate
 from flask import request, session
 
 from src import config
-from src.data.get import clear_data_cache, get_transactions
+from src.data.get import clear_data_cache, get_income_category_names, get_transactions
 from src.data.get_finance import FX_MAX_AGE_DAYS, fx_network_mode, get_usd_rates
 from src.data.inflation import refresh_official_cpi
 from src.data.assets_editor import (
@@ -608,8 +608,28 @@ def create_layout():
             dbc.Modal(
                 [
                     dbc.ModalHeader(dbc.ModalTitle(id="month-transaction-modal-title"), close_button=False),
-                    dbc.ModalBody(id="month-transaction-modal-body"),
-                    dbc.ModalFooter(dbc.Button(_i18n_text("action.close.month_modal"), id="month-transaction-modal-close", color="secondary")),
+                    dbc.ModalBody([
+                        dbc.Alert(id="month-transaction-modal-message", is_open=False, className="py-2"),
+                        dag.AgGrid(
+                            id="month-transaction-modal-grid",
+                            rowData=[], columnDefs=[],
+                            defaultColDef=_ag_grid_default_col_def(editable=False),
+                            dashGridOptions={"rowSelection": {"mode": "singleRow", "checkboxes": False,
+                                                              "enableClickSelection": True},
+                                             "stopEditingWhenCellsLoseFocus": True,
+                                             "getRowId": {"function": "params.data.transaction_id || params.data.detail_id"}},
+                            className=_ag_grid_class_name("dark"), style={"height": "420px", "width": "100%"},
+                        ),
+                        html.Div("Долги и инвестиции меняются в своих разделах; здесь они доступны только для просмотра.",
+                                 className="small mt-2"),
+                    ]),
+                    dbc.ModalFooter([
+                        dbc.Button("Удалить выбранную", id="month-transaction-modal-delete", color="danger",
+                                   outline=True, disabled=True, className="me-auto"),
+                        dbc.Button(_i18n_text("action.close.month_modal"), id="month-transaction-modal-close", color="secondary"),
+                    ]),
+                    dcc.ConfirmDialog(id="month-transaction-delete-confirm",
+                                      message="Удалить выбранную транзакцию? Она исчезнет из отчётов, действие останется в журнале изменений."),
                 ],
                 id="month-transaction-modal",
                 className="finrep-transaction-modal finrep-modal-dark",
@@ -618,6 +638,7 @@ def create_layout():
                 scrollable=True,
                 size="lg",
             ),
+            dcc.Store(id="month-transaction-selected-date"),
             _mobile_bottom_nav(),
             _mobile_more_menu(),
         ],
@@ -1031,6 +1052,7 @@ def register_callbacks(app: Dash) -> None:
         Output("dashboard-shell", "className"),
         Output("dashboard-shell", "style"),
         Output("month-transaction-modal", "className"),
+        Output("month-transaction-modal-grid", "className"),
         Output("mobile-more-menu", "className"),
         Input("theme-toggle", "n_clicks"),
         State("dashboard-theme", "data"),
@@ -1045,6 +1067,7 @@ def register_callbacks(app: Dash) -> None:
             f"finrep-shell finrep-theme-{theme}",
             shell_style,
             _transaction_modal_class(theme),
+            _ag_grid_class_name(theme),
             f"finrep-mobile-more finrep-mobile-more-{theme}",
         )
 
@@ -1324,16 +1347,21 @@ def register_callbacks(app: Dash) -> None:
     @app.callback(
         Output("month-transaction-modal", "is_open"),
         Output("month-transaction-modal-title", "children"),
-        Output("month-transaction-modal-body", "children"),
+        Output("month-transaction-modal-grid", "rowData"),
+        Output("month-transaction-modal-grid", "columnDefs"),
+        Output("month-transaction-modal-grid", "selectedRows"),
+        Output("month-transaction-selected-date", "data"),
+        Output("month-transaction-modal-message", "is_open"),
         Input({"type": "month-transaction-day", "date": ALL}, "n_clicks"),
         Input("month-transaction-modal-close", "n_clicks"),
         State("dashboard-currency", "value"),
         State("dashboard-locale", "data"),
+        State("dashboard-theme", "data"),
         prevent_initial_call=True,
     )
-    def toggle_month_transaction_modal(day_clicks, close_clicks, currency: str, locale: str):
+    def toggle_month_transaction_modal(day_clicks, close_clicks, currency: str, locale: str, theme: str):
         if ctx.triggered_id == "month-transaction-modal-close":
-            return False, "", []
+            return False, "", [], [], [], None, False
         triggered_value = ctx.triggered[0].get("value") if ctx.triggered else None
         date = _clicked_transaction_date(ctx.triggered_id, triggered_value)
         if date is None:
@@ -1346,7 +1374,93 @@ def register_callbacks(app: Dash) -> None:
             if not pd.isna(title_date)
             else str(report_text("Транзакции за день", locale))
         )
-        return True, title, _month_transaction_modal_body(details, currency, locale=locale)
+        return (True, title, _month_transaction_rows(details),
+                _month_transaction_modal_columns(details, currency, theme, locale), [], date, False)
+
+    @app.callback(
+        Output("month-transaction-modal-delete", "disabled"),
+        Input("month-transaction-modal-grid", "selectedRows"),
+    )
+    def enable_day_transaction_delete(selected_rows):
+        return not (selected_rows and selected_rows[0].get("transaction_id") and
+                    not config.is_test_mode() and config.use_sqlite_storage())
+
+    @app.callback(
+        Output("month-transaction-delete-confirm", "displayed"),
+        Input("month-transaction-modal-delete", "n_clicks"),
+        State("month-transaction-modal-grid", "selectedRows"),
+        prevent_initial_call=True,
+    )
+    def confirm_day_transaction_delete(n_clicks, selected_rows):
+        if not n_clicks or not selected_rows or not selected_rows[0].get("transaction_id"):
+            raise PreventUpdate
+        return True
+
+    @app.callback(
+        Output("dashboard-refresh-token", "data", allow_duplicate=True),
+        Output("month-transaction-modal-grid", "rowData", allow_duplicate=True),
+        Output("month-transaction-modal-message", "children"),
+        Output("month-transaction-modal-message", "color"),
+        Output("month-transaction-modal-message", "is_open", allow_duplicate=True),
+        Input("month-transaction-modal-grid", "cellValueChanged"),
+        Input("month-transaction-delete-confirm", "submit_n_clicks"),
+        State("month-transaction-modal-grid", "selectedRows"),
+        State("month-transaction-selected-date", "data"),
+        State("dashboard-currency", "value"),
+        State("dashboard-refresh-token", "data"),
+        State("dashboard-locale", "data"),
+        prevent_initial_call=True,
+    )
+    def save_day_transaction(cell_change, delete_clicks, selected_rows, date, currency, current_token, locale):
+        if not date:
+            raise PreventUpdate
+        try:
+            config.require_writable_mode()
+            from src.data.sqlite_store import categories, update_cash_transaction, void_cash_transaction
+
+            if ctx.triggered_id == "month-transaction-delete-confirm":
+                row = selected_rows[0] if selected_rows else None
+                if not row or not row.get("transaction_id"):
+                    raise ValueError("Выберите обычную транзакцию для удаления.")
+                void_cash_transaction(
+                    config.active_database_path(), row["transaction_id"],
+                    expected_row_version=int(row["row_version"]), reason="day modal delete",
+                )
+            else:
+                events = cell_change if isinstance(cell_change, list) else [cell_change]
+                event = next((item for item in reversed(events) if isinstance(item, dict)), None)
+                column = (event or {}).get("colId") or (event or {}).get("column") or (event or {}).get("field")
+                row = (event or {}).get("data")
+                if column not in {"Категория", "Исходная сумма", "Комментарий"} or not isinstance(row, dict):
+                    raise PreventUpdate
+                if not row.get("transaction_id"):
+                    raise ValueError("Связанные долги и инвестиции здесь не редактируются.")
+                category_id = row["category_id"]
+                if column == "Категория":
+                    category_rows = categories(config.active_database_path(), include_internal=True)
+                    original = next((item for item in category_rows if item["id"] == category_id), None)
+                    category_id = next((item["id"] for item in category_rows
+                                        if original and item["direction"] == original["direction"]
+                                        and item["active"] and item["name_ru"] == row["Категория"]), None)
+                    if category_id is None:
+                        raise ValueError("Выберите активную категорию того же типа (доход или расход).")
+                update_cash_transaction(
+                    config.active_database_path(), row["transaction_id"],
+                    category_id=category_id, comment=row.get("Комментарий", ""),
+                    amount=row.get("Исходная сумма") if column == "Исходная сумма" else None,
+                    expected_row_version=int(row["row_version"]), reason="day modal edit",
+                )
+            clear_data_cache()
+            clear_table_cache()
+            clear_main_dashboard_cache()
+            refreshed = _month_transaction_rows(get_day_transaction_details(date, currency))
+            return int(current_token or 0) + 1, refreshed, "", "success", False
+        except PreventUpdate:
+            raise
+        except Exception as exc:
+            clear_data_cache()
+            refreshed = _month_transaction_rows(get_day_transaction_details(date, currency))
+            return no_update, refreshed, report_text(str(exc), locale), "danger", True
 
     @app.callback(
         Output({"type": "dataset-download", "dataset_id": MATCH}, "data"),
@@ -6258,45 +6372,57 @@ def _report_row_props(dataset: DashboardDataset, row: dict, locale: str = DEFAUL
     return props
 
 
-def _month_transaction_modal_body(details: pd.DataFrame, currency: str, locale: str = DEFAULT_LOCALE):
-    if details.empty:
-        return dbc.Alert(report_text("В этот день нет ненулевых транзакций.", locale), color="secondary", className="mb-0")
+def _month_transaction_rows(details: pd.DataFrame) -> list[dict]:
+    records = details.astype(object).where(pd.notna(details), None).to_dict("records")
+    for index, row in enumerate(records):
+        row["detail_id"] = f"detail-{index}"
+        row["direction"] = {"income": "credit", "expense": "debit"}.get(row.get("flow_direction"))
+    return records
 
-    rows = []
-    for _, row in details.iterrows():
-        original_currency = str(row.get("Валюта", ""))
-        rows.append(
-            html.Tr(
-                [
-                    html.Td(str(row.get("Категория", ""))),
-                    html.Td(_format_modal_money(row.get("Исходная сумма"), original_currency)),
-                    html.Td(original_currency),
-                    html.Td(_format_modal_money(row.get("В валюте отчета"), currency)),
-                    html.Td(str(row.get("Комментарий") or "—")),
-                ]
-            )
-        )
 
-    return html.Div(
-        html.Table(
-            [
-                html.Thead(
-                    html.Tr(
-                        [
-                            html.Th(report_column_label("Категория", locale)),
-                            html.Th(report_column_label("Исходная сумма", locale)),
-                            html.Th(report_column_label("Валюта", locale)),
-                            html.Th(report_column_label(f"В валюте отчета ({str(currency).upper()})", locale)),
-                            html.Th(report_column_label("Комментарий", locale)),
-                        ]
-                    )
-                ),
-                html.Tbody(rows),
-            ],
-            className="finrep-report-table finrep-transaction-detail-table",
-        ),
-        className="finrep-report-table-cap",
-    )
+def _month_transaction_modal_columns(details: pd.DataFrame, currency: str, theme: str,
+                                     locale: str = DEFAULT_LOCALE) -> list[dict]:
+    from src.data.sqlite_store import categories
+
+    editable = not config.is_test_mode() and config.use_sqlite_storage()
+    category_rows = categories(config.active_database_path(), include_internal=True) if editable else []
+    income_choices = sorted({row["name_ru"] for row in category_rows
+                             if row["active"] and row["direction"] == "income"})
+    expense_choices = sorted({row["name_ru"] for row in category_rows
+                              if row["active"] and row["direction"] == "expense"})
+    income = get_income_category_names()
+    names = set(details["Категория"]) | set(income_choices) | set(expense_choices)
+    category_styles = [{
+        "condition": f"params.value == {json.dumps(name, ensure_ascii=False)}",
+        "style": {
+            "backgroundColor": _hex_to_rgba(
+                income_category_color(name) if name in income else expense_category_color(name),
+                0.30 if theme == "dark" else 0.20,
+            ),
+            "fontWeight": "600",
+        },
+    } for name in sorted(names)]
+    editable_cash = {"function": "!!params.data.transaction_id"} if editable else False
+    amount_format = {"function": "finrepDayAmountFormatter(params)"}
+    return _localized_input_column_defs([
+        {"field": "Категория", "editable": editable_cash, "cellEditor": "agSelectCellEditor",
+         "cellEditorParams": {"function": "finrepCategoryEditorParams(params)"},
+         "context": {"incomeCategories": income_choices, "expenseCategories": expense_choices},
+         "cellStyle": {"styleConditions": category_styles},
+         "minWidth": 190, "flex": 1},
+        {"field": "Исходная сумма", "editable": editable_cash, "cellDataType": "number",
+         "valueFormatter": amount_format, "minWidth": 155, "cellClass": "ag-right-aligned-cell"},
+        {"field": "Валюта", "width": 105},
+        {"field": "В валюте отчета", "headerName": f"В валюте отчета ({str(currency).upper()})",
+         "cellDataType": "number", "valueFormatter": amount_format,
+         "sort": "desc", "minWidth": 180, "cellClass": "ag-right-aligned-cell"},
+        {"field": "Комментарий", "editable": editable_cash, "minWidth": 240, "flex": 2},
+        {"field": "transaction_id", "hide": True},
+        {"field": "category_id", "hide": True},
+        {"field": "row_version", "hide": True},
+        {"field": "detail_id", "hide": True},
+        {"field": "direction", "hide": True},
+    ], locale)
 
 
 def _clicked_transaction_date(triggered_id, triggered_value) -> str | None:
@@ -6312,13 +6438,6 @@ def _clicked_transaction_date(triggered_id, triggered_value) -> str | None:
 def _transaction_modal_class(theme: str | None) -> str:
     normalized_theme = theme if theme in {"light", "dark"} else "light"
     return f"finrep-transaction-modal finrep-modal-{normalized_theme}"
-
-
-def _format_modal_money(value, currency: str) -> str:
-    number = pd.to_numeric(value, errors="coerce")
-    if pd.isna(number):
-        return "—"
-    return f"{number:,.2f}".replace(",", " ") + f" {str(currency).upper()}"
 
 
 def _empty_section(dataset: DashboardDataset, locale: str = DEFAULT_LOCALE):

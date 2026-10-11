@@ -93,16 +93,16 @@ def _get_transactions_sqlite_cached(database_path: str):
         rows = connection.execute("""SELECT v.occurred_on, v.category_name_ru,
             v.currency_code, v.amount_minor, v.comment, c.minor_unit,
             'cash' AS row_kind, '' AS event_kind, '' AS side,
-            v.id AS transaction_id, v.category_id, v.row_version
+            v.id AS transaction_id, v.category_id, v.row_version, v.flow_direction
             FROM v_cash_transactions v JOIN currencies c ON c.code = v.currency_code
             UNION ALL
             SELECT e.occurred_on, '', e.currency_code, e.amount_minor, e.comment,
-            c.minor_unit, 'debt', e.event_kind, e.side, NULL, NULL, NULL
+            c.minor_unit, 'debt', e.event_kind, e.side, NULL, NULL, NULL, NULL
             FROM debt_cash_events e JOIN currencies c ON c.code = e.currency_code
             UNION ALL
             SELECT e.occurred_on, 'Инвестиции', e.currency_code,
             CASE e.flow_kind WHEN 'withdrawal' THEN -e.amount_minor ELSE e.amount_minor END,
-            e.comment, c.minor_unit, 'investment', e.flow_kind, '', NULL, NULL, NULL
+            e.comment, c.minor_unit, 'investment', e.flow_kind, '', NULL, NULL, NULL, NULL
             FROM investment_cash_events e JOIN currencies c ON c.code = e.currency_code
             ORDER BY occurred_on""").fetchall()
         saved_periods = [row[0] for row in connection.execute("""SELECT period
@@ -112,7 +112,7 @@ def _get_transactions_sqlite_cached(database_path: str):
         data = pd.DataFrame(columns=[
             "occurred_on", "category_name_ru", "currency_code", "amount_minor",
             "comment", "minor_unit", "row_kind", "event_kind", "side",
-            "transaction_id", "category_id", "row_version"])
+            "transaction_id", "category_id", "row_version", "flow_direction"])
     else:
         data = pd.DataFrame([dict(row) for row in rows])
     represented_periods = set(pd.to_datetime(data["occurred_on"]).dt.to_period("M").astype(str))
@@ -125,9 +125,10 @@ def _get_transactions_sqlite_cached(database_path: str):
             "comment": "", "minor_unit": 2, "row_kind": "cash",
             "event_kind": "", "side": "", "transaction_id": None,
             "category_id": None, "row_version": None,
+            "flow_direction": None,
         } for period in empty_periods])], ignore_index=True)
     if data.empty:
-        return _empty_frame([*TRANSACTION_COLUMNS, "transaction_id", "category_id", "row_version"])
+        return _empty_frame([*TRANSACTION_COLUMNS, "transaction_id", "category_id", "row_version", "flow_direction"])
     data["Дата"] = pd.to_datetime(data.pop("occurred_on"))
     debt_categories = {
         ("issue", "receivable"): "Дебиторская задолженность",
@@ -145,7 +146,7 @@ def _get_transactions_sqlite_cached(database_path: str):
     data["Год"] = data["Дата"].dt.year.astype(str)
     data["Квартал"] = data["Дата"].dt.quarter.astype(str)
     data["Месяц"] = data["Дата"].dt.month.astype(str)
-    return data[[*TRANSACTION_COLUMNS, "transaction_id", "category_id", "row_version"]]
+    return data[[*TRANSACTION_COLUMNS, "transaction_id", "category_id", "row_version", "flow_direction"]]
 
 
 @lru_cache(maxsize=1)
