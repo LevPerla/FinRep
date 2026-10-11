@@ -54,6 +54,7 @@ from src.data.sqlite_store import (
     set_asset_account_classifications,
     set_category_active,
     transaction_drafts_snapshot,
+    update_cash_transaction,
     update_cash_drafts,
     upsert_annual_goal,
     upsert_crypto_wallet,
@@ -1043,6 +1044,49 @@ def test_changes_are_audited_and_void_is_excluded_from_views(tmp_path):
     with connect_database(database, writable=True) as connection:
         with pytest.raises(sqlite3.IntegrityError, match="append-only"):
             connection.execute("DELETE FROM audit_events")
+
+
+def test_income_transaction_edit_updates_category_and_comment_with_revision_check(tmp_path):
+    database = tmp_path / "synthetic.sqlite3"
+    initialize_database(database)
+    add_cash_transaction(
+        database,
+        transaction_id="income-tx",
+        occurred_on="2026-02-03",
+        flow_direction="income",
+        category_id="income.other",
+        amount="10.00",
+        currency="RUB",
+        comment="Original",
+    )
+
+    update_cash_transaction(
+        database,
+        "income-tx",
+        category_id="income.salary",
+        comment="Salary",
+        expected_row_version=1,
+        reason="income table edit",
+    )
+
+    row = cash_transactions(database)[0]
+    assert (row["category_id"], row["comment"], row["row_version"]) == (
+        "income.salary", "Salary", 2,
+    )
+    with connect_database(database) as connection:
+        event = connection.execute(
+            "SELECT action, reason FROM audit_events WHERE entity_id = 'income-tx'"
+        ).fetchone()
+    assert tuple(event) == ("updated", "income table edit")
+    with pytest.raises(StorageRevisionConflict, match="reload"):
+        update_cash_transaction(
+            database,
+            "income-tx",
+            category_id="income.interest",
+            comment="Stale edit",
+            expected_row_version=1,
+            reason="income table edit",
+        )
 
 
 def test_source_lineage_is_idempotent_and_many_to_many(tmp_path):
