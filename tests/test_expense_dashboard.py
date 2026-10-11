@@ -8,10 +8,12 @@ os.environ.setdefault("FINREP_DASH_SECRET_KEY", "test-session-secret")
 
 from src import config
 from src.dashboard import expense_data
-from src.dashboard.app import _datasets_for_tab, _download_filename, _expense_report_layout, create_app
+from src.dashboard.app import _datasets_for_tab, _download_filename, _expense_report_layout, _grid_section, create_app
 from src.dashboard.export import build_dashboard_url
 from src.dashboard.i18n import localize_report_datasets
+from src.data import get as data_get
 from src.data import get_finance, proccess
+from src.data.sqlite_store import add_cash_transaction, add_category, cash_transactions, initialize_database
 from src.model import create_tables
 
 
@@ -27,10 +29,117 @@ def source(monkeypatch):
 
     def install(rows):
         data = _transactions(rows)
-        monkeypatch.setattr(expense_data, "get_transactions", lambda: data)
+        monkeypatch.setattr(expense_data, "get_transactions", lambda **_: data)
         return data
 
     return install
+
+
+def test_registered_income_categories_do_not_appear_in_expenses(source, monkeypatch):
+    source([
+        ("2026-01-01", "Карманные деньги", "RUB", 100),
+        ("2026-01-02", "Кэшбек", "RUB", 20),
+        ("2026-01-03", "Возвраты", "RUB", 30),
+        ("2026-01-04", "Пища", "RUB", 40),
+    ])
+    monkeypatch.setattr(data_get, "get_income_categories", lambda: pd.DataFrame({
+        "Категория": ["Карманные деньги", "Кэшбек", "Возвраты"],
+    }))
+
+    datasets = expense_data.build_expense_dashboard_data("RUB")
+
+    assert datasets["expenses_monthly"].dataframe["Категория"].unique().tolist() == ["Пища"]
+    assert datasets["expenses_total"].dataframe["Расход"].tolist() == [40]
+    assert datasets["top_purchases"].dataframe["Категория"].tolist() == ["Пища"]
+
+
+def test_sqlite_top_purchases_grid_edits_exact_transaction(tmp_path, monkeypatch):
+    database = tmp_path / "finrep.sqlite3"
+    initialize_database(database)
+    for index, name in enumerate(("Карманные деньги", "Кэшбек", "Возвраты")):
+        category_id = f"income.custom{index}"
+        add_category(database, category_id, name, direction="income", income_class="active")
+        add_cash_transaction(database, transaction_id=f"income{index}", occurred_on="2026-01-01",
+                             flow_direction="income", category_id=category_id,
+                             amount="100", currency="RUB")
+    for transaction_id in ("purchase-a", "purchase-b"):
+        add_cash_transaction(database, transaction_id=transaction_id, occurred_on="2026-01-02",
+                             flow_direction="expense", category_id="expense.food",
+                             amount="40", currency="RUB", comment="same")
+    monkeypatch.setenv("FINREP_STORAGE_BACKEND", "sqlite")
+    monkeypatch.setenv("FINREP_SQLITE_PATH", str(database))
+    data_get.clear_data_cache()
+    try:
+        dataset = expense_data.build_expense_dashboard_data("RUB")["top_purchases"]
+        assert set(dataset.dataframe["transaction_id"]) == {"purchase-a", "purchase-b"}
+        assert "transaction_id" not in dataset.display_dataframe
+        assert set(dataset.dataframe["Категория"]) == {"Пища"}
+        section = _grid_section(dataset, theme="dark")
+        grid = section.children[2].children
+        columns = {column["field"]: column for column in grid.columnDefs}
+        assert columns["Категория"]["editable"] is True
+        assert columns["Комментарий"]["editable"] is True
+        assert columns["Сумма"].get("editable") is None
+        assert columns["Категория"]["cellStyle"]["styleConditions"]
+        row = next(row for row in grid.rowData if row["transaction_id"] == "purchase-a")
+        assert row["Комментарий"] == "same"
+
+        app = create_app()
+        client = app.server.test_client()
+        with client.session_transaction() as session:
+            session["authenticated"] = True
+            session["data_mode"] = "live"
+        key = next(key for key in app.callback_map if "top-purchases-grid.rowTransaction" in key)
+        callback = app.callback_map[key]
+        changed = {**row, "Комментарий": "updated"}
+        payload = {
+            "output": key,
+            "outputs": [{"id": output.component_id, "property": output.component_property}
+                        for output in callback["output"]],
+            "inputs": [{"id": "top-purchases-grid", "property": "cellValueChanged",
+                        "value": {"colId": "Комментарий", "data": changed, "oldValue": "same"}}],
+            "state": [{"id": "dashboard-refresh-token", "property": "data", "value": 0},
+                      {"id": "dashboard-locale", "property": "data", "value": "ru"}],
+            "changedPropIds": ["top-purchases-grid.cellValueChanged"],
+        }
+        response = client.post("/_dash-update-component", json=payload)
+        assert response.status_code == 200
+        assert response.get_json()["response"]["dashboard-refresh-token"]["data"] == 1
+        rows = {item["id"]: item for item in cash_transactions(database)}
+        assert rows["purchase-a"]["comment"] == "updated"
+        assert rows["purchase-b"]["comment"] == "same"
+
+        changed["Комментарий"] = "stale overwrite"
+        payload["inputs"][0]["value"]["data"] = changed
+        response = client.post("/_dash-update-component", json=payload)
+        assert response.status_code == 200
+        assert response.get_json()["response"]["top-purchases-message"]["color"] == "danger"
+        assert {item["id"]: item for item in cash_transactions(database)}["purchase-a"]["comment"] == "updated"
+
+        changed["Комментарий"] = "updated"
+        changed["Категория"] = "Прочее"
+        changed["row_version"] = rows["purchase-a"]["row_version"]
+        payload["inputs"][0]["value"] = {"colId": "Категория", "data": changed,
+                                           "oldValue": "Пища"}
+        response = client.post("/_dash-update-component", json=payload)
+        assert response.status_code == 200
+        rows = {item["id"]: item for item in cash_transactions(database)}
+        assert rows["purchase-a"]["category_name_ru"] == "Прочее"
+        assert rows["purchase-b"]["category_name_ru"] == "Пища"
+
+        with monkeypatch.context() as read_only:
+            from src.data import sqlite_store
+
+            read_only.setattr(config, "is_test_mode", lambda: True)
+            read_only.setattr(sqlite_store, "categories", lambda *_args, **_kwargs: [
+                {"name_ru": "Пища", "direction": "expense", "active": 1},
+            ])
+            read_only_grid = _grid_section(dataset, theme="dark").children[2].children
+            read_only_columns = {column["field"]: column for column in read_only_grid.columnDefs}
+            assert read_only_columns["Категория"]["editable"] is False
+            assert read_only_columns["Комментарий"]["editable"] is False
+    finally:
+        data_get.clear_data_cache()
 
 
 def test_monthly_totals_match_main_report_and_preserve_corrections(source, monkeypatch):

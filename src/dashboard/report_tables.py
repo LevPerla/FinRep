@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pandas as pd
 
-from src import config
+from src.data.get import get_income_category_names, get_non_cost_categories
 from src.dashboard.main_data import DashboardDataset
 
 
@@ -46,11 +46,9 @@ def _report_table_style_maps(dataset: DashboardDataset, data: pd.DataFrame) -> d
             "signs": {},
         }
     if dataset.id == "month_transactions":
-        expense_columns = [column for column in data.columns if column not in ["Дата", *config.NOT_COST_COLS]]
-        levels = {
-            "Доход": ("__month_income_level", "green"),
-            "Сбережения": ("__month_savings_level", "green"),
-        }
+        income_columns, expense_columns = _month_transaction_categories(data.columns)
+        levels = {column: (f"__month_income_{index}_level", "green")
+                  for index, column in enumerate(income_columns)}
         levels.update({column: (f"__month_expense_{index}_level", "red") for index, column in enumerate(expense_columns)})
         return {"levels": levels, "signs": {}}
     if dataset.id == "month_assets":
@@ -182,9 +180,15 @@ def _grid_row_data(dataset: DashboardDataset, data: pd.DataFrame) -> list[dict]:
         return records
 
     if dataset.id == "month_transactions":
-        _add_level_metadata(records, raw, {"Доход": "__month_income_level", "Сбережения": "__month_savings_level"})
-        expense_columns = [column for column in raw.columns if column not in ["Дата", *config.NOT_COST_COLS]]
-        _add_level_metadata(records, raw, {column: f"__month_expense_{index}_level" for index, column in enumerate(expense_columns)})
+        income_columns, expense_columns = _month_transaction_categories(raw.columns)
+        magnitudes = raw.copy(deep=True)
+        for column in [*income_columns, *expense_columns]:
+            magnitudes[column] = pd.to_numeric(magnitudes[column], errors="coerce").abs()
+        _add_level_metadata(records, magnitudes, {
+            column: f"__month_income_{index}_level" for index, column in enumerate(income_columns)
+        } | {
+            column: f"__month_expense_{index}_level" for index, column in enumerate(expense_columns)
+        })
         return records
 
     if dataset.id == "month_summary":
@@ -449,12 +453,19 @@ def _add_asset_metadata(records: list[dict], raw: pd.DataFrame) -> None:
                 record[f"__asset_blue_{column}_level"] = _gradient_level(_to_number(row.get(column)), row_max)
 
 
+def _month_transaction_categories(columns) -> tuple[list[str], list[str]]:
+    income = get_income_category_names()
+    non_cost = get_non_cost_categories()
+    return (
+        [column for column in columns if column in income],
+        [column for column in columns if column != "Дата" and column not in non_cost],
+    )
+
+
 def _month_transaction_column_styles(data: pd.DataFrame, theme: str | None = None) -> dict:
-    styles = {
-        "Доход": _level_style("__month_income_level", "green", theme),
-        "Сбережения": _level_style("__month_savings_level", "green", theme),
-    }
-    expense_columns = [column for column in data.columns if column not in ["Дата", *config.NOT_COST_COLS]]
+    income_columns, expense_columns = _month_transaction_categories(data.columns)
+    styles = {column: _level_style(f"__month_income_{index}_level", "green", theme)
+              for index, column in enumerate(income_columns)}
     styles.update(
         {column: _level_style(f"__month_expense_{index}_level", "red", theme) for index, column in enumerate(expense_columns)}
     )

@@ -7,10 +7,9 @@ import pandas as pd
 import plotly.graph_objects as go
 
 from src import config, utils
-from src.data.get import get_assets, get_income_categories, get_transactions
+from src.data.get import get_assets, get_income_categories
 from src.data.exchange_rates_info import get_exchange_rates_info
 from src.data.get_finance import fx_network_mode, get_fx_rates, require_fx_rate
-from src.data.proccess import convert_transaction
 from src.model.create_tables import (
     asset_valuation_dates,
     get_balance_by_month,
@@ -517,17 +516,6 @@ def _create_yearly_stats(balance: pd.DataFrame) -> pd.DataFrame:
     return pd.concat([total, by_year], ignore_index=True)
 
 
-def _top_purchases_data(currency: str, year: str | None = None, limit: int = 15) -> pd.DataFrame:
-    transactions = get_transactions()
-    if year is not None:
-        transactions = transactions[transactions["Год"].astype(str) == str(year)]
-    purchases = transactions[~transactions["Категория"].isin(config.NOT_COST_COLS)].copy(deep=True)
-    if not config.DEBUG:
-        purchases = convert_transaction(purchases, to_curr=currency, target_col="Значение")
-
-    return _rank_top_purchases(purchases, limit)
-
-
 def _rank_top_purchases(purchases: pd.DataFrame, limit: int = 15) -> pd.DataFrame:
     """Rank already converted expense operations, retaining their actual dates."""
     purchases = purchases.copy(deep=True)
@@ -535,13 +523,15 @@ def _rank_top_purchases(purchases: pd.DataFrame, limit: int = 15) -> pd.DataFram
     purchases = purchases[purchases["Значение"].gt(0)]
     purchases = purchases.sort_values(["Значение", "Дата"], ascending=[False, False], kind="stable").head(limit).reset_index(drop=True)
     purchases.insert(0, "№", purchases.index + 1)
-    return purchases[["№", "Дата", "Категория", "Значение", "Комментарий"]].rename(
+    columns = ["№", "Дата", "Категория", "Значение", "Комментарий"]
+    columns.extend(column for column in ("transaction_id", "category_id", "row_version") if column in purchases)
+    return purchases[columns].rename(
         columns={"Значение": "Сумма"}
     )
 
 
 def _format_top_purchases(data: pd.DataFrame, currency: str) -> pd.DataFrame:
-    display = data.copy(deep=True)
+    display = data[["№", "Дата", "Категория", "Сумма", "Комментарий"]].copy(deep=True)
     display["Дата"] = pd.to_datetime(display["Дата"], errors="coerce").dt.strftime("%Y-%m-%d")
     display["Комментарий"] = display["Комментарий"].fillna("—").astype(str)
     return utils.process_num_cols(

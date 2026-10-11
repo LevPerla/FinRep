@@ -1,10 +1,9 @@
 import pandas as pd
 
-from src import config
 from src.dashboard import main_data
 
 
-def test_top_purchases_filters_sorts_and_limits(monkeypatch):
+def test_top_purchases_sorts_limits_and_preserves_identity():
     purchases = [
         {
             "Дата": pd.Timestamp("2025-01-01") + pd.Timedelta(days=index),
@@ -13,6 +12,9 @@ def test_top_purchases_filters_sorts_and_limits(monkeypatch):
             "Значение": float(index + 1),
             "Комментарий": f"Покупка {index + 1}",
             "Год": "2025",
+            "transaction_id": str(index),
+            "category_id": "expense.food",
+            "row_version": 1,
         }
         for index in range(17)
     ]
@@ -26,26 +28,16 @@ def test_top_purchases_filters_sorts_and_limits(monkeypatch):
                 "Значение": 1000.0,
                 "Комментарий": "Покупка из другого года",
                 "Год": "2024",
-            },
-            {
-                "Дата": pd.Timestamp("2025-02-01"),
-                "Категория": "Доход",
-                "Валюта": "RUB",
-                "Значение": 5000.0,
-                "Комментарий": "Зарплата",
-                "Год": "2025",
+                "transaction_id": "older",
+                "category_id": "expense.travel",
+                "row_version": 2,
             },
         ]
     )
-    monkeypatch.setattr(main_data, "get_transactions", lambda: transactions)
-    monkeypatch.setattr(config, "DEBUG", True)
-
-    history = main_data._top_purchases_data("RUB")
-    year = main_data._top_purchases_data("RUB", year="2025")
+    history = main_data._rank_top_purchases(transactions)
 
     assert len(history) == 15
     assert history.iloc[0]["Комментарий"] == "Покупка из другого года"
-    assert len(year) == 15
-    assert year.iloc[0]["Сумма"] == 17.0
-    assert year.iloc[-1]["Сумма"] == 3.0
-    assert "Зарплата" not in set(year["Комментарий"])
+    assert history.iloc[0]["transaction_id"] == "older"
+    assert history.iloc[0]["row_version"] == 2
+    assert history.iloc[-1]["Сумма"] == 4.0

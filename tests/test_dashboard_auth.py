@@ -582,7 +582,8 @@ def test_sample_dashboard_reads_do_not_modify_files():
         session["data_mode"] = "test"
         build_main_dashboard_data("RUB", fx_network_enabled=False, year="2026", month="05")
         build_expense_dashboard_data("RUB", fx_network_enabled=False)
-        build_year_dashboard_data("2026", "RUB", fx_network_enabled=False)
+        assert "year_top_purchases" not in build_year_dashboard_data(
+            "2026", "RUB", fx_network_enabled=False)
         build_month_dashboard_data("2026", "05", "RUB", fx_network_enabled=False)
         build_planning_dashboard_data("2026", "RUB", fx_network_enabled=False)
         build_investment_dashboard_data("RUB", fx_network_enabled=False)

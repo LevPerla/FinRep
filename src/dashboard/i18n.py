@@ -568,7 +568,6 @@ def report_text(value: object, locale: str | None = None) -> object:
 
     patterns = (
         (r"^В ценах (\d{4}-\d{2})$", r"In \1 prices"),
-        (r"^Топ-15 самых больших покупок за (\d{4}) год$", r"Top 15 largest purchases in \1"),
         (r"^1 валюта в (.+)$", r"1 unit in \1"),
         (r"^([^:]+): доход минус расход$", r"\1: income minus expenses"),
         (r"^([^:]+): денежный поток / доход$", r"\1: cash flow / income"),

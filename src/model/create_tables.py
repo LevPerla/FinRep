@@ -3,7 +3,7 @@ import pandas as pd
 from functools import lru_cache
 
 from src import config
-from src.data.get import get_assets, get_income_categories, get_investments, get_transactions
+from src.data.get import get_assets, get_income_categories, get_income_category_names, get_investments, get_non_cost_categories, get_transactions
 from src.data.debts import active_debt_balances
 from src.data.get_finance import get_actual_rates, get_act_moex, get_fx_rates, require_fx_rate
 from src.data.proccess import convert_transaction, round_money_values
@@ -401,7 +401,7 @@ def _get_cost_distribution_cached(data_root, currency, year_key, month_key=None)
         smpl_tr_df = convert_transaction(df_to_convert=smpl_tr_df, to_curr=currency, target_col='Значение')
 
     # Find cost categories
-    cost_categories = [x for x in smpl_tr_df.Категория.unique() if x not in config.NOT_COST_COLS]
+    cost_categories = [x for x in smpl_tr_df.Категория.unique() if x not in get_non_cost_categories()]
 
     cost_stats_df = (smpl_tr_df[smpl_tr_df.Категория.isin(cost_categories)]
                      .groupby('Категория').agg({'Значение': ['sum']})
@@ -509,6 +509,9 @@ def _get_month_transactions_cached(data_root, currency, year, month):
     smpl_tr_df = transactions_df[(transactions_df['Год'].isin(list(np.array(year).flat))) &
                                  (transactions_df['Месяц'].isin(list(np.array(month).astype(int).astype(str).flat)))
                                  ].reset_index(drop=True)
+    smpl_tr_df = smpl_tr_df[pd.to_numeric(smpl_tr_df['Значение'], errors='coerce').fillna(0).ne(0)]
+    if smpl_tr_df.empty:
+        return pd.DataFrame(columns=['Дата'])
 
     # Приводим валюты по историческому курсу даты операции.
     if not config.DEBUG:
@@ -530,22 +533,18 @@ def _get_month_transactions_cached(data_root, currency, year, month):
     month_tr_df = month_tr_df.rename(columns={'Долги (у меня)': 'Дебиторская задолженность',
                                                 'Крупные покупки/ Поездки': 'Поездки'},
                                     errors='ignore')
-    num_of_cols = len(month_tr_df.columns)
-    if 'Доход' in month_tr_df.columns:
-        month_tr_df.insert(1, 'Доход', month_tr_df.pop('Доход'))
-    else:
-        month_tr_df['Доход'] = 0
-    if 'Сбережения' in month_tr_df.columns:
-        month_tr_df.insert(2, 'Сбережения', month_tr_df.pop('Сбережения'))
-    else:
-        month_tr_df['Сбережения'] = 0
-    for col in ['Дебиторская задолженность', 'Погашение деб. зад.', 'Кредиторская задолженность', 'Погашение кред. зад.']:
-        if col not in month_tr_df.columns:
-            month_tr_df[col] = 0
-    for col in ['Дебиторская задолженность', 'Погашение деб. зад.', 'Кредиторская задолженность', 'Погашение кред. зад.']:
-        if col in month_tr_df.columns:
-            month_tr_df.insert(num_of_cols - 1, col, month_tr_df.pop(col))
-    return month_tr_df.fillna(0)
+    columns = sorted(
+        (column for column in month_tr_df.columns if column != 'Дата'),
+        key=lambda name: name.casefold().replace('ё', 'е'),
+    )
+    income = get_income_category_names()
+    non_cost = get_non_cost_categories()
+    ordered = (
+        [column for column in columns if column in income]
+        + [column for column in columns if column not in non_cost]
+        + [column for column in columns if column in non_cost and column not in income]
+    )
+    return month_tr_df[['Дата', *ordered]].fillna(0)
 
 
 def clear_table_cache():

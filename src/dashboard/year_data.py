@@ -5,11 +5,9 @@ from src import config, utils
 from src.dashboard.main_data import (
     DashboardDataset,
     _apply_dashboard_chart_layout,
-    _format_top_purchases,
-    _top_purchases_data,
 )
 from src.data.exchange_rates_info import get_exchange_rates_info
-from src.data.get import get_transactions
+from src.data.get import get_non_cost_categories, get_transactions
 from src.data.get_finance import fx_network_mode
 from src.data.proccess import convert_transaction
 from src.model.create_tables import get_balance_by_month
@@ -47,7 +45,6 @@ def _build_year_dashboard_data(
 
     quarter_stats = _quarter_stats(year_balance)
     cost_distribution = _cost_distribution(year, currency)
-    top_purchases = _top_purchases_data(currency, year=year)
     income_by_month = year_balance[["Доход"]].reset_index()
     cost_by_month = year_balance[["Расход"]].reset_index()
     income_cost_stats = _income_cost_stats(year_balance)
@@ -94,12 +91,6 @@ def _build_year_dashboard_data(
             title="Распределение расходов",
             dataframe=cost_distribution,
             figure=_cost_distribution_figure(cost_distribution),
-        ),
-        "year_top_purchases": DashboardDataset(
-            id="year_top_purchases",
-            title=f"Топ-15 самых больших покупок за {year} год",
-            dataframe=top_purchases,
-            display_dataframe=_format_top_purchases(top_purchases, currency),
         ),
         "year_income_expense": DashboardDataset(
             id="year_income_expense",
@@ -187,7 +178,7 @@ def _cost_distribution(year: str, currency: str) -> pd.DataFrame:
     if not config.DEBUG:
         sample = convert_transaction(sample, to_curr=currency, target_col="Значение")
 
-    costs = sample[~sample["Категория"].isin(config.NOT_COST_COLS)]
+    costs = sample[~sample["Категория"].isin(get_non_cost_categories())]
     if costs.empty:
         return pd.DataFrame(columns=["Категория", "Суммарно", "Среднее", "Процент"])
 

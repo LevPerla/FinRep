@@ -5,7 +5,7 @@ from src import config, utils
 from src.dashboard.main_data import DashboardDataset, _apply_dashboard_chart_layout
 from src.dashboard.year_data import _format_cost_distribution
 from src.data.exchange_rates_info import get_exchange_rates_info
-from src.data.get import get_transactions
+from src.data.get import get_non_cost_categories, get_transactions
 from src.data.get_finance import fx_network_mode
 from src.data.proccess import convert_transaction
 from src.model.create_tables import (
@@ -291,7 +291,7 @@ def _cost_distribution(year: str, month: str, currency: str) -> pd.DataFrame:
     if not config.DEBUG:
         sample = convert_transaction(sample, to_curr=currency, target_col="Значение")
 
-    costs = sample[~sample["Категория"].isin(config.NOT_COST_COLS)]
+    costs = sample[~sample["Категория"].isin(get_non_cost_categories())]
     if costs.empty:
         return pd.DataFrame(columns=["Категория", "Суммарно", "Среднее", "Процент"])
 
@@ -321,11 +321,16 @@ def _debt_text_columns() -> list[str]:
 
 def _format_integer_table(data: pd.DataFrame, not_num_cols: list[str]) -> pd.DataFrame:
     display = data.copy(deep=True)
+    expenses = set(display.columns) - get_non_cost_categories() - set(not_num_cols)
+    cash_outflows = expenses | {
+        "Дебиторская задолженность", "Погашение кред. зад.", "Инвестиции",
+    }
     for column in display.columns:
         if column in not_num_cols:
             continue
         numeric = pd.to_numeric(display[column], errors="coerce").fillna(0).round().astype(int)
-        display[column] = numeric.map(lambda value: f"{value:,}".replace(",", " "))
+        signed = numeric * (-1 if column in cash_outflows else 1)
+        display[column] = signed.map(lambda value: (f"{value:+,}" if value else "0").replace(",", " "))
     return display.fillna(0)
 
 

@@ -72,7 +72,7 @@ from src.data.sqlite_store import (
     update_debt_due_date,
 )
 from src.dashboard.expense_data import build_expense_dashboard_data
-from src.dashboard.chart_style import income_category_color
+from src.dashboard.chart_style import expense_category_color, income_category_color
 from src.dashboard.income_data import build_income_dashboard_data
 from src.dashboard.export import ExportBusyError, export_dashboard_page
 from src.dashboard.auth import configure_auth
@@ -970,6 +970,54 @@ def register_callbacks(app: Dash) -> None:
                 comment=row.get("comment", ""),
                 expected_row_version=int(row["row_version"]),
                 reason="income table edit",
+            )
+            clear_data_cache()
+            clear_table_cache()
+            clear_main_dashboard_cache()
+            return int(current_token or 0) + 1, no_update, "", "success", False
+        except Exception as exc:
+            return no_update, {"update": [previous]}, report_text(str(exc), locale), "danger", True
+
+    @app.callback(
+        Output("dashboard-refresh-token", "data", allow_duplicate=True),
+        Output("top-purchases-grid", "rowTransaction"),
+        Output("top-purchases-message", "children"),
+        Output("top-purchases-message", "color"),
+        Output("top-purchases-message", "is_open"),
+        Input("top-purchases-grid", "cellValueChanged", allow_optional=True),
+        State("dashboard-refresh-token", "data"),
+        State("dashboard-locale", "data"),
+        prevent_initial_call=True,
+    )
+    def save_top_purchase_cell(cell_change, current_token, locale):
+        events = cell_change if isinstance(cell_change, list) else [cell_change]
+        event = next((item for item in reversed(events) if isinstance(item, dict)), None)
+        column = (event or {}).get("colId") or (event or {}).get("column") or (event or {}).get("field")
+        row = (event or {}).get("data")
+        if column not in {"Категория", "Комментарий"} or not isinstance(row, dict):
+            raise PreventUpdate
+        previous = {**row, column: event.get("oldValue")}
+        try:
+            config.require_writable_mode()
+            from src.data.sqlite_store import categories, update_cash_transaction
+
+            category_id = row["category_id"]
+            if column == "Категория":
+                category_id = next((
+                    item["id"] for item in categories(config.active_database_path(), include_internal=True)
+                    if item["direction"] == "expense" and item["active"]
+                    and item["name_ru"] == row["Категория"]
+                ), None)
+                if category_id is None:
+                    raise ValueError("unknown active expense category")
+
+            update_cash_transaction(
+                config.active_database_path(),
+                row["transaction_id"],
+                category_id=category_id,
+                comment=row.get("Комментарий", ""),
+                expected_row_version=int(row["row_version"]),
+                reason="top purchases table edit",
             )
             clear_data_cache()
             clear_table_cache()
@@ -3278,7 +3326,6 @@ def _year_report_layout(datasets: dict[str, DashboardDataset], theme: str | None
             _grid_section(datasets["year_fx_rates"], height="260px", theme=theme, locale=locale),
             _graph_section(datasets["year_cost_distribution_chart"], theme=theme, locale=locale),
             _grid_section(datasets["year_cost_distribution"], height="620px", theme=theme, locale=locale),
-            _grid_section(datasets["year_top_purchases"], height="680px", theme=theme, locale=locale),
             dbc.Row(
                 [
                     dbc.Col(_grid_section(datasets["year_income_by_month"], height="560px", theme=theme, locale=locale), xs=12, lg=3),
@@ -3598,6 +3645,8 @@ def _callback_validation_layout(layout):
             dag.AgGrid(id="planning_goals-grid"),
             dag.AgGrid(id="income-transactions-grid"),
             dbc.Alert(id="income-transactions-message"),
+            dag.AgGrid(id="top-purchases-grid"),
+            dbc.Alert(id="top-purchases-message"),
         ]
     )
 
@@ -5875,6 +5924,58 @@ def _income_transactions_grid(rows: list[dict], category_rows: list[dict],
     )
 
 
+def _top_purchases_grid(dataset: DashboardDataset, theme: str, locale: str = DEFAULT_LOCALE):
+    from src.data.sqlite_store import categories
+
+    category_rows = [row for row in categories(config.active_database_path(), include_internal=True)
+                     if row["direction"] == "expense"]
+    choices = [row["name_ru"] for row in category_rows if row["active"]]
+    display = dataset.display_dataframe
+    rows = []
+    for index, record in enumerate(display.to_dict("records")):
+        raw = dataset.dataframe.iloc[index]
+        rows.append({
+            **record,
+            "Комментарий": "" if pd.isna(raw["Комментарий"]) else str(raw["Комментарий"]),
+            "transaction_id": raw["transaction_id"],
+            "category_id": raw["category_id"],
+            "row_version": int(raw["row_version"]),
+        })
+    editable = not config.is_test_mode()
+    column_defs = _localized_input_column_defs([
+        {"field": "№", "width": 75},
+        {"field": "Дата", "width": 130},
+        {"field": "Категория", "editable": editable,
+         "cellEditor": "agSelectCellEditor", "cellEditorParams": {"values": choices},
+         "cellStyle": {"styleConditions": [{
+             "condition": f"params.value == {json.dumps(name, ensure_ascii=False)}",
+             "style": {"backgroundColor": _hex_to_rgba(
+                 expense_category_color(name), 0.30 if theme == "dark" else 0.20),
+                 "fontWeight": "600"},
+         } for name in {row["name_ru"] for row in category_rows}]},
+         "minWidth": 210, "flex": 1},
+        {"field": "Сумма", "width": 155, "cellClass": "ag-right-aligned-cell"},
+        {"field": "Комментарий", "editable": editable, "minWidth": 280, "flex": 2},
+        {"field": "transaction_id", "hide": True},
+        {"field": "category_id", "hide": True},
+        {"field": "row_version", "hide": True},
+    ], locale)
+    return html.Section(
+        [
+            _section_header(dataset),
+            dbc.Alert(id="top-purchases-message", is_open=False, className="py-2"),
+            _ag_grid_scroll(dag.AgGrid(
+                id="top-purchases-grid", rowData=rows, columnDefs=column_defs,
+                defaultColDef=_ag_grid_default_col_def(editable=False),
+                dashGridOptions={"stopEditingWhenCellsLoseFocus": True,
+                                 "getRowId": {"function": "params.data.transaction_id"}},
+                className=_ag_grid_class_name(theme), style=_ag_grid_style("680px"),
+            )),
+        ],
+        className="finrep-chart-section", style=_section_style(theme),
+    )
+
+
 def _hex_to_rgba(color: str, alpha: float) -> str:
     red, green, blue = (int(color[index:index + 2], 16) for index in (1, 3, 5))
     return f"rgba({red}, {green}, {blue}, {alpha})"
@@ -5989,8 +6090,6 @@ REPORT_SCROLL_TABLE_IDS = {
     "yearly_stats",
     "year_quarter_stats",
     "year_cost_distribution",
-    "top_purchases",
-    "year_top_purchases",
     "year_income_by_month",
     "year_cost_by_month",
     "year_income_cost_stats",
@@ -6043,6 +6142,9 @@ def _grid_section(dataset: DashboardDataset, height: str = "360px", theme: str |
     data = dataset.display_dataframe if dataset.display_dataframe is not None else dataset.dataframe
     if data.empty:
         return _empty_section(dataset, locale=locale)
+
+    if dataset.id == "top_purchases" and "transaction_id" in dataset.dataframe:
+        return _top_purchases_grid(dataset, theme or "dark", locale)
 
     if dataset.id == "planning_goals":
         return _limited_ag_grid_section(dataset, data, height, theme, read_only=read_only, locale=locale)
