@@ -3,7 +3,7 @@ import pandas as pd
 from functools import lru_cache
 
 from src import config
-from src.data.get import get_assets, get_income_categories, get_investments, get_transactions
+from src.data.get import get_assets, get_income_categories, get_investments, get_non_cost_categories, get_transactions
 from src.data.debts import active_debt_balances
 from src.data.get_finance import get_actual_rates, get_act_moex, get_fx_rates, require_fx_rate
 from src.data.proccess import convert_transaction, round_money_values
@@ -401,7 +401,7 @@ def _get_cost_distribution_cached(data_root, currency, year_key, month_key=None)
         smpl_tr_df = convert_transaction(df_to_convert=smpl_tr_df, to_curr=currency, target_col='Значение')
 
     # Find cost categories
-    cost_categories = [x for x in smpl_tr_df.Категория.unique() if x not in config.NOT_COST_COLS]
+    cost_categories = [x for x in smpl_tr_df.Категория.unique() if x not in get_non_cost_categories()]
 
     cost_stats_df = (smpl_tr_df[smpl_tr_df.Категория.isin(cost_categories)]
                      .groupby('Категория').agg({'Значение': ['sum']})

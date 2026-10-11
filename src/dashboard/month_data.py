@@ -5,7 +5,7 @@ from src import config, utils
 from src.dashboard.main_data import DashboardDataset, _apply_dashboard_chart_layout
 from src.dashboard.year_data import _format_cost_distribution
 from src.data.exchange_rates_info import get_exchange_rates_info
-from src.data.get import get_transactions
+from src.data.get import get_non_cost_categories, get_transactions
 from src.data.get_finance import fx_network_mode
 from src.data.proccess import convert_transaction
 from src.model.create_tables import (
@@ -291,7 +291,7 @@ def _cost_distribution(year: str, month: str, currency: str) -> pd.DataFrame:
     if not config.DEBUG:
         sample = convert_transaction(sample, to_curr=currency, target_col="Значение")
 
-    costs = sample[~sample["Категория"].isin(config.NOT_COST_COLS)]
+    costs = sample[~sample["Категория"].isin(get_non_cost_categories())]
     if costs.empty:
         return pd.DataFrame(columns=["Категория", "Суммарно", "Среднее", "Процент"])
 

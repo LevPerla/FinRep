@@ -8,7 +8,7 @@ from src.dashboard.chart_style import expense_category_color
 from src.dashboard.main_data import (
     DashboardDataset, _apply_dashboard_chart_layout, _format_top_purchases, _rank_top_purchases,
 )
-from src.data.get import get_transactions
+from src.data.get import get_non_cost_categories, get_transactions
 from src.data.get_finance import fx_network_mode
 from src.data.proccess import convert_transaction
 
@@ -21,9 +21,9 @@ def build_expense_dashboard_data(
     if currency not in config.UNIQUE_TICKERS:
         raise ValueError(f"currency must be one of {tuple(config.UNIQUE_TICKERS)}")
 
-    transactions = get_transactions()
+    transactions = get_transactions(include_identity=True) if config.use_sqlite_storage() else get_transactions()
     expenses = transactions.loc[
-        ~transactions["Категория"].isin(config.NOT_COST_COLS)
+        ~transactions["Категория"].isin(get_non_cost_categories())
         & transactions["Значение"].ne(0)
     ].copy().reset_index(drop=True)
     if expenses.empty:

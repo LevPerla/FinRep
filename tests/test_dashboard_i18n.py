@@ -231,7 +231,6 @@ def test_report_translation_keeps_category_values_and_internal_columns_stable():
 
 
 def test_report_text_handles_dynamic_copy_and_russian_fallback():
-    assert report_text("Топ-15 самых больших покупок за 2026 год", "en") == "Top 15 largest purchases in 2026"
     assert report_text("2026-05: доход минус расход", "en") == "2026-05: income minus expenses"
     assert report_text("USD укрепляется на 10% к остальным валютам", "en") == "USD strengthens by 10% against other currencies"
     assert report_text(

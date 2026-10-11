@@ -42,9 +42,10 @@ def _parse_transaction_value(value):
     }
 
 
-def get_transactions():
+def get_transactions(*, include_identity=False):
     if config.use_sqlite_storage():
-        return _get_transactions_sqlite_cached(str(config.active_database_path())).copy(deep=True)
+        data = _get_transactions_sqlite_cached(str(config.active_database_path())).copy(deep=True)
+        return data if include_identity else data[TRANSACTION_COLUMNS]
     return _get_transactions_cached(str(config.active_data_path("transactions_info"))).copy(deep=True)
 
 
@@ -60,6 +61,10 @@ def get_income_categories():
         ("Прочие доходы", "active", 40),
         (config.UNCLASSIFIED_INCOME_LABEL, "unclassified", 90),
     ], columns=INCOME_CATEGORY_COLUMNS)
+
+
+def get_non_cost_categories():
+    return set(config.NOT_COST_COLS) | set(get_income_categories()["Категория"].astype(str))
 
 
 @lru_cache(maxsize=1)
@@ -83,16 +88,17 @@ def _get_transactions_sqlite_cached(database_path: str):
     with connect_database(database_path) as connection:
         rows = connection.execute("""SELECT v.occurred_on, v.category_name_ru,
             v.currency_code, v.amount_minor, v.comment, c.minor_unit,
-            'cash' AS row_kind, '' AS event_kind, '' AS side
+            'cash' AS row_kind, '' AS event_kind, '' AS side,
+            v.id AS transaction_id, v.category_id, v.row_version
             FROM v_cash_transactions v JOIN currencies c ON c.code = v.currency_code
             UNION ALL
             SELECT e.occurred_on, '', e.currency_code, e.amount_minor, e.comment,
-            c.minor_unit, 'debt', e.event_kind, e.side
+            c.minor_unit, 'debt', e.event_kind, e.side, NULL, NULL, NULL
             FROM debt_cash_events e JOIN currencies c ON c.code = e.currency_code
             UNION ALL
             SELECT e.occurred_on, 'Инвестиции', e.currency_code,
             CASE e.flow_kind WHEN 'withdrawal' THEN -e.amount_minor ELSE e.amount_minor END,
-            e.comment, c.minor_unit, 'investment', e.flow_kind, ''
+            e.comment, c.minor_unit, 'investment', e.flow_kind, '', NULL, NULL, NULL
             FROM investment_cash_events e JOIN currencies c ON c.code = e.currency_code
             ORDER BY occurred_on""").fetchall()
         saved_periods = [row[0] for row in connection.execute("""SELECT period
@@ -101,7 +107,8 @@ def _get_transactions_sqlite_cached(database_path: str):
     if not rows:
         data = pd.DataFrame(columns=[
             "occurred_on", "category_name_ru", "currency_code", "amount_minor",
-            "comment", "minor_unit", "row_kind", "event_kind", "side"])
+            "comment", "minor_unit", "row_kind", "event_kind", "side",
+            "transaction_id", "category_id", "row_version"])
     else:
         data = pd.DataFrame([dict(row) for row in rows])
     represented_periods = set(pd.to_datetime(data["occurred_on"]).dt.to_period("M").astype(str))
@@ -112,10 +119,11 @@ def _get_transactions_sqlite_cached(database_path: str):
             "category_name_ru": config.UNCLASSIFIED_INCOME_LABEL,
             "currency_code": "RUB", "amount_minor": 0,
             "comment": "", "minor_unit": 2, "row_kind": "cash",
-            "event_kind": "", "side": "",
+            "event_kind": "", "side": "", "transaction_id": None,
+            "category_id": None, "row_version": None,
         } for period in empty_periods])], ignore_index=True)
     if data.empty:
-        return _empty_frame(TRANSACTION_COLUMNS)
+        return _empty_frame([*TRANSACTION_COLUMNS, "transaction_id", "category_id", "row_version"])
     data["Дата"] = pd.to_datetime(data.pop("occurred_on"))
     debt_categories = {
         ("issue", "receivable"): "Дебиторская задолженность",
@@ -133,7 +141,7 @@ def _get_transactions_sqlite_cached(database_path: str):
     data["Год"] = data["Дата"].dt.year.astype(str)
     data["Квартал"] = data["Дата"].dt.quarter.astype(str)
     data["Месяц"] = data["Дата"].dt.month.astype(str)
-    return data[TRANSACTION_COLUMNS]
+    return data[[*TRANSACTION_COLUMNS, "transaction_id", "category_id", "row_version"]]
 
 
 @lru_cache(maxsize=1)

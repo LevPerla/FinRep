@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pandas as pd
 
-from src import config
+from src.data.get import get_non_cost_categories
 from src.dashboard.main_data import DashboardDataset
 
 
@@ -46,7 +46,7 @@ def _report_table_style_maps(dataset: DashboardDataset, data: pd.DataFrame) -> d
             "signs": {},
         }
     if dataset.id == "month_transactions":
-        expense_columns = [column for column in data.columns if column not in ["Дата", *config.NOT_COST_COLS]]
+        expense_columns = [column for column in data.columns if column != "Дата" and column not in get_non_cost_categories()]
         levels = {
             "Доход": ("__month_income_level", "green"),
             "Сбережения": ("__month_savings_level", "green"),
@@ -183,7 +183,7 @@ def _grid_row_data(dataset: DashboardDataset, data: pd.DataFrame) -> list[dict]:
 
     if dataset.id == "month_transactions":
         _add_level_metadata(records, raw, {"Доход": "__month_income_level", "Сбережения": "__month_savings_level"})
-        expense_columns = [column for column in raw.columns if column not in ["Дата", *config.NOT_COST_COLS]]
+        expense_columns = [column for column in raw.columns if column != "Дата" and column not in get_non_cost_categories()]
         _add_level_metadata(records, raw, {column: f"__month_expense_{index}_level" for index, column in enumerate(expense_columns)})
         return records
 
@@ -454,7 +454,7 @@ def _month_transaction_column_styles(data: pd.DataFrame, theme: str | None = Non
         "Доход": _level_style("__month_income_level", "green", theme),
         "Сбережения": _level_style("__month_savings_level", "green", theme),
     }
-    expense_columns = [column for column in data.columns if column not in ["Дата", *config.NOT_COST_COLS]]
+    expense_columns = [column for column in data.columns if column != "Дата" and column not in get_non_cost_categories()]
     styles.update(
         {column: _level_style(f"__month_expense_{index}_level", "red", theme) for index, column in enumerate(expense_columns)}
     )
