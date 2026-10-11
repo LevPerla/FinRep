@@ -67,6 +67,10 @@ def get_non_cost_categories():
     return set(config.NOT_COST_COLS) | set(get_income_categories()["Категория"].astype(str))
 
 
+def get_income_category_names():
+    return {"Доход", *get_income_categories()["Категория"].astype(str)}
+
+
 @lru_cache(maxsize=1)
 def _get_income_categories_sqlite_cached(database_path: str):
     from src.data.sqlite_store import connect_database

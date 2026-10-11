@@ -321,11 +321,16 @@ def _debt_text_columns() -> list[str]:
 
 def _format_integer_table(data: pd.DataFrame, not_num_cols: list[str]) -> pd.DataFrame:
     display = data.copy(deep=True)
+    expenses = set(display.columns) - get_non_cost_categories() - set(not_num_cols)
+    cash_outflows = expenses | {
+        "Дебиторская задолженность", "Погашение кред. зад.", "Инвестиции",
+    }
     for column in display.columns:
         if column in not_num_cols:
             continue
         numeric = pd.to_numeric(display[column], errors="coerce").fillna(0).round().astype(int)
-        display[column] = numeric.map(lambda value: f"{value:,}".replace(",", " "))
+        signed = numeric * (-1 if column in cash_outflows else 1)
+        display[column] = signed.map(lambda value: (f"{value:+,}" if value else "0").replace(",", " "))
     return display.fillna(0)
 
 

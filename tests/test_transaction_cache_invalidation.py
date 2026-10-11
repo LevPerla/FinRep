@@ -45,7 +45,7 @@ def _expense_total() -> float:
 def test_month_export_invalidates_transaction_and_report_caches(cached_month):
     assert _expense_total() == 0
     assert get_balance_by_month("RUB").iloc[0]["Расход"] == 0
-    assert get_month_transactions("RUB", "2026", "09").iloc[0]["Прочее"] == 0
+    assert "Прочее" not in get_month_transactions("RUB", "2026", "09").columns
 
     staging.append_transaction_draft(
         "2026-09-01",
