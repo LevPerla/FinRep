@@ -173,6 +173,82 @@ def test_dashboard_goal_cell_accepts_and_persists_expense_month_target(
     assert saved["target_monthly_expense"] == Decimal("150000.00")
 
 
+def test_day_modal_edit_and_confirmed_delete_update_sqlite(tmp_path, monkeypatch):
+    from src.dashboard.app import create_app, _month_transaction_rows
+    from src.dashboard.month_data import get_day_transaction_details
+    from src.data.sqlite_store import cash_transactions
+
+    database = tmp_path / "target.sqlite3"
+    initialize_database(database)
+    add_cash_transaction(database, transaction_id="tx", occurred_on="2026-02-03",
+                         flow_direction="expense", category_id="expense.other",
+                         amount="10", currency="RUB", comment="Before")
+    monkeypatch.setenv("FINREP_STORAGE_BACKEND", "sqlite")
+    monkeypatch.setenv("FINREP_SQLITE_PATH", str(database))
+    monkeypatch.setenv("FINREP_DASH_PASSWORD", "synthetic-password")
+    monkeypatch.setenv("FINREP_DASH_SECRET_KEY", "synthetic-secret")
+    clear_data_cache()
+
+    app = create_app()
+    client = app.server.test_client()
+    with client.session_transaction() as session:
+        session["authenticated"] = True
+        session["data_mode"] = "live"
+    key = next(key for key, callback in app.callback_map.items()
+               if any(item["id"] == "month-transaction-modal-grid" and
+                      item["property"] == "cellValueChanged" for item in callback["inputs"]))
+    callback = app.callback_map[key]
+
+    def submit(*, change=None, selected=None, delete=False):
+        values = {
+            ("month-transaction-modal-grid", "cellValueChanged"): change,
+            ("month-transaction-delete-confirm", "submit_n_clicks"): 1 if delete else None,
+            ("month-transaction-modal-grid", "selectedRows"): selected,
+            ("month-transaction-selected-date", "data"): "2026-02-03",
+            ("dashboard-currency", "value"): "RUB",
+            ("dashboard-refresh-token", "data"): 0,
+            ("dashboard-locale", "data"): "ru",
+        }
+        changed = ("month-transaction-delete-confirm.submit_n_clicks" if delete else
+                   "month-transaction-modal-grid.cellValueChanged")
+        response = client.post("/_dash-update-component", json={
+            "output": key,
+            "outputs": [{"id": item.component_id, "property": item.component_property}
+                        for item in callback["output"]],
+            "inputs": [{**item, "value": values.get((item["id"], item["property"]))}
+                       for item in callback["inputs"]],
+            "state": [{**item, "value": values.get((item["id"], item["property"]))}
+                      for item in callback["state"]],
+            "changedPropIds": [changed],
+        })
+        assert response.status_code == 200
+        return response.get_json()["response"]
+
+    row = _month_transaction_rows(get_day_transaction_details("2026-02-03", "RUB"))[0]
+    assert row["transaction_id"] == "tx"
+    assert row["direction"] == "debit"
+    invalid = submit(change={"colId": "Исходная сумма", "data": {**row, "Исходная сумма": 0}})
+    assert invalid["month-transaction-modal-message"]["is_open"] is True
+    assert cash_transactions(database)[0]["amount"] == Decimal("10")
+
+    saved = submit(change={"colId": "Исходная сумма", "data": {**row, "Исходная сумма": 12.5}})
+    assert saved["month-transaction-modal-message"]["is_open"] is False
+    assert cash_transactions(database)[0]["amount"] == Decimal("12.50")
+    stale = submit(selected=[row], delete=True)
+    assert stale["month-transaction-modal-message"]["is_open"] is True
+    current = saved["month-transaction-modal-grid"]["rowData"][0]
+    edited = submit(change={"colId": "Категория", "data": {**current, "Категория": "Пища"}})
+    assert edited["month-transaction-modal-message"]["is_open"] is False
+    assert cash_transactions(database)[0]["category_id"] == "expense.food"
+    current = edited["month-transaction-modal-grid"]["rowData"][0]
+    edited = submit(change={"colId": "Комментарий", "data": {**current, "Комментарий": "After"}})
+    assert edited["month-transaction-modal-message"]["is_open"] is False
+    assert cash_transactions(database)[0]["comment"] == "After"
+    current = edited["month-transaction-modal-grid"]["rowData"][0]
+    submit(selected=[current], delete=True)
+    assert cash_transactions(database) == []
+
+
 def test_sqlite_fx_and_price_adapters_append_observations(tmp_path, monkeypatch):
     target = tmp_path / "target.sqlite3"
     migrate_core_csv(Path(config.SAMPLE_DATA_PATH), target, tmp_path / "migration.sqlite3")

@@ -435,29 +435,81 @@ def test_manual_transaction_fields_have_persistent_labels_and_error_description(
     assert 'control.setAttribute("aria-describedby", "transaction-input-message")' in adapter
 
 
-def test_day_transaction_details_include_native_amount_and_comment(monkeypatch):
+def test_day_transaction_details_include_identity_and_sort_by_report_amount(monkeypatch):
     from src.dashboard import month_data
 
     transactions = pd.DataFrame(
         [
-            {"Дата": pd.Timestamp("2026-05-02"), "Категория": "Пища", "Значение": 1500, "Валюта": "RUB", "Комментарий": "Продукты"},
+            {"Дата": pd.Timestamp("2026-05-02"), "Категория": "Пища", "Значение": 1500, "Валюта": "RUB", "Комментарий": "Продукты", "transaction_id": "first", "category_id": "expense.food", "row_version": 1, "flow_direction": "expense"},
+            {"Дата": pd.Timestamp("2026-05-02"), "Категория": "Пища", "Значение": 2500, "Валюта": "RUB", "Комментарий": "Крупнее", "transaction_id": "second", "category_id": "expense.food", "row_version": 2, "flow_direction": "expense"},
             {"Дата": pd.Timestamp("2026-05-02"), "Категория": "Транспорт", "Значение": 0, "Валюта": "RUB", "Комментарий": ""},
             {"Дата": pd.Timestamp("2026-05-03"), "Категория": "Пища", "Значение": 900, "Валюта": "RUB", "Комментарий": "Другой день"},
         ]
     )
-    monkeypatch.setattr(month_data, "get_transactions", lambda: transactions.copy(deep=True))
+    monkeypatch.setattr(month_data, "get_transactions", lambda **_kwargs: transactions.copy(deep=True))
 
     details = month_data.get_day_transaction_details("2026-05-02", "RUB")
 
-    assert details.to_dict("records") == [
+    assert details[["Категория", "Исходная сумма", "Валюта", "В валюте отчета", "Комментарий",
+                    "transaction_id", "category_id", "row_version", "flow_direction"]].to_dict("records") == [
+        {
+            "Категория": "Пища",
+            "Исходная сумма": 2500,
+            "Валюта": "RUB",
+            "В валюте отчета": 2500,
+            "Комментарий": "Крупнее",
+            "transaction_id": "second",
+            "category_id": "expense.food",
+            "row_version": 2,
+            "flow_direction": "expense",
+        },
         {
             "Категория": "Пища",
             "Исходная сумма": 1500,
             "Валюта": "RUB",
             "В валюте отчета": 1500,
             "Комментарий": "Продукты",
+            "transaction_id": "first",
+            "category_id": "expense.food",
+            "row_version": 1,
+            "flow_direction": "expense",
         }
     ]
+
+
+def test_day_modal_edits_only_cash_and_colors_categories(monkeypatch):
+    from src.dashboard import app as dashboard_app
+    from src.data import sqlite_store
+
+    details = pd.DataFrame([
+        {"Категория": "Пища", "Исходная сумма": 10, "Валюта": "RUB",
+         "В валюте отчета": 10, "Комментарий": "", "transaction_id": "cash",
+         "category_id": "expense.food", "row_version": 1, "flow_direction": "expense"},
+        {"Категория": "Сбережения", "Исходная сумма": 20, "Валюта": "RUB",
+         "В валюте отчета": 20, "Комментарий": "", "transaction_id": None,
+         "category_id": None, "row_version": None, "flow_direction": None},
+    ])
+    monkeypatch.setattr(config, "is_test_mode", lambda: False)
+    monkeypatch.setattr(config, "use_sqlite_storage", lambda: True)
+    monkeypatch.setattr(dashboard_app, "get_income_category_names", lambda: {"Зарплата"})
+    monkeypatch.setattr(sqlite_store, "categories", lambda *_args, **_kwargs: [
+        {"name_ru": "Пища", "active": 1, "direction": "expense"},
+        {"name_ru": "Зарплата", "active": 1, "direction": "income"},
+    ])
+
+    columns = dashboard_app._month_transaction_modal_columns(details, "RUB", "dark")
+    category = next(column for column in columns if column["field"] == "Категория")
+    report_amount = next(column for column in columns if column["field"] == "В валюте отчета")
+    assert category["editable"] == {"function": "!!params.data.transaction_id"}
+    assert category["context"]["incomeCategories"] == ["Зарплата"]
+    assert category["context"]["expenseCategories"] == ["Пища"]
+    assert len(category["cellStyle"]["styleConditions"]) == 3
+    assert report_amount["sort"] == "desc"
+    assert dashboard_app._month_transaction_rows(details)[1]["transaction_id"] is None
+    assert dashboard_app._month_transaction_rows(details)[0]["direction"] == "debit"
+
+    monkeypatch.setattr(config, "is_test_mode", lambda: True)
+    assert dashboard_app._month_transaction_modal_columns(details, "RUB", "dark")[0]["editable"] is False
 
 
 def test_transaction_modal_ignores_zero_clicks_and_tracks_theme():

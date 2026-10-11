@@ -111,12 +111,13 @@ def _build_month_dashboard_data(
 
 
 def get_day_transaction_details(date: str, currency: str) -> pd.DataFrame:
-    columns = ["Категория", "Исходная сумма", "Валюта", "В валюте отчета", "Комментарий"]
+    columns = ["Категория", "Исходная сумма", "Валюта", "В валюте отчета", "Комментарий",
+               "transaction_id", "category_id", "row_version", "flow_direction"]
     selected_date = pd.to_datetime(date, errors="coerce")
     if pd.isna(selected_date):
         return pd.DataFrame(columns=columns)
 
-    transactions = get_transactions()
+    transactions = get_transactions(include_identity=True) if config.use_sqlite_storage() else get_transactions()
     transaction_dates = pd.to_datetime(transactions["Дата"], errors="coerce").dt.normalize()
     details = transactions[transaction_dates == selected_date.normalize()].copy(deep=True)
     details["Значение"] = pd.to_numeric(details["Значение"], errors="coerce")
@@ -130,15 +131,20 @@ def get_day_transaction_details(date: str, currency: str) -> pd.DataFrame:
         target_col="Значение",
         use_current_rate=False,
     )
-    return pd.DataFrame(
+    result = pd.DataFrame(
         {
             "Категория": details["Категория"].astype(str),
             "Исходная сумма": details["Значение"],
             "Валюта": details["Валюта"].astype(str),
             "В валюте отчета": converted["Значение"],
             "Комментарий": details["Комментарий"].fillna("").astype(str),
+            "transaction_id": details.get("transaction_id"),
+            "category_id": details.get("category_id"),
+            "row_version": details.get("row_version"),
+            "flow_direction": details.get("flow_direction"),
         }
     )
+    return result.sort_values("В валюте отчета", ascending=False, kind="mergesort").reset_index(drop=True)
 
 
 def _prepare_summary(data: pd.DataFrame) -> pd.DataFrame:

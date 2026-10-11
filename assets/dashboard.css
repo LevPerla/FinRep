@@ -523,12 +523,6 @@ body {
   outline-color: #62a8ff;
 }
 
-.finrep-transaction-detail-table td:last-child,
-.finrep-transaction-detail-table th:last-child {
-  min-width: 240px;
-  white-space: normal;
-}
-
 .finrep-modal-dark {
   --bs-modal-bg: #2b2b2b;
   --bs-modal-color: #dcdcdc;
@@ -539,6 +533,19 @@ body {
   color: #dcdcdc;
   background-color: #2b2b2b;
   border-color: #555555;
+}
+
+.finrep-modal-dark .finrep-ag-grid > div {
+  --ag-background-color: #2b2b2b;
+  --ag-foreground-color: #dcdcdc;
+  --ag-input-background-color: #2b2b2b;
+  --ag-input-text-color: #dcdcdc;
+  --ag-input-border-color: #646464;
+  color-scheme: dark;
+}
+
+.finrep-modal-dark .finrep-ag-grid .ag-input-field-input {
+  color-scheme: dark;
 }
 
 .finrep-modal-dark .modal-header,
