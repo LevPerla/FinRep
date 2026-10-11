@@ -70,6 +70,7 @@ from src.data.sqlite_store import (
     fx_rates, list_debt_payment_plans,
 )
 from src.dashboard.expense_data import build_expense_dashboard_data
+from src.dashboard.chart_style import income_category_color
 from src.dashboard.income_data import build_income_dashboard_data
 from src.dashboard.export import ExportBusyError, export_dashboard_page
 from src.dashboard.auth import configure_auth
@@ -931,6 +932,55 @@ def register_callbacks(app: Dash) -> None:
         clear_table_cache()
         clear_main_dashboard_cache()
         return int(current_token or 0) + 1
+
+    @app.callback(
+        Output("dashboard-refresh-token", "data", allow_duplicate=True),
+        Output("income-transactions-grid", "rowTransaction"),
+        Output("income-transactions-message", "children"),
+        Output("income-transactions-message", "color"),
+        Output("income-transactions-message", "is_open"),
+        Input("income-transactions-grid", "cellValueChanged", allow_optional=True),
+        State("dashboard-refresh-token", "data"),
+        State("dashboard-locale", "data"),
+        prevent_initial_call=True,
+    )
+    def save_income_transaction_cell(cell_change, current_token, locale):
+        events = cell_change if isinstance(cell_change, list) else [cell_change]
+        event = next((item for item in reversed(events) if isinstance(item, dict)), None)
+        column = (event or {}).get("colId") or (event or {}).get("column") or (event or {}).get("field")
+        row = (event or {}).get("data")
+        if column not in {"category_name", "comment"} or not isinstance(row, dict):
+            raise PreventUpdate
+        previous = {**row, column: event.get("oldValue")}
+        try:
+            config.require_writable_mode()
+            from src.data.sqlite_store import categories, update_cash_transaction
+
+            category_id = row["category_id"]
+            if column == "category_name":
+                category_id = next((
+                    item["id"] for item in categories(
+                        config.active_database_path(), include_internal=True)
+                    if item["direction"] == "income" and item["active"]
+                    and item["name_ru"] == row["category_name"]
+                ), None)
+                if category_id is None:
+                    raise ValueError("unknown active income category")
+
+            update_cash_transaction(
+                config.active_database_path(),
+                row["id"],
+                category_id=category_id,
+                comment=row.get("comment", ""),
+                expected_row_version=int(row["row_version"]),
+                reason="income table edit",
+            )
+            clear_data_cache()
+            clear_table_cache()
+            clear_main_dashboard_cache()
+            return int(current_token or 0) + 1, no_update, "", "success", False
+        except Exception as exc:
+            return no_update, {"update": [previous]}, report_text(str(exc), locale), "danger", True
 
     @app.callback(
         Output("dashboard-theme", "data"),
@@ -3541,6 +3591,8 @@ def _callback_validation_layout(layout):
             _input_report_layout(DEFAULT_CURRENCY, DEFAULT_YEAR, DEFAULT_MONTH, "dark", load_asset_records=False),
             dbc.Button("Обновить crypto", id="crypto-refresh-button"),
             dag.AgGrid(id="planning_goals-grid"),
+            dag.AgGrid(id="income-transactions-grid"),
+            dbc.Alert(id="income-transactions-message"),
         ]
     )
 
@@ -5767,7 +5819,108 @@ def _income_report_layout(datasets: dict[str, DashboardDataset], theme: str, loc
                                                     className="small", style={"color": "var(--finrep-muted)"}))
         children.append(allocation_chart)
         children.append(_graph_section(datasets["income_receipts_monthly"], theme=theme, locale=locale))
+    if config.use_sqlite_storage():
+        children.append(_income_transactions_section(theme, locale))
     return html.Div(children, className="d-grid gap-3")
+
+
+def _income_transactions_section(theme: str, locale: str = DEFAULT_LOCALE):
+    from src.data.sqlite_store import cash_transactions, categories
+
+    return _income_transactions_grid(
+        cash_transactions(config.active_database_path()),
+        categories(config.active_database_path(), include_internal=True),
+        theme,
+        locale,
+    )
+
+
+def _income_transactions_grid(rows: list[dict], category_rows: list[dict],
+                              theme: str, locale: str = DEFAULT_LOCALE):
+    income_categories = [row for row in category_rows if row["direction"] == "income"]
+    category_labels = {row["id"]: row["name_ru"] for row in income_categories}
+    category_choices = [row["name_ru"] for row in income_categories if row["active"]]
+    grid_rows = [
+        {
+            "id": row["id"],
+            "occurred_on": row["occurred_on"],
+            "amount": _format_input_amount(row["amount"]),
+            "currency_code": row["currency_code"],
+            "category_id": row["category_id"],
+            "category_name": category_labels[row["category_id"]],
+            "comment": row["comment"],
+            "row_version": row["row_version"],
+        }
+        for row in sorted(
+            (row for row in rows if row["flow_direction"] == "income"),
+            key=lambda row: (row["occurred_on"], row["id"]),
+            reverse=True,
+        )
+    ]
+    editable = not config.is_test_mode()
+    column_defs = _localized_input_column_defs([
+        {"field": "occurred_on", "headerName": "Дата", "sort": "desc", "sortIndex": 0,
+         "width": 130},
+        {"field": "amount", "headerName": "Сумма", "width": 140,
+         "cellClass": "ag-right-aligned-cell"},
+        {"field": "currency_code", "headerName": "Валюта", "width": 115},
+        {
+            "field": "category_name",
+            "headerName": "Категория",
+            "editable": editable,
+            "cellEditor": "agSelectCellEditor",
+            "cellEditorParams": {"values": category_choices},
+            "cellStyle": {
+                "styleConditions": [
+                    {
+                        "condition": f"params.value == {json.dumps(name, ensure_ascii=False)}",
+                        "style": {
+                            "backgroundColor": _hex_to_rgba(
+                                income_category_color(name), 0.30 if theme == "dark" else 0.20
+                            ),
+                            "fontWeight": "600",
+                        },
+                    }
+                    for name in category_labels.values()
+                ],
+            },
+            "minWidth": 210,
+            "flex": 1,
+        },
+        {"field": "comment", "headerName": "Комментарий", "editable": editable,
+         "minWidth": 280, "flex": 2},
+        {"field": "id", "hide": True},
+        {"field": "category_id", "hide": True},
+        {"field": "row_version", "hide": True},
+    ], locale)
+    return html.Section(
+        [
+            html.H3(report_text("Транзакции", locale), className="h5 mb-2"),
+            dbc.Alert(id="income-transactions-message", is_open=False, className="py-2"),
+            _ag_grid_scroll(dag.AgGrid(
+                id="income-transactions-grid",
+                rowData=grid_rows,
+                columnDefs=column_defs,
+                defaultColDef=_ag_grid_default_col_def(editable=False),
+                dashGridOptions={
+                    "pagination": True,
+                    "paginationPageSize": 50,
+                    "paginationPageSizeSelector": False,
+                    "stopEditingWhenCellsLoseFocus": True,
+                    "getRowId": {"function": "params.data.id"},
+                },
+                className=_ag_grid_class_name(theme),
+                style=_ag_grid_style("660px"),
+            )),
+        ],
+        className="finrep-chart-section",
+        style=_section_style(theme),
+    )
+
+
+def _hex_to_rgba(color: str, alpha: float) -> str:
+    red, green, blue = (int(color[index:index + 2], 16) for index in (1, 3, 5))
+    return f"rgba({red}, {green}, {blue}, {alpha})"
 
 
 def _error_state(message: str, exc: Exception, locale: str = DEFAULT_LOCALE):

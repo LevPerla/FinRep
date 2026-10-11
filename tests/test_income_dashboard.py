@@ -8,7 +8,12 @@ os.environ.setdefault("FINREP_DASH_SECRET_KEY", "test-session-secret")
 
 from src import config
 from src.dashboard import income_data
-from src.dashboard.app import _datasets_for_tab, _download_filename, _income_report_layout
+from src.dashboard.app import (
+    _datasets_for_tab,
+    _download_filename,
+    _income_report_layout,
+    _income_transactions_grid,
+)
 from src.dashboard.export import build_dashboard_url
 from src.dashboard.i18n import localize_report_datasets, localize_export_dataframe
 from src.data import get_finance, proccess
@@ -217,3 +222,46 @@ def test_income_export_and_localization_preserve_values(source):
     export_allocation = localize_export_dataframe(datasets["income_allocation"].dataframe, "en")
     assert export_allocation.loc[0, "Source"] == "Salary"
     assert export_allocation.loc[0, "Share, %"] == 100
+
+
+def test_income_transaction_grid_is_editable_sorted_and_paginated(monkeypatch):
+    monkeypatch.setattr(config, "is_test_mode", lambda: False)
+    rows = [
+        {"id": "unknown", "occurred_on": "2026-04-01", "flow_direction": "income",
+         "amount": "19104457.77", "currency_code": "RUB", "category_id": "income.unknown",
+         "comment": "Unknown", "row_version": 1},
+        {"id": "old", "occurred_on": "2026-01-01", "flow_direction": "income",
+         "amount": 10, "currency_code": "RUB", "category_id": "income.other",
+         "comment": "Old", "row_version": 1},
+        {"id": "expense", "occurred_on": "2026-03-01", "flow_direction": "expense",
+         "amount": 20, "currency_code": "RUB", "category_id": "expense.other",
+         "comment": "Expense", "row_version": 1},
+        {"id": "new", "occurred_on": "2026-02-01", "flow_direction": "income",
+         "amount": 30, "currency_code": "RUB", "category_id": "income.salary",
+         "comment": "New", "row_version": 2},
+    ]
+    category_rows = [
+        {"id": "income.salary", "name_ru": "Зарплата", "direction": "income", "active": 1},
+        {"id": "income.other", "name_ru": "Прочие доходы", "direction": "income", "active": 1},
+        {"id": "income.unknown", "name_ru": "Доход без категории", "direction": "income", "active": 0},
+        {"id": "expense.other", "name_ru": "Прочее", "direction": "expense", "active": 1},
+    ]
+
+    section = _income_transactions_grid(rows, category_rows, "dark")
+    grid = section.children[2].children
+    columns = {column["field"]: column for column in grid.columnDefs}
+
+    assert [row["id"] for row in grid.rowData] == ["unknown", "new", "old"]
+    assert grid.rowData[0]["category_name"] == "Доход без категории"
+    assert grid.rowData[0]["amount"] == "19 104 457.77"
+    assert grid.dashGridOptions["paginationPageSize"] == 50
+    assert grid.dashGridOptions["pagination"] is True
+    assert columns["occurred_on"]["sort"] == "desc"
+    assert columns["category_name"]["editable"] is True
+    assert columns["comment"]["editable"] is True
+    assert columns["category_name"]["cellEditorParams"]["values"] == [
+        "Зарплата", "Прочие доходы",
+    ]
+    category_styles = columns["category_name"]["cellStyle"]["styleConditions"]
+    assert len(category_styles) == 3
+    assert len({condition["style"]["backgroundColor"] for condition in category_styles}) == 3

@@ -2013,6 +2013,42 @@ def change_transaction_category(path: str | Path, transaction_id: str,
         _audit(connection, transaction_id, "category_changed", before, after, reason)
 
 
+def update_cash_transaction(path: str | Path, transaction_id: str, *,
+                            category_id: str, comment: str,
+                            expected_row_version: int, reason: str) -> None:
+    if not reason.strip():
+        raise ValueError("change reason is required")
+    with connect_database(path, writable=True) as connection:
+        before = connection.execute(
+            "SELECT * FROM cash_transactions WHERE id = ?", (transaction_id,)
+        ).fetchone()
+        if before is None or before["status"] != "posted":
+            raise ValueError("unknown posted transaction")
+        category = connection.execute(
+            "SELECT direction, active FROM categories WHERE id = ?", (category_id,)
+        ).fetchone()
+        if category is None or not category["active"] or category["direction"] != before["flow_direction"]:
+            raise ValueError("transaction needs an active category with matching direction")
+        if before["row_version"] != expected_row_version:
+            raise StorageRevisionConflict("transaction changed; reload and try again")
+        normalized_comment = str(comment or "").strip()
+        if before["category_id"] == category_id and before["comment"] == normalized_comment:
+            return
+        now = _utc_now()
+        updated = connection.execute(
+            """UPDATE cash_transactions SET category_id = ?, comment = ?,
+               row_version = row_version + 1, updated_at = ?
+               WHERE id = ? AND row_version = ?""",
+            (category_id, normalized_comment, now, transaction_id, expected_row_version),
+        )
+        if updated.rowcount != 1:
+            raise StorageRevisionConflict("transaction changed; reload and try again")
+        after = connection.execute(
+            "SELECT * FROM cash_transactions WHERE id = ?", (transaction_id,)
+        ).fetchone()
+        _audit(connection, transaction_id, "updated", before, after, reason)
+
+
 def void_cash_transaction(path: str | Path, transaction_id: str, *, reason: str) -> None:
     if not reason.strip():
         raise ValueError("void reason is required")
