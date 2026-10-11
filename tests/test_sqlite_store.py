@@ -795,7 +795,7 @@ def test_debt_commands_are_same_currency_atomic_and_prevent_overpayment(tmp_path
         amount="60",
         operation_key="pay-debt-1",
     ) == first
-    with pytest.raises(ValueError, match="exceeds"):
+    with pytest.raises(ValueError, match="Погашение больше остатка"):
         record_debt_payment(
             database,
             debt_id=created["debt_id"],

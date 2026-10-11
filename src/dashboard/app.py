@@ -1,4 +1,5 @@
 import json
+import hashlib
 import logging
 import os
 from concurrent.futures import ThreadPoolExecutor
@@ -33,7 +34,7 @@ from src.data.debts import (
     active_debt_balances,
     create_debt,
     create_debt_payment_from_cash,
-    migrate_legacy_debts,
+    read_debts,
 )
 from src.data.importers.bank_pdf import (
     BANK_PDF_UPLOAD_LIMIT_LABEL,
@@ -66,8 +67,9 @@ from src.data.staging import (
 )
 from src.data.sqlite_bootstrap import ensure_default_live_database
 from src.data.sqlite_store import (
-    confirm_debt_payment_plan, cpi_observations, create_debt_payment_plan,
-    fx_rates, list_debt_payment_plans,
+    cpi_observations, fx_rates, publish_domain_drafts,
+    remove_transaction_drafts, transaction_drafts_snapshot, update_debt_draft_comments,
+    update_debt_due_date,
 )
 from src.dashboard.expense_data import build_expense_dashboard_data
 from src.dashboard.income_data import build_income_dashboard_data
@@ -455,12 +457,6 @@ def create_layout():
                 data=uuid4().hex,
                 storage_type="session",
             ),
-            dcc.Store(
-                id="debt-payment-request-id",
-                data=uuid4().hex,
-                storage_type="session",
-            ),
-            dcc.Store(id="debt-plan-request-id", data=uuid4().hex, storage_type="session"),
             dcc.Store(
                 id="crypto-refresh-status",
                 data={
@@ -2296,77 +2292,93 @@ def register_callbacks(app: Dash) -> None:
             rows.extend(_new_debt_grid_row(currency, row) for row in selected)
         elif ctx.triggered_id == "debt-grid-delete-button":
             selected_ids = {row.get("operation_id") for row in selected}
+            rows = [row for row in rows if row.get("debt_id") or row.get("operation_id") not in selected_ids]
+        else:
+            raise PreventUpdate
+        return rows, []
+
+    @app.callback(
+        Output("debt-payment-grid", "rowData", allow_duplicate=True),
+        Output("debt-payment-grid", "selectedRows"),
+        Input("debt-payment-add-row", "n_clicks", allow_optional=True),
+        Input("debt-payment-copy-row", "n_clicks", allow_optional=True),
+        Input("debt-payment-delete-row", "n_clicks", allow_optional=True),
+        State("debt-payment-grid", "rowData", allow_optional=True),
+        State("debt-payment-grid", "selectedRows", allow_optional=True),
+        State("dashboard-currency", "value"),
+        prevent_initial_call=True,
+    )
+    def edit_debt_payments(_add, _copy, _delete, rows, selected, currency):
+        rows = list(rows or [])
+        selected = selected or []
+        if ctx.triggered_id == "debt-payment-add-row":
+            rows.append(_new_debt_payment_row(currency))
+        elif ctx.triggered_id == "debt-payment-copy-row":
+            rows.extend(_new_debt_payment_row(currency, row) for row in selected)
+        elif ctx.triggered_id == "debt-payment-delete-row":
+            selected_ids = {row.get("operation_id") for row in selected}
             rows = [row for row in rows if row.get("operation_id") not in selected_ids]
         else:
             raise PreventUpdate
         return rows, []
 
     @app.callback(
-        Output("active-receivable-debts-grid", "rowData"),
-        Output("active-liability-debts-grid", "rowData"),
-        Output("debt-transaction-drafts-grid", "rowData"),
-        Output("debt-payment-id", "options"),
-        Output("debt-plan-debt-id", "options", allow_duplicate=True),
-        Output("debt-payment-id", "value"),
+        Output("debt-payment-grid", "columnDefs"),
+        Output("debt-transaction-drafts-grid", "rowData", allow_duplicate=True),
         Output("debt-input-message", "children"),
         Output("debt-input-message", "color"),
         Output("debt-new-grid", "rowData", allow_duplicate=True),
-        Output("debt-payment-request-id", "data"),
-        Output("dashboard-refresh-token", "data", allow_duplicate=True),
+        Output("debt-payment-grid", "rowData", allow_duplicate=True),
         Input("debt-add-button", "n_clicks", allow_optional=True),
         Input("debt-payment-button", "n_clicks", allow_optional=True),
-        Input("debt-migrate-button", "n_clicks", allow_optional=True),
         State("dashboard-currency", "value"),
         State("debt-new-grid", "rowData", allow_optional=True),
-        State("debt-payment-id", "value", allow_optional=True),
-        State("debt-payment-date", "value", allow_optional=True),
-        State("debt-payment-amount", "value", allow_optional=True),
-        State("debt-payment-cash-currency", "value", allow_optional=True),
-        State("debt-payment-comment", "value", allow_optional=True),
-        State("debt-payment-request-id", "data"),
-        State("dashboard-refresh-token", "data"),
+        State("debt-payment-grid", "rowData", allow_optional=True),
         prevent_initial_call=True,
     )
-    def sync_debts(
-        add_clicks,
-        payment_clicks,
-        migrate_clicks,
-        currency,
-        new_rows,
-        selected_debt_id,
-        payment_date,
-        payment_amount,
-        payment_cash_currency,
-        payment_comment,
-        payment_request_id,
-        current_token,
-    ):
+    def sync_debts(add_clicks, payment_clicks, currency,
+                   new_rows, payment_rows):
         trigger = ctx.triggered_id
+        if not {"debt-add-button": add_clicks, "debt-payment-button": payment_clicks}.get(trigger):
+            raise PreventUpdate
         message = ""
         color = "secondary"
-        token = int(current_token or 0)
-        next_payment_request_id = payment_request_id or uuid4().hex
         remaining_rows = no_update
+        remaining_payments = no_update
+        saved_errors = {}
 
         try:
-            if trigger in {"debt-add-button", "debt-payment-button", "debt-migrate-button"}:
-                config.require_writable_mode()
+            config.require_writable_mode()
             if trigger == "debt-add-button":
-                if not new_rows:
-                    raise ValueError("Добавь хотя бы одну строку долга.")
+                pending_rows = [row for row in new_rows or [] if not row.get("debt_id")]
+                existing_rows = [row for row in new_rows or [] if row.get("debt_id")]
+                saved_debts = read_debts() if config.use_sqlite_storage() else pd.DataFrame()
+                saved_due_dates = dict(zip(saved_debts["debt_id"], saved_debts["due_date"])) if not saved_debts.empty else {}
+                changed_rows = [row for row in existing_rows if row["debt_id"] in saved_due_dates
+                                and (row.get("due_date") or "") != saved_due_dates[row["debt_id"]]]
+                if not pending_rows and not changed_rows:
+                    raise ValueError("Добавь новый долг или измени ожидаемый срок погашения.")
                 remaining_rows = []
                 saved_count = 0
-                for source_row in new_rows:
+                updated_count = 0
+                for row in changed_rows:
+                    try:
+                        update_debt_due_date(config.active_database_path(), debt_id=row["debt_id"], due_on=row.get("due_date", ""))
+                        updated_count += 1
+                    except Exception as exc:
+                        saved_errors[row["debt_id"]] = (row.get("due_date", ""), str(exc))
+                for source_row in pending_rows:
                     row = dict(source_row)
                     try:
                         debt_type = {"Мне должны": "receivable", "Я должен": "liability"}.get(row.get("type"), row.get("type"))
-                        if not row.get("opened_date") or not row.get("counterparty") or not row.get("principal_currency") or row.get("principal_amount") in {None, ""}:
-                            raise ValueError("Заполни дату, тип, контрагента, сумму и валюту долга.")
+                        if not row.get("opened_date") or not row.get("due_date") or not row.get("counterparty") or not row.get("principal_currency") or row.get("principal_amount") in {None, ""}:
+                            raise ValueError("Заполни обе даты, тип, контрагента, сумму и валюту долга.")
                         create_debt(
                             debt_type=debt_type, counterparty=row["counterparty"],
                             opened_date=row["opened_date"],
                             principal_amount=row["principal_amount"],
                             principal_currency=row["principal_currency"],
+                            due_date=row["due_date"],
                             comment=row.get("comment", ""),
                             operation_id=row["operation_id"],
                         )
@@ -2374,122 +2386,113 @@ def register_callbacks(app: Dash) -> None:
                     except Exception as exc:
                         row["validation_error"] = str(exc)
                         remaining_rows.append(row)
+                if saved_count or updated_count:
+                    clear_data_cache()
+                    clear_table_cache()
+                    clear_main_dashboard_cache()
+                error_count = len(remaining_rows) + len(saved_errors)
+                message = f"Сохранено новых долгов: {saved_count}; обновлено сроков: {updated_count}; требуют внимания: {error_count}."
+                if error_count:
+                    message += f" Причина: {remaining_rows[0]['validation_error'] if remaining_rows else next(iter(saved_errors.values()))[1]}"
+                color = "danger" if error_count and not (saved_count or updated_count) else "warning" if error_count else "success"
+            elif trigger == "debt-payment-button":
+                if not payment_rows:
+                    raise ValueError("Добавь хотя бы одну строку погашения.")
+                remaining_payments = []
+                saved_count = 0
+                for source_row in payment_rows:
+                    row = dict(source_row)
+                    try:
+                        if not row.get("date") or row.get("amount") in {None, ""} or not row.get("cash_currency"):
+                            raise ValueError("Заполни дату, сумму и валюту платежа.")
+                        create_debt_payment_from_cash(
+                            debt_id=_debt_id_from_entry(row.get("debt", "")),
+                            date=row["date"], cash_amount=row["amount"],
+                            cash_currency=row["cash_currency"], comment=row.get("comment", ""),
+                            operation_id=row["operation_id"],
+                        )
+                        saved_count += 1
+                    except Exception as exc:
+                        row["validation_error"] = str(exc)
+                        remaining_payments.append(row)
                 if saved_count:
                     clear_data_cache()
                     clear_table_cache()
                     clear_main_dashboard_cache()
-                message = f"Сохранено долгов: {saved_count}; требуют внимания: {len(remaining_rows)}."
-                color = "warning" if remaining_rows else "success"
-            elif trigger == "debt-payment-button":
-                debt_id = str(selected_debt_id or "")
-                if not debt_id or not payment_date or payment_amount in {None, ""}:
-                    raise ValueError("Выбери долг в поле выбора и заполни дату/сумму погашения.")
-                result = create_debt_payment_from_cash(
-                    debt_id=debt_id,
-                    date=payment_date,
-                    cash_amount=payment_amount,
-                    cash_currency=payment_cash_currency,
-                    comment=payment_comment or "",
-                    operation_id=next_payment_request_id,
-                )
-                next_payment_request_id = uuid4().hex
-                clear_data_cache()
-                clear_table_cache()
-                clear_main_dashboard_cache()
-                token += 1
-                message = f"Погашение создано: {result['payment_id']}. Черновик транзакции добавлен во вкладку Ввод данных."
-                color = "success"
-            elif trigger == "debt-migrate-button":
-                result = migrate_legacy_debts()
-                clear_table_cache()
-                clear_main_dashboard_cache()
-                token += 1
-                if result.get("skipped"):
-                    message = f"Миграция пропущена: {result['skipped']}."
-                    color = "warning"
-                else:
-                    message = f"Миграция завершена: долгов {result['created_debts']}, погашений {result['created_payments']}."
-                    color = "success"
+                message = f"Сохранено погашений: {saved_count}; требуют внимания: {len(remaining_payments)}."
+                if remaining_payments:
+                    message += f" Причина: {remaining_payments[0]['validation_error']}"
+                color = "danger" if remaining_payments and not saved_count else "warning" if remaining_payments else "success"
         except Exception as exc:
             message = str(exc)
             color = "danger"
 
-        options = _debt_select_options(currency)
-        option_values = {option["value"] for option in options}
-        selected_value = selected_debt_id if selected_debt_id in option_values else ""
+        grid_rows = _debt_grid_records(currency)
+        for row in grid_rows:
+            if row["debt_id"] in saved_errors:
+                row["due_date"], row["validation_error"] = saved_errors[row["debt_id"]]
         return (
-            _active_debt_records(currency, "receivable"),
-            _active_debt_records(currency, "liability"),
+            _debt_payment_column_defs(currency),
             _debt_transaction_draft_records(),
-            options,
-            options,
-            selected_value,
             message,
             color,
-            remaining_rows,
-            next_payment_request_id,
-            no_update if trigger == "debt-add-button" else token,
+            grid_rows + (remaining_rows if remaining_rows is not no_update else [row for row in new_rows or [] if not row.get("debt_id")]),
+            remaining_payments,
         )
 
     @app.callback(
-        Output("debt-plan-message", "children"),
-        Output("debt-plan-message", "color"),
-        Output("debt-plan-request-id", "data"),
-        Output("dashboard-refresh-token", "data", allow_duplicate=True),
-        Input("debt-plan-add-button", "n_clicks", allow_optional=True),
-        Input("debt-plan-confirm-button", "n_clicks", allow_optional=True),
-        State("debt-plan-debt-id", "value", allow_optional=True),
-        State("debt-plan-date", "value", allow_optional=True),
-        State("debt-plan-amount", "value", allow_optional=True),
-        State("debt-plan-comment", "value", allow_optional=True),
-        State("debt-plan-select", "value", allow_optional=True),
-        State("debt-plan-actual-date", "value", allow_optional=True),
-        State("debt-plan-request-id", "data"),
-        State("dashboard-refresh-token", "data"),
+        Output("debt-transaction-drafts-grid", "rowData", allow_duplicate=True),
+        Output("debt-transaction-drafts-grid", "selectedRows"),
+        Output("debt-draft-message", "children"),
+        Output("debt-draft-message", "color"),
+        Input("debt-draft-publish-button", "n_clicks", allow_optional=True),
+        Input("debt-draft-skip-button", "n_clicks", allow_optional=True),
+        Input("debt-draft-save-button", "n_clicks", allow_optional=True),
+        State("debt-transaction-drafts-grid", "selectedRows", allow_optional=True),
+        State("debt-transaction-drafts-grid", "rowData", allow_optional=True),
         prevent_initial_call=True,
     )
-    def save_debt_plan(_add_clicks, _confirm_clicks, debt_id, due_on, amount,
-                       comment, plan_id, actual_date, request_id, refresh_token):
+    def resolve_debt_drafts(_publish, _skip, _save, selected, grid_rows):
+        trigger = ctx.triggered_id
+        if not {"debt-draft-publish-button": _publish, "debt-draft-skip-button": _skip,
+                "debt-draft-save-button": _save}.get(trigger):
+            raise PreventUpdate
+        if trigger != "debt-draft-save-button" and not selected:
+            return no_update, no_update, "Выбери строки денежных операций.", "danger"
         try:
             config.require_writable_mode()
             if not config.use_sqlite_storage():
-                raise ValueError("Планы платежей доступны в режиме SQLite.")
-            if ctx.triggered_id == "debt-plan-add-button":
-                if not debt_id or not due_on or amount in {None, ""}:
-                    raise ValueError("Выбери долг, дату и сумму планового платежа.")
-                create_debt_payment_plan(
-                    config.active_database_path(), debt_id=debt_id, due_on=due_on,
-                    amount=amount, comment=comment or "", operation_key=request_id,
-                )
-                message = "План сохранён. Остаток долга и денежный поток не изменились."
-            elif ctx.triggered_id == "debt-plan-confirm-button":
-                if not plan_id or not actual_date:
-                    raise ValueError("Выбери план и фактическую дату платежа.")
-                result = confirm_debt_payment_plan(
-                    config.active_database_path(), plan_id=plan_id, occurred_on=actual_date,
-                )
-                clear_data_cache()
-                clear_table_cache()
-                clear_main_dashboard_cache()
-                message = f"Платёж подтверждён: {result['payment_id']}. Создан денежный черновик."
+                raise ValueError("Учёт черновиков доступен в режиме SQLite.")
+            if trigger == "debt-draft-save-button":
+                if not grid_rows:
+                    raise ValueError("Нет денежных операций для сохранения.")
+                update_debt_draft_comments(config.active_database_path(), rows=grid_rows)
+                return _debt_transaction_draft_records(), [], "Комментарии сохранены. Для учёта выбери строки снова.", "success"
+            rows, revision = transaction_drafts_snapshot(config.active_database_path())
+            selected_ids = sorted({str(row.get("draft_id", "")) for row in selected})
+            visible_rows = {str(row.get("draft_id", "")): row for row in grid_rows or []}
+            eligible = {row["id"] for row in rows if row["origin_kind"] == "debt"
+                        and row["status"] in {"draft", "ready"}}
+            if not selected_ids or any(draft_id not in eligible or draft_id not in visible_rows for draft_id in selected_ids):
+                raise ValueError("Выбранные черновики уже обработаны или не относятся к долгам. Обнови страницу.")
+            if trigger == "debt-draft-publish-button":
+                update_debt_draft_comments(config.active_database_path(), rows=[visible_rows[draft_id] for draft_id in selected_ids])
+                key = "debt-ui-publish:" + hashlib.sha256(",".join(selected_ids).encode()).hexdigest()
+                publish_domain_drafts(config.active_database_path(), draft_ids=selected_ids, operation_key=key)
+                message = f"Учтено денежных операций: {len(selected_ids)}."
+            elif trigger == "debt-draft-skip-button":
+                remove_transaction_drafts(config.active_database_path(), draft_ids=selected_ids, expected_revision=revision)
+                message = f"Пропущено денежных операций: {len(selected_ids)}."
             else:
                 raise PreventUpdate
-            return message, "success", uuid4().hex, int(refresh_token or 0) + 1
+            clear_data_cache()
+            clear_table_cache()
+            clear_main_dashboard_cache()
+            return _debt_transaction_draft_records(), [], message, "success"
         except PreventUpdate:
             raise
         except Exception as exc:
-            return str(exc), "danger", request_id, no_update
-
-    @app.callback(
-        Output("debt-plan-select", "options"),
-        Output("debt-plans-grid", "rowData"),
-        Output("debt-plan-debt-id", "options"),
-        Input("dashboard-refresh-token", "data"),
-        State("dashboard-currency", "value"),
-        prevent_initial_call=True,
-    )
-    def refresh_debt_plans(_token, currency):
-        return _debt_plan_options(), _debt_plan_records(), _debt_select_options(currency)
+            return no_update, no_update, str(exc), "danger"
 
     @app.callback(
         Output("assets-input-grid", "rowData"),
@@ -3468,8 +3471,10 @@ def _investment_report_layout(datasets: dict[str, DashboardDataset], theme: str 
     )
 
 
-def _debt_report_layout(currency: str, theme: str | None, read_only: bool = False):
-    return _debt_input_layout(currency, theme, include_create=True, read_only=read_only)
+def _debt_report_layout(currency: str, theme: str | None, read_only: bool = False,
+                        load_records: bool = True):
+    return _debt_input_layout(currency, theme, include_create=True, read_only=read_only,
+                              load_records=load_records)
 
 
 def _input_report_layout(
@@ -3537,7 +3542,7 @@ def _callback_validation_layout(layout):
     return html.Div(
         [
             layout,
-            _debt_report_layout(DEFAULT_CURRENCY, "dark"),
+            _debt_report_layout(DEFAULT_CURRENCY, "dark", load_records=False),
             _input_report_layout(DEFAULT_CURRENCY, DEFAULT_YEAR, DEFAULT_MONTH, "dark", load_asset_records=False),
             dbc.Button("Обновить crypto", id="crypto-refresh-button"),
             dag.AgGrid(id="planning_goals-grid"),
@@ -4211,11 +4216,30 @@ def _category_input_layout(
 def _new_debt_grid_row(currency: str, source: dict | None = None) -> dict:
     row = {
         "operation_id": uuid4().hex,
+        "debt_id": "",
         "opened_date": datetime.now().date().isoformat(),
+        "due_date": "",
         "type": "Мне должны",
         "counterparty": "",
         "principal_amount": "",
         "principal_currency": currency,
+        "comment": "",
+        "paid_amount": "",
+        "outstanding_amount": "",
+        "validation_error": "",
+    }
+    if source:
+        row.update({key: source.get(key, "") for key in row if key not in {"operation_id", "debt_id", "paid_amount", "outstanding_amount", "validation_error"}})
+    return row
+
+
+def _new_debt_payment_row(currency: str, source: dict | None = None) -> dict:
+    row = {
+        "operation_id": uuid4().hex,
+        "debt": "",
+        "date": datetime.now().date().isoformat(),
+        "amount": "",
+        "cash_currency": currency,
         "comment": "",
         "validation_error": "",
     }
@@ -4224,16 +4248,45 @@ def _new_debt_grid_row(currency: str, source: dict | None = None) -> dict:
     return row
 
 
-def _debt_input_layout(currency: str, theme: str | None, include_create: bool = True, read_only: bool = False):
-    currency_options = _native_select_options([{"label": ticker, "value": ticker} for ticker in config.UNIQUE_TICKERS], "Валюта", include_empty=False)
+def _debt_entry_column(currency: str, read_only: bool, load_options: bool = True) -> dict:
+    return {
+        "field": "debt", "headerName": "Долг", "editable": not read_only,
+        "minWidth": 300, "flex": 2, "cellEditor": "agSelectCellEditor",
+        "cellEditorParams": {"values": [option["label"] for option in _debt_select_options(currency) if option["value"]] if load_options else []},
+    }
+
+
+def _debt_id_from_entry(label: str) -> str:
+    if not label or " | " not in label:
+        raise ValueError("Выбери долг в строке таблицы.")
+    return label.rsplit(" | ", 1)[-1]
+
+
+def _debt_payment_column_defs(currency: str, read_only: bool = False,
+                              load_options: bool = True) -> list[dict]:
+    return [
+        _debt_entry_column(currency, read_only, load_options),
+        {"field": "date", "headerName": "Дата", "editable": not read_only, "cellDataType": "dateString", "cellEditor": "agDateStringCellEditor", "width": 130},
+        {"field": "amount", "headerName": "Сумма платежа", "editable": not read_only, "width": 180},
+        {"field": "cash_currency", "headerName": "Валюта платежа", "editable": not read_only,
+         "width": 150, "cellEditor": "agSelectCellEditor", "cellEditorParams": {"values": list(config.UNIQUE_TICKERS)}},
+        {"field": "comment", "headerName": "Комментарий", "editable": not read_only, "minWidth": 180, "flex": 1},
+        {"field": "validation_error", "headerName": "Проверка", "minWidth": 220, "flex": 1,
+         "cellClassRules": {"text-danger": "Boolean(params.value)"}},
+        {"field": "operation_id", "hide": True},
+    ]
+
+
+def _debt_input_layout(currency: str, theme: str | None, include_create: bool = True,
+                       read_only: bool = False, load_records: bool = True):
     sections = []
 
     if include_create:
         sections.append(
             html.Section(
                 [
-                    html.H2("Новые долги", className="h5 mb-2"),
-                    html.P("Добавь строки и сохрани их после проверки. Каждый долг создаст черновик денежной операции.", className="small opacity-75"),
+                    html.H2("Долги", className="h5 mb-2"),
+                    html.P("Активные долги и новые строки — в одной таблице. Полностью погашенный долг закрывается автоматически. Укажи обе даты: начало и ожидаемый срок погашения.", className="small opacity-75"),
                     html.Div([
                         dbc.Button("Добавить строку", id="debt-grid-add-button", color="secondary", outline=True, size="sm", disabled=read_only),
                         dbc.Button("Копировать строку", id="debt-grid-copy-button", color="secondary", outline=True, size="sm", disabled=read_only),
@@ -4241,22 +4294,26 @@ def _debt_input_layout(currency: str, theme: str | None, include_create: bool = 
                         dbc.Button("Сохранить долги", id="debt-add-button", color="primary", size="sm", disabled=read_only),
                     ], className="d-flex flex-wrap gap-2 mb-2"),
                     _ag_grid_scroll(dag.AgGrid(
-                        id="debt-new-grid", rowData=[], selectedRows=[],
+                        id="debt-new-grid", rowData=_debt_grid_records(currency) if load_records else [], selectedRows=[],
                         columnDefs=[
-                            {"field": "opened_date", "headerName": "Дата", "editable": not read_only, "width": 130},
-                            {"field": "type", "headerName": "Тип", "editable": not read_only, "width": 145,
+                            {"field": "opened_date", "headerName": "Дата начала", "editable": {"function": "!params.data.debt_id"} if not read_only else False, "cellDataType": "dateString", "cellEditor": "agDateStringCellEditor", "width": 140},
+                            {"field": "due_date", "headerName": "Дата ожидаемого погашения", "editable": (not read_only if config.use_sqlite_storage() else {"function": "!params.data.debt_id"} if not read_only else False), "cellDataType": "dateString", "cellEditor": "agDateStringCellEditor", "width": 245},
+                            {"field": "type", "headerName": "Тип", "editable": {"function": "!params.data.debt_id"} if not read_only else False, "width": 145,
                              "cellEditor": "agSelectCellEditor", "cellEditorParams": {"values": ["Мне должны", "Я должен"]}},
-                            {"field": "counterparty", "headerName": "Контрагент", "editable": not read_only, "minWidth": 180, "flex": 1},
-                            {"field": "principal_amount", "headerName": "Сумма", "editable": not read_only, "width": 140},
-                            {"field": "principal_currency", "headerName": "Валюта", "editable": not read_only, "width": 110,
+                            {"field": "counterparty", "headerName": "Контрагент", "editable": {"function": "!params.data.debt_id"} if not read_only else False, "cellEditor": "agTextCellEditor", "minWidth": 180, "flex": 1},
+                            {"field": "principal_amount", "headerName": "Сумма", "editable": {"function": "!params.data.debt_id"} if not read_only else False, "width": 140},
+                            {"field": "principal_currency", "headerName": "Валюта", "editable": {"function": "!params.data.debt_id"} if not read_only else False, "width": 110,
                              "cellEditor": "agSelectCellEditor", "cellEditorParams": {"values": list(config.UNIQUE_TICKERS)}},
-                            {"field": "comment", "headerName": "Комментарий", "editable": not read_only, "minWidth": 180, "flex": 1},
+                            {"field": "paid_amount", "headerName": "Погашено", "width": 130},
+                            {"field": "outstanding_amount", "headerName": "Остаток", "width": 130},
+                            {"field": "comment", "headerName": "Комментарий", "editable": {"function": "!params.data.debt_id"} if not read_only else False, "minWidth": 180, "flex": 1},
                             {"field": "validation_error", "headerName": "Проверка", "minWidth": 220, "flex": 1,
                              "cellClassRules": {"text-danger": "Boolean(params.value)"}},
                             {"field": "operation_id", "hide": True},
+                            {"field": "debt_id", "hide": True},
                         ],
                         defaultColDef=_ag_grid_default_col_def(editable=False),
-                        dashGridOptions={"pagination": False, "rowSelection": "multiple", "stopEditingWhenCellsLoseFocus": True},
+                        dashGridOptions={"pagination": False, "rowSelection": "multiple", "singleClickEdit": True, "stopEditingWhenCellsLoseFocus": True},
                         className=_ag_grid_class_name(theme), style=_ag_grid_style("260px"),
                     )),
                     dbc.Alert(id="debt-input-message", children="", color="secondary", is_open=True, className="mt-2 py-2"),
@@ -4269,80 +4326,41 @@ def _debt_input_layout(currency: str, theme: str | None, include_create: bool = 
         [
             html.Section(
                 [
-                    html.Div(
-                        [
-                            html.H2("Активные долги", className="h5 mb-0"),
-                            dbc.Button("Миграция legacy", id="debt-migrate-button", color="secondary", outline=True, size="sm", disabled=read_only),
-                        ],
-                        className="d-flex justify-content-between align-items-center mb-3",
-                    ),
-                    _active_debts_grid(currency, theme, "receivable"),
-                    html.Div(className="my-4"),
-                    _active_debts_grid(currency, theme, "liability"),
-                ],
-                style=_section_style(theme),
-            ),
-            html.Section(
-                [
-                    html.H2("Погашение выбранного долга", className="h5 mb-3"),
-                    dbc.Row(
-                        [
-                            dbc.Col(dbc.Select(id="debt-payment-id", options=_debt_select_options(currency), value="", className="finrep-native-input", style=_form_control_style(theme)), xs=12, lg=5),
-                            dbc.Col(dbc.Input(id="debt-payment-date", type="date", value=datetime.now().date().isoformat(), className="finrep-native-input", style=_form_control_style(theme)), xs=12, md=2),
-                            dbc.Col(dbc.Input(id="debt-payment-amount", type="number", placeholder="Сумма платежа", step="any", className="finrep-native-input", style=_form_control_style(theme)), xs=12, md=2),
-                            dbc.Col(dbc.Select(id="debt-payment-cash-currency", options=currency_options, value=currency, className="finrep-native-input", style=_form_control_style(theme)), xs=12, md=2),
-                            dbc.Col(dbc.Button("Погасить", id="debt-payment-button", color="primary", outline=True, className="w-100", disabled=read_only), xs=12, md=1),
-                        ],
-                        className="g-2",
-                    ),
-                    dbc.Input(id="debt-payment-comment", type="text", placeholder="Комментарий к погашению", className="finrep-native-input mt-2", style=_form_control_style(theme)),
-                ],
-                style=_section_style(theme),
-            ),
-            html.Section(
-                [
-                    html.H2("Будущие платежи", className="h5 mb-2"),
-                    html.P("План не меняет остаток и денежный поток. Факт появляется только после подтверждения.", className="text-muted"),
-                    dbc.Alert(id="debt-plan-message", children="", color="secondary", className="py-2"),
-                    dbc.Row([
-                        dbc.Col(dbc.Select(id="debt-plan-debt-id", options=_debt_select_options(currency), value="", className="finrep-native-input", style=_form_control_style(theme)), xs=12, lg=5),
-                        dbc.Col(dbc.Input(id="debt-plan-date", type="date", value=datetime.now().date().isoformat(), className="finrep-native-input", style=_form_control_style(theme)), xs=12, md=2),
-                        dbc.Col(dbc.Input(id="debt-plan-amount", type="number", placeholder="Плановая сумма", step="any", className="finrep-native-input", style=_form_control_style(theme)), xs=12, md=3),
-                        dbc.Col(dbc.Button("Запланировать", id="debt-plan-add-button", color="secondary", className="w-100", disabled=read_only or not config.use_sqlite_storage()), xs=12, md=2),
-                    ], className="g-2"),
-                    dbc.Input(id="debt-plan-comment", type="text", placeholder="Комментарий к плану", className="finrep-native-input mt-2", style=_form_control_style(theme)),
+                    html.H2("Погашения долгов", className="h5 mb-2"),
+                    html.P("Выбери долг в ячейке и сохрани заполненные строки. Платёж больше остатка будет отклонён с причиной.", className="small opacity-75"),
+                    html.Div([
+                        dbc.Button("Добавить строку", id="debt-payment-add-row", color="secondary", outline=True, size="sm", disabled=read_only),
+                        dbc.Button("Копировать строку", id="debt-payment-copy-row", color="secondary", outline=True, size="sm", disabled=read_only),
+                        dbc.Button("Удалить строку", id="debt-payment-delete-row", color="danger", outline=True, size="sm", disabled=read_only),
+                        dbc.Button("Сохранить погашения", id="debt-payment-button", color="primary", size="sm", disabled=read_only),
+                    ], className="d-flex flex-wrap gap-2 mb-2"),
                     _ag_grid_scroll(dag.AgGrid(
-                        id="debt-plans-grid", rowData=_debt_plan_records(),
-                        columnDefs=[
-                            {"field": "due_on", "headerName": "Плановая дата", "width": 150},
-                            {"field": "counterparty", "headerName": "Контрагент", "flex": 1, "minWidth": 180},
-                            {"field": "amount", "headerName": "Сумма", "width": 130},
-                            {"field": "currency", "headerName": "Валюта", "width": 100},
-                            {"field": "status", "headerName": "Статус", "width": 150},
-                            {"field": "comment", "headerName": "Комментарий", "flex": 1, "minWidth": 180},
-                        ],
-                        defaultColDef=_ag_grid_default_col_def(),
-                        dashGridOptions={"pagination": False},
-                        className=_ag_grid_class_name(theme), style=_ag_grid_style("240px"),
+                        id="debt-payment-grid", rowData=[], selectedRows=[],
+                        columnDefs=_debt_payment_column_defs(currency, read_only, load_records),
+                        defaultColDef=_ag_grid_default_col_def(editable=False),
+                        dashGridOptions={"pagination": False, "rowSelection": "multiple", "stopEditingWhenCellsLoseFocus": True},
+                        className=_ag_grid_class_name(theme), style=_ag_grid_style("220px"),
                     )),
-                    dbc.Row([
-                        dbc.Col(dbc.Select(id="debt-plan-select", options=_debt_plan_options(), value="", className="finrep-native-input", style=_form_control_style(theme)), xs=12, lg=7),
-                        dbc.Col(dbc.Input(id="debt-plan-actual-date", type="date", value=datetime.now().date().isoformat(), className="finrep-native-input", style=_form_control_style(theme)), xs=12, md=3),
-                        dbc.Col(dbc.Button("Подтвердить факт", id="debt-plan-confirm-button", color="primary", className="w-100", disabled=read_only or not config.use_sqlite_storage()), xs=12, md=2),
-                    ], className="g-2 mt-2"),
                 ],
                 style=_section_style(theme),
             ),
             html.Section(
                 [
-                    html.H2("Черновики транзакций по долгам", className="h5 mb-3"),
+                    html.H2("Денежные операции по долгам", className="h5 mb-2"),
+                    html.P("Долг и платёж уже записаны в реестр, но эти денежные движения ещё не учтены в cash-flow. Комментарии можно сохранить отдельно или вместе с «Учесть». Выбери строки и нажми «Учесть», если такой операции нет среди импортированных из банка; иначе «Пропустить», чтобы не считать её дважды.", className="small opacity-75"),
+                    html.Div([
+                        dbc.Button("Сохранить комментарии", id="debt-draft-save-button", color="secondary", outline=True, size="sm", disabled=read_only or not config.use_sqlite_storage()),
+                        dbc.Button("Учесть выбранные", id="debt-draft-publish-button", color="primary", size="sm", disabled=read_only or not config.use_sqlite_storage()),
+                        dbc.Button("Пропустить выбранные", id="debt-draft-skip-button", color="secondary", outline=True, size="sm", disabled=read_only or not config.use_sqlite_storage()),
+                    ], className="d-flex flex-wrap gap-2 mb-2"),
+                    dbc.Alert(id="debt-draft-message", children="", color="secondary", className="py-2"),
                     _ag_grid_scroll(
                         dag.AgGrid(
-                            id="debt-transaction-drafts-grid",
-                            rowData=_debt_transaction_draft_records(),
-                            columnDefs=_debt_transaction_draft_column_defs(),
+                            id="debt-transaction-drafts-grid", selectedRows=[],
+                            rowData=_debt_transaction_draft_records() if load_records else [],
+                            columnDefs=_debt_transaction_draft_column_defs(read_only),
                             defaultColDef=_ag_grid_default_col_def(),
-                            dashGridOptions={"pagination": False, "suppressFieldDotNotation": True},
+                            dashGridOptions={"pagination": False, "suppressFieldDotNotation": True, "rowSelection": "multiple", "singleClickEdit": True, "stopEditingWhenCellsLoseFocus": True},
                             className=_ag_grid_class_name(theme),
                             style=_ag_grid_style("260px"),
                         )
@@ -5323,71 +5341,22 @@ def _asset_input_status(year: str, month: str, locale: str = DEFAULT_LOCALE) -> 
     return message, "warning"
 
 
-def _active_debts_grid(currency: str, theme: str | None, debt_type: str):
-    title = "Дебиторская задолженность" if debt_type == "receivable" else "Кредиторская задолженность"
-    grid_id = f"active-{debt_type}-debts-grid"
-    return html.Div(
-        [
-            html.H3(title, className="h6 mb-2"),
-            _ag_grid_scroll(
-                dag.AgGrid(
-                    id=grid_id,
-                    rowData=_active_debt_records(currency, debt_type),
-                    columnDefs=_active_debt_column_defs(currency),
-                    defaultColDef=_ag_grid_default_col_def(),
-                    dashGridOptions={"pagination": False, "suppressFieldDotNotation": True},
-                    className=_ag_grid_class_name(theme),
-                    style=_ag_grid_style("320px"),
-                )
-            ),
-        ]
-    )
-
-
-def _active_debt_records(currency: str, debt_type: str | None = None) -> list[dict]:
-    frames = []
-    debt_types = [debt_type] if debt_type else sorted(DEBT_TYPES)
-    for current_type in debt_types:
-        frame = active_debt_balances(current_type, currency).copy(deep=True)
-        if frame.empty:
-            continue
-        frame["Тип"] = frame["type"].map({"receivable": "Мне должны", "liability": "Я должен"})
-        frames.append(frame)
-    if not frames:
-        return []
-
-    data = pd.concat(frames, ignore_index=True)
-    converted_column = f"outstanding_{currency}"
-    display = pd.DataFrame(
-        {
-            "debt_id": data["debt_id"],
-            "Тип": data["Тип"],
-            "Контрагент": data["counterparty"],
-            "Дата": data["opened_date"],
-            "Валюта долга": data["principal_currency"],
-            "Сумма долга": data["principal_amount"].map(_format_input_amount),
-            "Погашено": data["paid_amount"].map(_format_input_amount),
-            "Остаток": data["outstanding_amount"].map(_format_input_amount),
-            f"Остаток {currency}": data[converted_column].map(_format_input_amount) if converted_column in data else data["outstanding_amount"].map(_format_input_amount),
-            "Комментарий": data["comment"],
-        }
-    )
-    return display.sort_values(["Тип", "Контрагент", "Дата"], kind="mergesort").to_dict("records")
-
-
-def _active_debt_column_defs(currency: str) -> list[dict]:
-    return [
-        {"field": "debt_id", "headerName": "ID", "width": 170},
-        {"field": "Тип", "width": 130},
-        {"field": "Контрагент", "flex": 1, "minWidth": 180},
-        {"field": "Дата", "width": 120},
-        {"field": "Валюта долга", "width": 120},
-        {"field": "Сумма долга", "width": 140},
-        {"field": "Погашено", "width": 130},
-        {"field": "Остаток", "width": 130},
-        {"field": f"Остаток {currency}", "width": 150},
-        {"field": "Комментарий", "flex": 1, "minWidth": 220},
-    ]
+def _debt_grid_records(currency: str) -> list[dict]:
+    records = []
+    for debt_type in sorted(DEBT_TYPES):
+        for _, row in active_debt_balances(debt_type).iterrows():
+            records.append({
+                "debt_id": row["debt_id"], "operation_id": "",
+                "opened_date": row["opened_date"], "due_date": row["due_date"],
+                "type": "Мне должны" if debt_type == "receivable" else "Я должен",
+                "counterparty": row["counterparty"],
+                "principal_amount": _format_input_amount(row["principal_amount"]),
+                "principal_currency": row["principal_currency"],
+                "paid_amount": _format_input_amount(row["paid_amount"]),
+                "outstanding_amount": _format_input_amount(row["outstanding_amount"]),
+                "comment": row["comment"], "validation_error": "",
+            })
+    return sorted(records, key=lambda row: (row["type"], row["counterparty"], row["opened_date"]))
 
 
 def _debt_select_options(currency: str) -> list[dict]:
@@ -5412,42 +5381,30 @@ def _debt_select_options(currency: str) -> list[dict]:
     return options
 
 
-def _debt_plan_records() -> list[dict]:
-    if not config.use_sqlite_storage():
-        return []
-    return [{**plan, "status": "Подтверждён" if plan["confirmed_payment_id"] else "План"}
-            for plan in list_debt_payment_plans(config.active_database_path())]
-
-
-def _debt_plan_options() -> list[dict]:
-    options = [{"label": "Выбери план для подтверждения", "value": ""}]
-    for plan in _debt_plan_records():
-        if plan["confirmed_payment_id"]:
-            continue
-        options.append({
-            "label": f"{plan['due_on']} | {plan['counterparty']} | {plan['amount']} {plan['currency']}",
-            "value": plan["id"],
-        })
-    return options
-
-
 def _debt_transaction_draft_records() -> list[dict]:
     data = read_transaction_drafts()
-    data = data[data["source"].eq("debt")].copy(deep=True)
+    data = data[data["source"].eq("debt") & data["status"].isin(["draft", "ready"])].copy(deep=True)
     if data.empty:
         return []
+    if config.use_sqlite_storage():
+        rows, _ = transaction_drafts_snapshot(config.active_database_path())
+        drafts = {(row["origin_kind"], row["origin_key"]): row for row in rows}
+        data["draft_id"] = data["source_id"].map(lambda source_id: drafts.get(("debt", source_id), {}).get("id", ""))
+        data["row_version"] = data["source_id"].map(lambda source_id: drafts.get(("debt", source_id), {}).get("row_version", -1))
     return data.sort_values(["date", "category", "comment"], ascending=[False, True, True], kind="mergesort").to_dict("records")
 
 
-def _debt_transaction_draft_column_defs() -> list[dict]:
+def _debt_transaction_draft_column_defs(read_only: bool = False) -> list[dict]:
     return [
         {"field": "date", "headerName": "Дата", "width": 120},
         {"field": "category", "headerName": "Категория", "width": 180},
         {"field": "amount", "headerName": "Сумма", "width": 120},
         {"field": "currency", "headerName": "Валюта", "width": 100},
-        {"field": "comment", "headerName": "Комментарий", "flex": 1, "minWidth": 240},
+        {"field": "comment", "headerName": "Комментарий", "editable": not read_only, "cellEditor": "agTextCellEditor", "flex": 1, "minWidth": 240},
         {"field": "status", "headerName": "Статус", "width": 120},
         {"field": "source_id", "headerName": "ID", "flex": 1, "minWidth": 220},
+        {"field": "draft_id", "hide": True},
+        {"field": "row_version", "hide": True},
     ]
 
 

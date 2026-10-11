@@ -6,8 +6,8 @@ import pytest
 
 from src.data.importers.common import new_manual_grid_row, save_input_grid_to_transactions
 from src.data.sqlite_store import (
-    connect_database, create_debt_record, initialize_database, publish_domain_drafts,
-    record_debt_payment,
+    StorageRevisionConflict, connect_database, create_debt_record, initialize_database,
+    publish_domain_drafts, record_debt_payment, update_debt_draft_comments,
 )
 
 
@@ -109,6 +109,88 @@ def test_debt_screen_drafts_publish_with_the_same_debt_link(tmp_path):
         assert {row[0] for row in connection.execute("SELECT debt_id FROM debt_cash_events")} == {opening["debt_id"]}
 
 
+def test_debt_draft_comment_rejects_stale_or_published_row(tmp_path):
+    database = tmp_path / "synthetic.sqlite3"
+    initialize_database(database)
+    opening = create_debt_record(
+        database, kind="receivable", counterparty="Иван",
+        opened_on="2026-10-01", principal_amount="100", currency="RUB",
+        operation_key="open",
+    )
+    with connect_database(database) as connection:
+        version = connection.execute("SELECT row_version FROM transaction_drafts WHERE id = ?", (opening["draft_id"],)).fetchone()[0]
+    row = {"draft_id": opening["draft_id"], "row_version": version, "comment": "Новый"}
+    update_debt_draft_comments(database, rows=[row])
+    with pytest.raises(StorageRevisionConflict):
+        update_debt_draft_comments(database, rows=[{**row, "comment": "Устаревший"}])
+    publish_domain_drafts(database, draft_ids=[opening["draft_id"]], operation_key="publish")
+    with pytest.raises(ValueError, match="уже обработана"):
+        update_debt_draft_comments(database, rows=[{**row, "row_version": version + 1}])
+
+
+def test_debt_screen_can_account_for_or_skip_cash_drafts(tmp_path, monkeypatch):
+    from src import config
+    from src.dashboard.app import _debt_transaction_draft_records, create_app
+
+    database = tmp_path / "finrep.sqlite3"
+    monkeypatch.setattr(config, "DATA_PATH", str(tmp_path))
+    monkeypatch.setenv("FINREP_STORAGE_BACKEND", "sqlite")
+    monkeypatch.setenv("FINREP_SQLITE_PATH", str(database))
+    monkeypatch.setenv("FINREP_DASH_PASSWORD", "synthetic-password")
+    monkeypatch.setenv("FINREP_DASH_SECRET_KEY", "synthetic-secret")
+    initialize_database(database)
+    opening = create_debt_record(
+        database, kind="receivable", counterparty="Иван",
+        opened_on="2026-10-01", principal_amount="100", currency="RUB",
+        operation_key="open",
+    )
+    app = create_app()
+    client = app.server.test_client()
+    with client.session_transaction() as session:
+        session["authenticated"] = True
+        session["data_mode"] = "live"
+    key = next(key for key in app.callback_map if "debt-draft-message.children" in key)
+    callback = app.callback_map[key]
+    values = {
+        "debt-draft-publish-button": 0, "debt-draft-skip-button": 0,
+        "debt-draft-save-button": 1,
+        "debt-transaction-drafts-grid": _debt_transaction_draft_records(),
+        "dashboard-refresh-token": 0,
+    }
+    values["debt-transaction-drafts-grid"][0]["comment"] = "Возврат Ивану"
+    payload = {
+        "output": key,
+        "outputs": [{"id": item.component_id, "property": item.component_property}
+                    for item in callback["output"]],
+        "inputs": [{**item, "value": values[item["id"]]} for item in callback["inputs"]],
+        "state": [{**item, "value": values[item["id"]]} for item in callback["state"]],
+        "changedPropIds": ["debt-draft-save-button.n_clicks"],
+    }
+    assert client.post("/_dash-update-component", json=payload).status_code == 200
+    with connect_database(database) as connection:
+        assert connection.execute("SELECT comment FROM transaction_drafts WHERE id = ?", (opening["draft_id"],)).fetchone()[0] == "Возврат Ивану"
+    payload["inputs"][0]["value"] = 1
+    payload["state"][0]["value"] = _debt_transaction_draft_records()
+    payload["state"][1]["value"] = _debt_transaction_draft_records()
+    payload["state"][1]["value"][0]["comment"] = "Учтённый комментарий"
+    payload["changedPropIds"] = ["debt-draft-publish-button.n_clicks"]
+    assert client.post("/_dash-update-component", json=payload).status_code == 200
+    payment = record_debt_payment(
+        database, debt_id=opening["debt_id"], occurred_on="2026-10-10",
+        amount="25", operation_key="payment",
+    )
+    payload["inputs"][1]["value"] = 1
+    payload["state"][0]["value"] = _debt_transaction_draft_records()
+    payload["state"][1]["value"] = _debt_transaction_draft_records()
+    payload["changedPropIds"] = ["debt-draft-skip-button.n_clicks"]
+    assert client.post("/_dash-update-component", json=payload).status_code == 200
+    with connect_database(database) as connection:
+        assert connection.execute("SELECT status FROM transaction_drafts WHERE id = ?", (opening["draft_id"],)).fetchone()[0] == "exported"
+        assert connection.execute("SELECT status FROM transaction_drafts WHERE id = ?", (payment["draft_id"],)).fetchone()[0] == "ignored"
+        assert connection.execute("SELECT COUNT(*) FROM debt_cash_events").fetchone()[0] == 1
+        assert connection.execute("SELECT comment FROM debt_cash_events").fetchone()[0] == "Учтённый комментарий"
+
+
 def test_unlinked_debt_draft_cannot_be_published(tmp_path):
     database = tmp_path / "synthetic.sqlite3"
     initialize_database(database)
@@ -148,7 +230,7 @@ def test_v19_debt_events_gain_nullable_link_without_changing_history(tmp_path):
     initialize_database(database)
     with sqlite3.connect(database) as connection:
         connection.execute("ALTER TABLE debt_cash_events DROP COLUMN debt_id")
-        connection.execute("DELETE FROM schema_migrations WHERE version = 20")
+        connection.execute("DELETE FROM schema_migrations WHERE version >= 20")
         connection.execute("PRAGMA user_version = 19")
     initialize_database(database)
     with connect_database(database) as connection:
