@@ -3351,6 +3351,14 @@ def _month_summary_section(dataset: DashboardDataset, theme: str | None = None, 
     if data.empty:
         return _empty_section(dataset, locale=locale)
 
+    status_labels = {
+        "ok": "В норме",
+        "watch": "Требует внимания",
+        "positive": "Положительно",
+        "negative": "Отрицательно",
+        "empty": "Нет данных",
+    }
+
     groups = [
         ("cash-flow", str(report_text("Денежный поток", locale)), ("Доход", "Расход", "Сбережения", "Дельта", "Баланс")),
         (
@@ -3369,10 +3377,14 @@ def _month_summary_section(dataset: DashboardDataset, theme: str | None = None, 
             ("Капитал", "Капитал по активам", "Инвестиции", "Расхождение с активами", "Валютная переоценка"),
         ),
     ]
-    rows_by_metric = {
-        str(dataset.dataframe.iloc[index].get("Показатель", "")): row
-        for index, (_, row) in enumerate(data.iterrows())
-    }
+    rows_by_metric = {}
+    for index, (_, row) in enumerate(data.iterrows()):
+        metric = str(dataset.dataframe.iloc[index].get("Показатель", ""))
+        status_id = str(dataset.dataframe.iloc[index].get("Статус", ""))
+        row = row.copy()
+        row["Статус ID"] = status_id
+        row["Статус"] = report_text(status_labels.get(status_id, status_id), locale)
+        rows_by_metric[metric] = row
     grouped_metrics = {metric for _group_id, _title, metrics in groups for metric in metrics}
     other_metrics = [metric for metric in rows_by_metric if metric not in grouped_metrics]
     if other_metrics:
@@ -4511,16 +4523,16 @@ def _debt_input_layout(currency: str, theme: str | None, include_create: bool = 
                     _ag_grid_scroll(dag.AgGrid(
                         id="debt-new-grid", rowData=_debt_grid_records(currency) if load_records else [], selectedRows=[],
                         columnDefs=[
-                            {"field": "opened_date", "headerName": "Дата начала", "editable": {"function": "!params.data.debt_id"} if not read_only else False, "cellDataType": "dateString", "cellEditor": "agDateStringCellEditor", "width": 140},
+                            {"field": "counterparty", "headerName": "Контрагент", "editable": {"function": "!params.data.debt_id"} if not read_only else False, "cellEditor": "agTextCellEditor", "width": 150, "wrapText": True, "autoHeight": True, "cellStyle": {"whiteSpace": "normal"}},
+                            {"field": "outstanding_amount", "headerName": "Остаток", "width": 120},
                             {"field": "due_date", "headerName": "Дата ожидаемого погашения", "editable": (not read_only if config.use_sqlite_storage() else {"function": "!params.data.debt_id"} if not read_only else False), "cellDataType": "dateString", "cellEditor": "agDateStringCellEditor", "width": 245},
+                            {"field": "opened_date", "headerName": "Дата начала", "editable": {"function": "!params.data.debt_id"} if not read_only else False, "cellDataType": "dateString", "cellEditor": "agDateStringCellEditor", "width": 140},
                             {"field": "type", "headerName": "Тип", "editable": {"function": "!params.data.debt_id"} if not read_only else False, "width": 145,
                              "cellEditor": "agSelectCellEditor", "cellEditorParams": {"values": ["Мне должны", "Я должен"]}},
-                            {"field": "counterparty", "headerName": "Контрагент", "editable": {"function": "!params.data.debt_id"} if not read_only else False, "cellEditor": "agTextCellEditor", "minWidth": 180, "flex": 1},
                             {"field": "principal_amount", "headerName": "Сумма", "editable": {"function": "!params.data.debt_id"} if not read_only else False, "width": 140},
                             {"field": "principal_currency", "headerName": "Валюта", "editable": {"function": "!params.data.debt_id"} if not read_only else False, "width": 110,
                              "cellEditor": "agSelectCellEditor", "cellEditorParams": {"values": list(config.UNIQUE_TICKERS)}},
                             {"field": "paid_amount", "headerName": "Погашено", "width": 130},
-                            {"field": "outstanding_amount", "headerName": "Остаток", "width": 130},
                             {"field": "comment", "headerName": "Комментарий", "editable": {"function": "!params.data.debt_id"} if not read_only else False, "minWidth": 180, "flex": 1},
                             {"field": "validation_error", "headerName": "Проверка", "minWidth": 220, "flex": 1,
                              "cellClassRules": {"text-danger": "Boolean(params.value)"}},

@@ -214,6 +214,9 @@ def test_debt_entry_uses_editable_grids_without_standalone_forms(monkeypatch, tm
     assert not {"debt-plan-new-grid", "debt-plans-grid", "debt-migrate-button"} & ids
     grid = next(component for component in components(layout) if getattr(component, "id", None) == "debt-new-grid")
     columns = {column["field"]: column for column in grid.columnDefs}
+    assert [column["field"] for column in grid.columnDefs[:3]] == ["counterparty", "outstanding_amount", "due_date"]
+    assert sum(column["width"] for column in grid.columnDefs[:2]) <= 280
+    assert columns["counterparty"]["wrapText"] is True
     assert {"opened_date", "due_date", "counterparty", "outstanding_amount"} <= columns.keys()
     assert columns["due_date"]["headerName"] == "Дата ожидаемого погашения"
     assert columns["due_date"]["cellDataType"] == "dateString"

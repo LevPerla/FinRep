@@ -190,7 +190,7 @@ def test_mobile_navigation_has_four_primary_actions_and_a_more_menu():
         _layout_component(nav, component_id).children[1].children
         for component_id in primary_ids
     ]
-    assert labels == ["Основной отчет", "Годовой отчет", "Месячный отчет", "План"]
+    assert labels == ["Главная", "Год", "Месяц", "План"]
     assert _layout_component(nav, "mobile-tab-input") is None
     for component_id in ("mobile-more-input", "mobile-more-debts", "mobile-more-investments"):
         assert _layout_component(menu, component_id) is not None
@@ -302,6 +302,19 @@ def test_month_summary_metrics_have_explanations():
     assert summary.loc["Баланс", "Детали"] == "Cash-flow месяца с учетом сбережений и долговых операций"
     assert summary.loc["Капитал", "Детали"] == "Накопленный cash-flow на конец выбранного месяца"
     assert summary.loc["Расхождение с активами", "Детали"] == "Assets snapshot минус накопленный cash-flow капитал"
+
+
+def test_month_summary_shows_localized_status_without_changing_status_id():
+    from src.dashboard.app import _month_summary_section
+    from src.dashboard.main_data import DashboardDataset
+
+    source = pd.DataFrame([{"Показатель": "Доход", "Значение": 100, "Статус": "ok", "Детали": ""}])
+    dataset = DashboardDataset(id="month_summary", title="Итог", dataframe=source, display_dataframe=source)
+    for locale, label in (("ru", "В норме"), ("en", "On track")):
+        section = _month_summary_section(dataset, locale=locale)
+        card = next(node for node in section.children[1].children[0].children[1].children if "finrep-cockpit-card" in node.className)
+        assert _component_text(card.children[2]) == label
+        assert "finrep-cockpit-ok" in card.className
 
 
 def test_planning_goals_grid_does_not_force_empty_row_space():

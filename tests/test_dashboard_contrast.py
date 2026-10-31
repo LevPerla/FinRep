@@ -6,6 +6,7 @@ os.environ.setdefault("FINREP_DASH_PASSWORD", "test-password")
 os.environ.setdefault("FINREP_DASH_SECRET_KEY", "test-session-secret")
 
 from src.dashboard.app import _level_palette
+from src.dashboard.auth import LOGIN_TEMPLATE
 
 
 def _relative_luminance(color: str) -> float:
@@ -45,3 +46,22 @@ def test_light_metric_cards_have_distinct_readable_surface():
     background = match.group(1)
     assert background.lower() != "#ffffff"
     assert _contrast_ratio("#172033", background) >= 4.5
+
+
+def test_demo_login_and_light_warning_button_have_readable_text():
+    css = (Path(__file__).resolve().parents[1] / "assets" / "dashboard.css").read_text(encoding="utf-8")
+    demo_background = re.search(r"\.demo-submit\s*\{[^}]*background:\s*(#[0-9a-fA-F]{6})", LOGIN_TEMPLATE).group(1)
+    warning_foreground = re.search(r"\.finrep-theme-light \.btn-outline-warning\s*\{[^}]*color:\s*(#[0-9a-fA-F]{6})", css).group(1)
+
+    assert _contrast_ratio("#ffffff", demo_background) >= 4.5
+    assert _contrast_ratio(warning_foreground, "#ffffff") >= 4.5
+    assert "button:disabled { cursor: not-allowed; background:" in LOGIN_TEMPLATE
+    assert "opacity: 1;" in css
+
+
+def test_mobile_navigation_and_inflation_button_keep_accessible_space():
+    css = (Path(__file__).resolve().parents[1] / "assets" / "dashboard.css").read_text(encoding="utf-8")
+
+    assert re.search(r"#refresh-cpi\s*\{\s*grid-column:\s*span 4", css)
+    assert re.search(r"\.mobile-dashboard-tab\s*\{[^}]*font-size:\s*12px", css)
+    assert "@media (max-width: 768px) and (prefers-reduced-motion: reduce)" in css

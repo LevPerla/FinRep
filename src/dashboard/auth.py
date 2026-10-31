@@ -44,8 +44,10 @@ LOGIN_TEMPLATE = """
     fieldset { margin: 18px 0; padding: 0; border: 0; }
     fieldset label { display: flex; gap: 9px; align-items: center; margin: 10px 0; font-weight: 400; }
     button { width: 100%; padding: 11px; border: 0; border-radius: 7px; background: #2563eb; color: #fff; font-weight: 700; cursor: pointer; }
-    button:disabled { cursor: not-allowed; opacity: .55; }
+    button:disabled { cursor: not-allowed; background: #374151; color: #cbd5e1; }
+    .demo-submit { background: #9a4b00; }
     .icon-button { display: inline-grid; place-items: center; width: 24px; height: 24px; padding: 0; border: 1px solid #64748b; border-radius: 50%; background: transparent; color: #cbd5e1; }
+    .icon-button:disabled { border-color: #4b5563; color: #6b7280; }
     .icon-button:hover, .icon-button:focus-visible { border-color: #93c5fd; color: #fff; outline: none; }
     .help-button { flex: 0 0 auto; font-size: .8rem; line-height: 1; }
     .password-toggle { position: absolute; top: 50%; right: 8px; width: 32px; height: 32px; border: 0; transform: translateY(-50%); }
@@ -100,7 +102,7 @@ LOGIN_TEMPLATE = """
     <form method="post" action="/login">
       <input type="hidden" name="data_mode" value="test">
       <input type="hidden" name="locale" value="{{ locale }}">
-      <button type="submit" style="background:#d97706;"><span data-i18n="auth.demo_submit">{{ tr("auth.demo_submit", locale) }}</span></button>
+      <button class="demo-submit" type="submit"><span data-i18n="auth.demo_submit">{{ tr("auth.demo_submit", locale) }}</span></button>
       <p><small data-i18n="auth.demo_note">{{ tr("auth.demo_note", locale) }}</small></p>
     </form>
   </main>
