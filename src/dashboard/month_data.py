@@ -39,7 +39,7 @@ def _build_month_dashboard_data(
         raise ValueError(f"currency must be one of {tuple(config.UNIQUE_TICKERS)}")
 
     if not _has_saved_period(year, month, "cash_transactions"):
-        return {
+        datasets = {
             "month_empty": DashboardDataset(
                 id="month_empty",
                 title="Месяц не сохранён",
@@ -48,6 +48,10 @@ def _build_month_dashboard_data(
                 ),
             )
         }
+        assets = _prepare_assets(get_assets_by_currencies(year, month))
+        if not assets.empty:
+            datasets["month_assets"] = _month_assets_dataset(assets, year, month)
+        return datasets
 
     transactions = get_month_transactions(currency, year, month)
     fx_info = get_exchange_rates_info(currency)
@@ -56,7 +60,6 @@ def _build_month_dashboard_data(
     liabilities = get_act_liabilities(currency)
     cost_distribution = _cost_distribution(year, month, currency)
     assets = _prepare_assets(get_assets_by_currencies(year, month))
-    assets_display = _asset_snapshot_display(assets, year, month)
 
     return {
         "month_transactions": DashboardDataset(
@@ -101,13 +104,17 @@ def _build_month_dashboard_data(
             dataframe=cost_distribution,
             figure=_cost_distribution_figure(cost_distribution),
         ),
-        "month_assets": DashboardDataset(
-            id="month_assets",
-            title="Распределение по счетам",
-            dataframe=assets,
-            display_dataframe=assets_display,
-        ),
+        "month_assets": _month_assets_dataset(assets, year, month),
     }
+
+
+def _month_assets_dataset(assets: pd.DataFrame, year: str, month: str) -> DashboardDataset:
+    return DashboardDataset(
+        id="month_assets",
+        title="Распределение по счетам",
+        dataframe=assets,
+        display_dataframe=_asset_snapshot_display(assets, year, month),
+    )
 
 
 def get_day_transaction_details(date: str, currency: str) -> pd.DataFrame:
