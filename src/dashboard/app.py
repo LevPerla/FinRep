@@ -3493,28 +3493,14 @@ def _runway_section(dataset: DashboardDataset, theme: str | None = None, locale:
         return _empty_section(dataset, locale=locale)
 
     row = data.iloc[0]
-    card_style = {
-        "backgroundColor": "#3c3f41",
-        "border": "1px solid #555555",
-        "color": "#a9b7c6",
-        "borderRadius": "8px",
-        "padding": "16px",
-    } if theme == "dark" else {
-        "backgroundColor": "#ffffff",
-        "border": "1px solid #dee2e6",
-        "borderRadius": "8px",
-        "padding": "16px",
-    }
-    label_style = {"fontSize": "0.82rem", "opacity": 0.75, "marginBottom": "6px"}
-    value_style = {"fontSize": "1.55rem", "fontWeight": 700, "lineHeight": 1.15}
 
     def card(label: str, value: str):
         return html.Div(
             [
-                html.Div(label, style=label_style),
-                html.Div(value, style=value_style),
+                html.Div(label, className="finrep-cockpit-label"),
+                html.Div(value, className="finrep-cockpit-value"),
             ],
-            style=card_style,
+            className="finrep-cockpit-card finrep-cockpit-neutral",
         )
 
     return html.Section(
@@ -3531,7 +3517,7 @@ def _runway_section(dataset: DashboardDataset, theme: str | None = None, locale:
                         str(row.get("Прогресс от цели (%)", report_text("не рассчитано", locale))),
                     ),
                 ],
-                className="d-grid gap-3",
+                className="finrep-mobile-metric-grid",
             ),
             dbc.Alert(
                 str(row.get("Детали")),

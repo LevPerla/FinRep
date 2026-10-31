@@ -39,7 +39,7 @@ LOGIN_TEMPLATE = """
     label { display: block; font-weight: 600; }
     .password-label-row { display: flex; align-items: center; gap: 7px; margin: 14px 0 6px; }
     .password-field { position: relative; }
-    .password-input { box-sizing: border-box; width: 100%; padding: 11px 46px 11px 11px; border: 1px solid #4b5563; border-radius: 7px; background: #111827; color: #fff; }
+    .password-input { box-sizing: border-box; width: 100%; padding: 11px 46px 11px 11px; border: 1px solid #94a3b8; border-radius: 7px; background: #111827; color: #fff; }
     .password-input:focus { border-color: #60a5fa; outline: 2px solid #60a5fa55; }
     fieldset { margin: 18px 0; padding: 0; border: 0; }
     fieldset label { display: flex; gap: 9px; align-items: center; margin: 10px 0; font-weight: 400; }

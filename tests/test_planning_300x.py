@@ -118,6 +118,8 @@ def test_asset_runway_panel_contains_only_requested_metrics():
     section = _runway_section(dataset, theme="dark", locale="ru")
     cards = section.children[1].children
 
+    assert "finrep-mobile-metric-grid" in section.children[1].className.split()
+    assert all("finrep-cockpit-card" in card.className.split() for card in cards)
     assert [card.children[0].children for card in cards] == [
         "Финансовый запас по активам, месяцев",
         "Финансовый запас по активам, лет",

@@ -59,6 +59,21 @@ def test_demo_login_and_light_warning_button_have_readable_text():
     assert "opacity: 1;" in css
 
 
+def test_login_password_field_edge_is_visible_against_dark_panel():
+    border = re.search(r"\.password-input\s*\{[^}]*border:\s*1px solid\s*(#[0-9a-fA-F]{6})", LOGIN_TEMPLATE).group(1)
+    panel = re.search(r"main\s*\{[^}]*background:\s*(#[0-9a-fA-F]{6})", LOGIN_TEMPLATE).group(1)
+
+    assert _contrast_ratio(border, panel) >= 3
+
+
+def test_small_report_labels_do_not_use_uppercase():
+    css = (Path(__file__).resolve().parents[1] / "assets" / "dashboard.css").read_text(encoding="utf-8")
+
+    for selector in (".finrep-first-run-kicker", ".finrep-fx-table th", ".finrep-report-table th"):
+        rule = re.search(re.escape(selector) + r"\s*\{([^}]*)\}", css).group(1)
+        assert "text-transform: uppercase" not in rule
+
+
 def test_mobile_navigation_and_inflation_button_keep_accessible_space():
     css = (Path(__file__).resolve().parents[1] / "assets" / "dashboard.css").read_text(encoding="utf-8")
 

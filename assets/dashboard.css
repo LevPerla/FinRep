@@ -137,8 +137,6 @@ body {
   color: var(--finrep-focus);
   font-size: 0.8rem;
   font-weight: 700;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
 }
 
 .finrep-first-run-intro,
@@ -183,6 +181,11 @@ body {
 .finrep-cockpit-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 12px;
+}
+
+.finrep-mobile-metric-grid {
+  display: grid;
   gap: 12px;
 }
 
@@ -754,7 +757,6 @@ body {
   color: #94a3b8;
   font-size: 0.72rem;
   font-weight: 750;
-  text-transform: uppercase;
 }
 
 .finrep-fx-table tr:last-child td {
@@ -845,7 +847,6 @@ body {
   font-size: 0.72rem;
   font-weight: 750;
   line-height: 1.25;
-  text-transform: uppercase;
 }
 
 .finrep-report-table tr:last-child td {
@@ -1165,37 +1166,34 @@ body {
     flex: 1 1 108px;
   }
 
-  .finrep-cockpit-grid {
-    grid-template-columns: minmax(0, 1fr);
-  }
-
+  .finrep-cockpit-grid,
   .finrep-mobile-metric-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 8px;
   }
 
+  .finrep-cockpit-grid .finrep-cockpit-card,
   .finrep-mobile-metric-grid .finrep-cockpit-card {
     min-height: 70px;
     padding: 10px;
     border-left-width: 3px;
   }
 
+  .finrep-cockpit-grid .finrep-cockpit-value,
   .finrep-mobile-metric-grid .finrep-cockpit-value {
     margin: 5px 0 3px;
-    font-size: 1.18rem;
+    font-size: clamp(0.875rem, 4vw, 1rem);
+    white-space: nowrap;
+    overflow-x: auto;
   }
 
+  .finrep-cockpit-grid .finrep-cockpit-detail,
   .finrep-mobile-metric-grid .finrep-cockpit-detail {
     margin-top: 3px;
   }
 
-  .finrep-main-metrics-supporting,
-  .finrep-cockpit-grid-compact {
+  .finrep-main-metrics-supporting {
     grid-template-columns: minmax(0, 1fr);
-  }
-
-  .finrep-cockpit-card {
-    min-height: 116px;
   }
 
   .finrep-fx-table th,
