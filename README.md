@@ -81,7 +81,7 @@ FinRep is designed around local files:
 
 The app reads and writes those local paths only. The dashboard can check for stale FX/CPI data in the background when you refresh its reports; crypto balance requests require a separate click. Providers receive the public wallet addresses configured for a crypto refresh, not private keys. Normal dashboard tab changes use local SQLite data.
 
-Before publishing a fork or public repository, run the checklist in `AGENTS_MD/OPEN_SOURCE_CHECKLIST.md`.
+Before publishing a fork or public repository, run the checklist in [AGENTS_MD/Rules/OPEN_SOURCE_CHECKLIST.md](AGENTS_MD/Rules/OPEN_SOURCE_CHECKLIST.md).
 
 ## Data Layout
 
