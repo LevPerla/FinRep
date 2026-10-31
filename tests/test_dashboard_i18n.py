@@ -166,6 +166,7 @@ def test_dashboard_chrome_translation_changes_labels_but_not_keys():
         "nav.main.desktop",
         "dashboard.theme_toggle",
     ]
+    assert tr("nav.main.mobile", "en") == "Home"
 
 
 def test_login_uses_the_same_browser_locale_key_and_returns_english_error():

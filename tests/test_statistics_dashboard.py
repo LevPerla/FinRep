@@ -205,7 +205,9 @@ def test_statistics_mobile_grid_uses_two_compact_columns():
         encoding="utf-8"
     )
 
-    assert ".finrep-mobile-metric-grid {" in css
-    assert "grid-template-columns: repeat(2, minmax(0, 1fr));" in css
-    assert ".finrep-mobile-metric-grid .finrep-cockpit-card" in css
+    assert ".finrep-cockpit-grid,\n  .finrep-mobile-metric-grid {\n    grid-template-columns: repeat(2, minmax(0, 1fr));" in css
+    assert ".finrep-cockpit-grid .finrep-cockpit-card" in css
     assert "min-height: 70px;" in css
+    assert "font-size: clamp(0.875rem, 4vw, 1rem);" in css
+    assert "white-space: nowrap;" in css
+    assert "overflow-x: auto;" in css

@@ -23,6 +23,10 @@ Click a preview to open the full-size dashboard export.
   <strong>Main report</strong> · <strong>Yearly report</strong> · <strong>Monthly report</strong>
 </p>
 
+## Mobile report cards
+
+At widths up to 768 px, report metric cards use a compact two-column grid. Reuse `finrep-cockpit-card` with `finrep-cockpit-grid` (or `finrep-mobile-metric-grid` when the desktop layout stays single-column). Keep amounts on one line by reducing their font size; exceptionally long values must remain horizontally scrollable, never truncated. Check amounts and translated labels at 320 and 390 px in both themes.
+
 ## Quick Start
 
 Clone the repository and enter the project folder:

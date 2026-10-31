@@ -14,6 +14,11 @@ LOCALE_TIMESTAMP_STORAGE_KEY = "dashboard-locale-timestamp"
 DYNAMIC_TRANSLATION_KEYS = frozenset({"dashboard.theme_toggle"})
 
 REPORT_TEXT_EN = {
+    "В норме": "On track",
+    "Требует внимания": "Needs attention",
+    "Положительно": "Positive",
+    "Отрицательно": "Negative",
+    "Нет данных": "No data",
     "Аналитика доходов": "Income analytics",
     "Доход по источникам за месяц": "Monthly income by source",
     "Активный и пассивный доход за месяц": "Monthly active and passive income",
@@ -471,9 +476,9 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "nav.input.desktop": "Ввод данных",
         "nav.debts.desktop": "Долги · Beta",
         "nav.investments.desktop": "Инвестиции · Beta",
-        "nav.main.mobile": "Основной отчет",
-        "nav.year.mobile": "Годовой отчет",
-        "nav.month.mobile": "Месячный отчет",
+        "nav.main.mobile": "Главная",
+        "nav.year.mobile": "Год",
+        "nav.month.mobile": "Месяц",
         "nav.planning.mobile": "План",
         "nav.more.mobile": "Ещё",
         "nav.input.mobile": "Ввод данных",
@@ -533,7 +538,7 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "nav.input.desktop": "Add data",
         "nav.debts.desktop": "Debts · Beta",
         "nav.investments.desktop": "Investments · Beta",
-        "nav.main.mobile": "Overview",
+        "nav.main.mobile": "Home",
         "nav.year.mobile": "Year",
         "nav.month.mobile": "Month",
         "nav.planning.mobile": "Plan",
