@@ -59,7 +59,7 @@ http://127.0.0.1:8050
 Run the legacy Plotly HTML reports with demo data:
 
 ```bash
-FINREP_DATA_DIR=sample_data FINREP_REPORTS_DIR=reports uv run python main.py
+FINREP_STORAGE_BACKEND=csv FINREP_DATA_DIR=sample_data FINREP_REPORTS_DIR=reports uv run python main.py
 ```
 
 For private use, the default LIVE database is `data/finrep.sqlite3`. A fresh installation creates it automatically. If legacy working CSV files are present, migrate them once before starting LIVE mode; the app will not hide them behind an empty database. The default local paths are:
@@ -204,7 +204,7 @@ VALIDATE_DATA = True
 For demo report output, use:
 
 ```bash
-FINREP_DATA_DIR=sample_data FINREP_REPORTS_DIR=/tmp/finrep_reports uv run python main.py
+FINREP_STORAGE_BACKEND=csv FINREP_DATA_DIR=sample_data FINREP_REPORTS_DIR=/tmp/finrep_reports uv run python main.py
 ```
 
 For strictly offline report generation, set `FX_NETWORK_ENABLED = False` in `main.py` before running the legacy report flow.
@@ -282,7 +282,7 @@ The command intentionally includes every existing test. BCC and Ozon parser test
 Validate CSV data:
 
 ```bash
-FINREP_DATA_DIR=sample_data uv run python -c "from src.data.validation import validate_all_data; issues = validate_all_data(False); print(f'issues={len(issues)}')"
+FINREP_STORAGE_BACKEND=csv FINREP_DATA_DIR=sample_data uv run python -c "from src.data.validation import validate_all_data; issues = validate_all_data(False); print(f'issues={len(issues)}'); assert not issues"
 ```
 
 Run a syntax/import check:
@@ -294,7 +294,7 @@ PYTHONPYCACHEPREFIX=/private/tmp/finrep_pycache python3 -m compileall main.py sr
 Dash layout smoke check:
 
 ```bash
-FINREP_DASH_PASSWORD=test FINREP_DASH_SECRET_KEY=test-secret FINREP_DATA_DIR=sample_data FINREP_REPORTS_DIR=/private/tmp/finrep_reports uv run python -c "from src.dashboard.app import create_app; app = create_app(); assert app.layout is not None; print(app.title)"
+FINREP_STORAGE_BACKEND=csv FINREP_DASH_PASSWORD=test FINREP_DASH_SECRET_KEY=test-secret FINREP_DATA_DIR=sample_data FINREP_REPORTS_DIR=/private/tmp/finrep_reports uv run python -c "from src.dashboard.app import create_app; app = create_app(); assert app.layout is not None; print(app.title)"
 ```
 
 ## Notes For Contributors

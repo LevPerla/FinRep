@@ -2186,117 +2186,58 @@ def register_callbacks(app: Dash) -> None:
             return report_text(str(exc), locale), "danger", no_update, no_update, next_add_request_id
 
     @app.callback(
-        Output("category-create-income-class", "disabled"),
-        Output("category-create-income-class", "value"),
-        Input("category-create-direction", "value"),
-    )
-    def sync_category_income_class(direction):
-        return (True, None) if direction == "expense" else (False, "active")
-
-    @app.callback(
-        Output("category-rename-name", "value"),
-        Input("category-registry-grid", "selectedRows"),
-        prevent_initial_call=True,
-    )
-    def select_category_for_rename(selected_rows):
-        if not selected_rows:
-            return ""
-        return str(selected_rows[0].get("Категория", ""))
-
-    @app.callback(
         Output("category-registry-message", "children"),
         Output("category-registry-message", "color"),
         Output("category-registry-grid", "rowData"),
-        Output("category-registry-grid", "selectedRows"),
-        Output("category-create-name", "value"),
         Output("transaction-input-category", "options"),
         Output("transaction-input-category", "value"),
         Output("kaspi-import-grid", "columnDefs", allow_duplicate=True),
-        Input("category-create-button", "n_clicks"),
-        Input("category-rename-button", "n_clicks"),
-        Input("category-toggle-button", "n_clicks"),
-        State("category-create-direction", "value"),
-        State("category-create-name", "value"),
-        State("category-create-income-class", "value"),
-        State("category-registry-grid", "selectedRows"),
-        State("category-rename-name", "value"),
+        Input("category-grid-add-button", "n_clicks"),
+        Input("category-grid-save-button", "n_clicks"),
+        State("category-registry-grid", "rowData"),
         State("transaction-input-category", "value"),
         State("dashboard-locale", "data"),
         prevent_initial_call=True,
     )
-    def manage_categories(
-        create_clicks,
-        rename_clicks,
-        toggle_clicks,
-        direction,
-        create_name,
-        income_class,
-        selected_rows,
-        rename_name,
-        current_transaction_category,
-        locale,
-    ):
-        del create_clicks, rename_clicks, toggle_clicks
+    def manage_categories(add_clicks, save_clicks, rows, current_transaction_category, locale):
+        del add_clicks, save_clicks
         trigger = ctx.triggered_id
-        if trigger not in {
-            "category-create-button", "category-rename-button", "category-toggle-button"
-        }:
+        if trigger not in {"category-grid-add-button", "category-grid-save-button"}:
             raise PreventUpdate
-        selected = selected_rows[0] if selected_rows else None
         try:
             config.require_writable_mode()
             if not config.use_sqlite_storage():
                 raise ValueError("Управление категориями доступно в режиме SQLite.")
-            from src.data.sqlite_store import (
-                create_category,
-                rename_category,
-                set_category_active,
+            if trigger == "category-grid-add-button":
+                new_row = {
+                    "id": "", "Категория": "",
+                    "Направление": report_text("Доход", locale),
+                    "Класс дохода": report_text("Активный", locale),
+                    "Статус": report_text("Активна", locale),
+                    "Операций": 0, "Открытых черновиков": 0,
+                    "active": True, "validation_error": "",
+                }
+                return (report_text("Заполни новую строку и нажми «Сохранить».", locale),
+                        "secondary", [*(rows or []), new_row], no_update, no_update, no_update)
+            saved_rows, saved, failed = _save_category_registry_rows(
+                config.active_database_path(), rows or [], locale,
             )
-
-            preferred_category = current_transaction_category
-            cleared_create_name = no_update
-            if trigger == "category-create-button":
-                create_category(
-                    config.active_database_path(),
-                    str(create_name or ""),
-                    direction=str(direction or ""),
-                    income_class=(str(income_class) if direction == "income" else None),
-                )
-                message = "Категория добавлена."
-                cleared_create_name = ""
-            elif trigger == "category-rename-button":
-                if selected is None:
-                    raise ValueError("Выбери категорию в таблице.")
-                rename_category(
-                    config.active_database_path(),
-                    str(selected.get("id", "")),
-                    str(rename_name or ""),
-                )
-                message = "Категория переименована; исторические назначения сохранены."
-            else:
-                if selected is None:
-                    raise ValueError("Выбери категорию в таблице.")
-                activate = not bool(selected.get("active"))
-                set_category_active(
-                    config.active_database_path(),
-                    str(selected.get("id", "")),
-                    activate,
-                )
-                message = "Категория активирована." if activate else "Категория деактивирована."
-
             clear_data_cache()
             options = _transaction_category_options(locale)
             option_values = {option["value"] for option in options}
             selected_value = (
-                preferred_category if preferred_category in option_values
+                current_transaction_category if current_transaction_category in option_values
                 else (options[0]["value"] if options else None)
+            )
+            message = (
+                report_text("Сохранено строк: {saved}. Ошибок: {failed}.", locale).format(saved=saved, failed=failed)
+                if failed else report_text("Сохранено строк: {saved}.", locale).format(saved=saved)
+                if saved else report_text("Изменений нет.", locale)
             )
             return (
                 report_text(message, locale),
-                "success",
-                _category_registry_rows(locale),
-                [],
-                cleared_create_name,
+                "warning" if failed else "success",
+                saved_rows,
                 options,
                 selected_value,
                 _localized_input_column_defs(_kaspi_import_column_defs(locale), locale),
@@ -2305,8 +2246,6 @@ def register_callbacks(app: Dash) -> None:
             return (
                 report_text(str(exc), locale),
                 "danger",
-                no_update,
-                no_update,
                 no_update,
                 no_update,
                 no_update,
@@ -3531,7 +3470,15 @@ def _runway_section(dataset: DashboardDataset, theme: str | None = None, locale:
 
 def _month_report_layout(datasets: dict[str, DashboardDataset], theme: str | None, locale: str = DEFAULT_LOCALE):
     if "month_empty" in datasets:
-        return _month_empty_state(datasets["month_empty"], locale=locale)
+        return html.Div(
+            [
+                _month_empty_state(datasets["month_empty"], locale=locale,
+                                   has_assets="month_assets" in datasets),
+                _grid_section(datasets["month_assets"], height="1120px", theme=theme, locale=locale)
+                if "month_assets" in datasets else None,
+            ],
+            className="d-grid gap-4",
+        )
 
     return html.Div(
         [
@@ -3546,7 +3493,7 @@ def _month_report_layout(datasets: dict[str, DashboardDataset], theme: str | Non
     )
 
 
-def _month_empty_state(dataset: DashboardDataset, locale: str = DEFAULT_LOCALE):
+def _month_empty_state(dataset: DashboardDataset, locale: str = DEFAULT_LOCALE, has_assets: bool = False):
     row = dataset.dataframe.iloc[0]
     year = str(row["Год"])
     month = str(row["Месяц"]).zfill(2)
@@ -3554,14 +3501,22 @@ def _month_empty_state(dataset: DashboardDataset, locale: str = DEFAULT_LOCALE):
     input_href = "?" + urlencode(
         {"currency": currency, "year": year, "month": month, "tab": "input"}
     )
+    if has_assets:
+        kicker = report_text("Операции не сохранены", locale)
+        title = (f"Transactions are not saved for {year}-{month}" if normalize_locale(locale) == "en"
+                 else f"Операции не сохранены за {year}-{month}")
+    else:
+        kicker = report_text("Месяц не сохранён", locale)
+        title = (f"No data for {year}-{month}" if normalize_locale(locale) == "en"
+                 else f"Нет данных за {year}-{month}")
     return html.Section(
         [
-            html.Div(report_text("Месяц не сохранён", locale), className="finrep-first-run-kicker"),
-            html.H2(f"No data for {year}-{month}" if normalize_locale(locale) == "en" else f"Нет данных за {year}-{month}", className="h3 mb-2"),
+            html.Div(kicker, className="finrep-first-run-kicker"),
+            html.H2(title, className="h3 mb-2"),
             html.P(
                 report_text(
                     (
-                        "За выбранный месяц ещё нет операций. Добавьте или импортируйте строки, проверьте их и сохраните транзакции."
+                        "За выбранный месяц ещё нет сохранённых операций. Добавьте или импортируйте строки, проверьте их и сохраните транзакции."
                         if config.use_sqlite_storage()
                         else "Выбранный месяц ещё не создан. Добавьте или импортируйте операции, проверьте Preview и сохраните месяц."
                     ),
@@ -4226,7 +4181,7 @@ def _transaction_input_layout(
     )
 
 
-def _category_registry_rows(locale: str = DEFAULT_LOCALE) -> list[dict]:
+def _category_registry_rows(locale: str = DEFAULT_LOCALE, path=None) -> list[dict]:
     if not config.use_sqlite_storage():
         return []
     from src.data.sqlite_store import categories
@@ -4250,22 +4205,79 @@ def _category_registry_rows(locale: str = DEFAULT_LOCALE) -> list[dict]:
             "Операций": row["transaction_count"],
             "Открытых черновиков": row["open_draft_count"],
             "active": bool(row["active"]),
+            "updated_at": row["updated_at"],
+            "validation_error": "",
         }
-        for row in categories(config.active_database_path())
+        for row in categories(path or config.active_database_path())
     ]
 
 
-def _category_registry_column_defs(locale: str = DEFAULT_LOCALE) -> list[dict]:
+def _save_category_registry_rows(path, rows: list[dict], locale: str = DEFAULT_LOCALE) -> tuple[list[dict], int, int]:
+    from src.data.sqlite_store import categories, create_category, rename_category, set_category_active
+
+    current = {row["id"]: row for row in categories(path)}
+    directions = {report_text("Доход", locale): "income", report_text("Расход", locale): "expense"}
+    income_classes = {report_text("Активный", locale): "active", report_text("Пассивный", locale): "passive"}
+    statuses = {report_text("Активна", locale): True, report_text("Неактивна", locale): False}
+    failed_rows = []
+    saved = 0
+    for row in rows:
+        category_id = str(row.get("id") or "")
+        name = str(row.get("Категория") or "").strip()
+        try:
+            if category_id:
+                before = current.get(category_id)
+                if before is None:
+                    raise ValueError("Неизвестная категория.")
+                status = statuses.get(row.get("Статус"))
+                if status is None:
+                    raise ValueError("Выбери статус категории.")
+                changed = name != before["name_ru"] or status != bool(before["active"])
+                if changed and row.get("updated_at") != before["updated_at"]:
+                    raise ValueError("Категория изменилась после загрузки; обнови таблицу.")
+                if status != bool(before["active"]):
+                    set_category_active(path, category_id, status)
+                if name != before["name_ru"]:
+                    rename_category(path, category_id, name)
+                saved += int(changed)
+            else:
+                direction = directions.get(row.get("Направление"))
+                if direction is None:
+                    raise ValueError("Выбери направление категории.")
+                income_class = income_classes.get(row.get("Класс дохода")) if direction == "income" else None
+                create_category(path, name, direction=direction, income_class=income_class)
+                saved += 1
+        except Exception as exc:
+            failed_rows.append({**row, "validation_error": str(exc)})
+
+    refreshed = _category_registry_rows(locale, path)
+    failed_by_id = {row["id"]: row for row in failed_rows if row.get("id")}
+    refreshed = [failed_by_id.pop(row["id"], row) for row in refreshed]
+    return refreshed + list(failed_by_id.values()) + [row for row in failed_rows if not row.get("id")], saved, len(failed_rows)
+
+
+def _category_registry_column_defs(locale: str = DEFAULT_LOCALE, read_only: bool = False) -> list[dict]:
+    new_row_only = {"function": "!params.data.id"} if not read_only else False
     return _localized_input_column_defs(
         [
             {"field": "id", "hide": True},
-            {"field": "Категория", "headerName": "Категория", "flex": 1, "minWidth": 190},
-            {"field": "Направление", "headerName": "Направление", "width": 140},
-            {"field": "Класс дохода", "headerName": "Класс дохода", "width": 150},
-            {"field": "Статус", "headerName": "Статус", "width": 120},
+            {"field": "Категория", "headerName": "Категория", "flex": 1, "minWidth": 190, "editable": not read_only},
+            {"field": "Направление", "headerName": "Направление", "width": 140,
+             "editable": new_row_only, "cellEditor": "agSelectCellEditor",
+             "cellEditorParams": {"values": [report_text("Доход", locale), report_text("Расход", locale)]}},
+            {"field": "Класс дохода", "headerName": "Класс дохода", "width": 150,
+             "editable": new_row_only, "cellEditor": "agSelectCellEditor",
+             "cellEditorParams": {"values": ["", report_text("Активный", locale), report_text("Пассивный", locale)]}},
+            {"field": "Статус", "headerName": "Статус", "width": 120,
+             "editable": {"function": "Boolean(params.data.id)"} if not read_only else False,
+             "cellEditor": "agSelectCellEditor",
+             "cellEditorParams": {"values": [report_text("Активна", locale), report_text("Неактивна", locale)]}},
             {"field": "Операций", "headerName": "Операций", "width": 120},
             {"field": "Открытых черновиков", "headerName": "Открытых черновиков", "width": 170},
+            {"field": "validation_error", "headerName": "Проверка", "minWidth": 230, "flex": 1,
+             "cellClassRules": {"text-danger": "Boolean(params.value)"}},
             {"field": "active", "hide": True},
+            {"field": "updated_at", "hide": True},
         ],
         locale,
     )
@@ -4287,75 +4299,17 @@ def _category_input_layout(
         [
             html.Section(
                 [
-                    html.H2(report_text("Новая категория", locale), className="h5 mb-3"),
-                    dbc.Row(
-                        [
-                            dbc.Col(
-                                [
-                                    dbc.Label(report_text("Направление", locale), className="small mb-1"),
-                                    dcc.Dropdown(
-                                        id="category-create-direction",
-                                        options=[
-                                            {"label": report_text("Доход", locale), "value": "income"},
-                                            {"label": report_text("Расход", locale), "value": "expense"},
-                                        ],
-                                        value="income",
-                                        clearable=False,
-                                        className="dash-dropdown",
-                                    ),
-                                ],
-                                xs=12,
-                                md=3,
-                            ),
-                            dbc.Col(
-                                [
-                                    dbc.Label(report_text("Название", locale), html_for="category-create-name", className="small mb-1"),
-                                    dbc.Input(id="category-create-name", type="text", className="finrep-native-input", style=_form_control_style(theme)),
-                                ],
-                                xs=12,
-                                md=4,
-                            ),
-                            dbc.Col(
-                                [
-                                    dbc.Label(report_text("Класс дохода", locale), className="small mb-1"),
-                                    dcc.Dropdown(
-                                        id="category-create-income-class",
-                                        options=[
-                                            {"label": report_text("Активный", locale), "value": "active"},
-                                            {"label": report_text("Пассивный", locale), "value": "passive"},
-                                        ],
-                                        value="active",
-                                        clearable=False,
-                                        className="dash-dropdown",
-                                    ),
-                                ],
-                                xs=12,
-                                md=3,
-                            ),
-                            dbc.Col(
-                                dbc.Button(
-                                    report_text("Добавить", locale),
-                                    id="category-create-button",
-                                    color="primary",
-                                    className="w-100",
-                                    disabled=read_only,
-                                ),
-                                xs=12,
-                                md=2,
-                                className="d-flex align-items-end",
-                            ),
-                        ],
-                        className="g-2",
-                    ),
-                ],
-                style=_section_style(theme),
-            ),
-            html.Section(
-                [
                     html.H2(report_text("Справочник категорий", locale), className="h5 mb-2"),
                     html.P(
-                        report_text("Выбери строку, чтобы переименовать категорию или изменить её доступность для новых операций. История сохраняет тот же ID.", locale),
+                        report_text("Добавь строку или измени название и статус в таблице, затем сохрани. История сохраняет тот же ID.", locale),
                         className="small opacity-75",
+                    ),
+                    html.Div(
+                        [
+                            dbc.Button(report_text("Добавить строку", locale), id="category-grid-add-button", color="secondary", outline=True, size="sm", disabled=read_only),
+                            dbc.Button(report_text("Сохранить категории", locale), id="category-grid-save-button", color="primary", size="sm", disabled=read_only),
+                        ],
+                        className="d-flex flex-wrap gap-2 mb-2",
                     ),
                     dbc.Alert(
                         id="category-registry-message",
@@ -4368,55 +4322,17 @@ def _category_input_layout(
                         dag.AgGrid(
                             id="category-registry-grid",
                             rowData=_category_registry_rows(locale),
-                            columnDefs=_category_registry_column_defs(locale),
+                            columnDefs=_category_registry_column_defs(locale, read_only),
                             defaultColDef=_ag_grid_default_col_def(editable=False),
                             dashGridOptions={
                                 "pagination": False,
-                                "rowSelection": "single",
                                 "suppressFieldDotNotation": True,
+                                "singleClickEdit": True,
+                                "stopEditingWhenCellsLoseFocus": True,
                             },
                             className=_ag_grid_class_name(theme),
                             style=_ag_grid_style("430px"),
                         )
-                    ),
-                    dbc.Row(
-                        [
-                            dbc.Col(
-                                [
-                                    dbc.Label(report_text("Новое название выбранной категории", locale), html_for="category-rename-name", className="small mb-1"),
-                                    dbc.Input(id="category-rename-name", type="text", className="finrep-native-input", style=_form_control_style(theme)),
-                                ],
-                                xs=12,
-                                md=6,
-                            ),
-                            dbc.Col(
-                                dbc.Button(
-                                    report_text("Переименовать", locale),
-                                    id="category-rename-button",
-                                    color="secondary",
-                                    outline=True,
-                                    className="w-100",
-                                    disabled=read_only,
-                                ),
-                                xs=12,
-                                md=3,
-                                className="d-flex align-items-end",
-                            ),
-                            dbc.Col(
-                                dbc.Button(
-                                    report_text("Активировать / деактивировать", locale),
-                                    id="category-toggle-button",
-                                    color="warning",
-                                    outline=True,
-                                    className="w-100",
-                                    disabled=read_only,
-                                ),
-                                xs=12,
-                                md=3,
-                                className="d-flex align-items-end",
-                            ),
-                        ],
-                        className="g-2 mt-2",
                     ),
                 ],
                 style=_section_style(theme),

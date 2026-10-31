@@ -1285,7 +1285,7 @@ def categories(path: str | Path, *, include_internal: bool = False) -> list[dict
     with connect_database(path) as connection:
         rows = connection.execute(
             """SELECT c.id, c.parent_id, c.direction, c.name_ru, c.name_en,
-                      c.active, c.income_class, c.sort_order,
+                      c.active, c.income_class, c.sort_order, c.updated_at,
                       p.name_ru AS parent_name_ru,
                       (SELECT COUNT(*) FROM cash_transactions t
                        WHERE t.category_id = c.id) AS transaction_count,

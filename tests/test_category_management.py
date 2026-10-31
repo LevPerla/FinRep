@@ -8,6 +8,7 @@ os.environ.setdefault("FINREP_DASH_SECRET_KEY", "test-session-secret")
 from src.data.get import clear_data_cache, get_transactions
 from src.data.sqlite_store import (
     cash_transactions,
+    categories,
     initialize_database,
     rename_category,
     transaction_drafts_snapshot,
@@ -15,6 +16,8 @@ from src.data.sqlite_store import (
 from src.data import staging
 from src.dashboard.app import (
     _category_input_layout,
+    _category_registry_rows,
+    _save_category_registry_rows,
     _transaction_category_options,
 )
 
@@ -73,7 +76,57 @@ def test_empty_sqlite_shows_all_categories_before_first_transaction(tmp_path, mo
     assert next(
         column for column in english_grid.columnDefs if column["field"] == "Категория"
     )["headerName"] == "Category"
-    assert "New category" in str(english_layout)
+    assert "Save categories" in str(english_layout)
+    assert _component(layout, "category-grid-add-button") is not None
+    assert _component(layout, "category-grid-save-button") is not None
+    assert _component(layout, "category-create-name") is None
+    assert _component(layout, "category-rename-name") is None
+
+
+def test_category_grid_saves_edits_and_keeps_invalid_rows(tmp_path, monkeypatch):
+    database = tmp_path / "finrep.sqlite3"
+    initialize_database(database)
+    _use_sqlite(monkeypatch, database)
+    try:
+        rows = _category_registry_rows()
+        salary = next(row for row in rows if row["id"] == "income.salary")
+        salary["Категория"] = "Зарплата новая"
+        rows.extend([
+            {"id": "", "Категория": "Новый доход", "Направление": "Доход", "Класс дохода": "Активный"},
+            {"id": "", "Категория": "Проценты", "Направление": "Доход", "Класс дохода": "Пассивный"},
+        ])
+        saved_rows, saved, failed = _save_category_registry_rows(database, rows)
+        assert (saved, failed) == (2, 1)
+        assert next(row for row in saved_rows if row["Категория"] == "Проценты" and not row["id"])["validation_error"]
+        stored = {row["id"]: row for row in categories(database)}
+        assert stored["income.salary"]["name_ru"] == "Зарплата новая"
+        assert any(row["name_ru"] == "Новый доход" for row in stored.values())
+    finally:
+        clear_data_cache()
+
+
+def test_category_grid_rejects_stale_edits_and_allows_status_change(tmp_path, monkeypatch):
+    database = tmp_path / "finrep.sqlite3"
+    initialize_database(database)
+    _use_sqlite(monkeypatch, database)
+    try:
+        rows = _category_registry_rows()
+        salary = next(row for row in rows if row["id"] == "income.salary")
+        salary["Категория"] = "Старое имя"
+        rename_category(database, "income.salary", "Новое имя")
+        refreshed, saved, failed = _save_category_registry_rows(database, rows)
+        assert (saved, failed) == (0, 1)
+        assert next(row for row in refreshed if row["id"] == "income.salary")["validation_error"]
+        assert next(row for row in categories(database) if row["id"] == "income.salary")["name_ru"] == "Новое имя"
+
+        rows = _category_registry_rows()
+        salary = next(row for row in rows if row["id"] == "income.salary")
+        salary["Статус"] = "Неактивна"
+        _, saved, failed = _save_category_registry_rows(database, rows)
+        assert (saved, failed) == (1, 0)
+        assert next(row for row in categories(database) if row["id"] == "income.salary")["active"] == 0
+    finally:
+        clear_data_cache()
 
 
 def test_income_category_id_survives_draft_preview_rename_and_reload(tmp_path, monkeypatch):

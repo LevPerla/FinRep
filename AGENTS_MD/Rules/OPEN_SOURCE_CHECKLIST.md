@@ -35,13 +35,13 @@ Expected output: nothing actionable. Rotate any token that was ever exposed, inc
 Validate the public demo dataset:
 
 ```bash
-FINREP_DATA_DIR=sample_data uv run python -c "from src.data.validation import validate_all_data; issues = validate_all_data(False); print(f'issues={len(issues)}'); assert not issues"
+FINREP_STORAGE_BACKEND=csv FINREP_DATA_DIR=sample_data uv run python -c "from src.data.validation import validate_all_data; issues = validate_all_data(False); print(f'issues={len(issues)}'); assert not issues"
 ```
 
 Smoke-check the Dash app layout on demo data:
 
 ```bash
-FINREP_DATA_DIR=sample_data FINREP_REPORTS_DIR=/private/tmp/finrep_reports uv run python -c "from src.dashboard.app import create_app; app = create_app(); assert app.layout is not None; print(app.title)"
+FINREP_STORAGE_BACKEND=csv FINREP_DATA_DIR=sample_data FINREP_REPORTS_DIR=/private/tmp/finrep_reports uv run python -c "from src.dashboard.app import create_app; app = create_app(); assert app.layout is not None; print(app.title)"
 ```
 
 Run the syntax check:
