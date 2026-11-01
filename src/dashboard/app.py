@@ -6233,10 +6233,13 @@ def _report_table_section(dataset: DashboardDataset, data: pd.DataFrame, max_hei
     rows = _grid_row_data(dataset, data)
     columns = list(data.columns)
     style_maps = _report_table_style_maps(dataset, data)
+    carry_notice = data.attrs.get("carry_notice") if dataset.id == "month_assets" else None
 
     return html.Section(
         [
             _section_header(dataset),
+            *([dbc.Alert(carry_notice, id="month-assets-carry-notice", color="warning",
+                         className="mb-2 py-2", style={"overflowWrap": "anywhere"})] if carry_notice else []),
             html.Div(
                 html.Table(
                     [
