@@ -10,22 +10,21 @@ from src.data.get import get_transactions
 
 logger = logging.getLogger(__name__)
 
-def get_exchange_rates_info(target_currency='RUB'):
+def get_exchange_rates_info(target_currency='RUB', *, currencies=None):
     """
     Get information about exchange rates used for conversion
     Returns DataFrame with currency pairs, rates, and freshness info
     """
     try:
         # Get all unique currencies from transactions
-        transactions_df = get_transactions()
-        unique_currencies = set(transactions_df['Валюта'].unique())
+        unique_currencies = set(currencies) if currencies is not None else set(get_transactions()['Валюта'].unique())
         unique_currencies.discard(target_currency)  # Remove target currency
         
         if not unique_currencies:
             return pd.DataFrame()
         
         rates_info = []
-        for currency in unique_currencies:
+        for currency in sorted(unique_currencies) if currencies is not None else unique_currencies:
             try:
                 rate_info = get_fx_rate_info(currency, target_currency)
                 rate = rate_info['rate']
@@ -57,7 +56,9 @@ def get_exchange_rates_info(target_currency='RUB'):
                     'Изменение (%)': "N/A",
                 })
         
-        return pd.DataFrame(rates_info)
+        result = pd.DataFrame(rates_info)
+        result.attrs['target_currency'] = target_currency
+        return result
         
     except Exception as e:
         logger.error(f"Error getting exchange rates info: {e}")
