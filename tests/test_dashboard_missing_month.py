@@ -7,6 +7,7 @@ os.environ.setdefault("FINREP_DASH_SECRET_KEY", "test-session-secret")
 
 from src import config
 from src.dashboard.app import _month_report_layout
+from src.dashboard.i18n import localize_report_datasets
 from src.dashboard.main_data import DashboardDataset
 from src.dashboard.month_data import build_month_dashboard_data
 from src.data.get import clear_data_cache
@@ -79,9 +80,14 @@ def test_month_without_saved_transactions_still_shows_carried_assets(tmp_path, m
         layout = _month_report_layout(datasets, theme="dark")
         assert "month_empty" in datasets
         assert "month_assets" in datasets
-        assert "Предварительный итог" in str(datasets["month_assets"].display_dataframe)
+        display = datasets["month_assets"].display_dataframe
+        assert "Предварительный итог" in display.attrs["carry_notice"]
+        assert display.columns.tolist() == datasets["month_assets"].dataframe.columns.tolist()
         assert "Счёт" in str(datasets["month_assets"].dataframe)
         assert _find_component(layout, "month-empty-state") is not None
+        assert _find_component(layout, "month-assets-carry-notice") is not None
+        english_layout = _month_report_layout(localize_report_datasets(datasets, "en"), theme="dark", locale="en")
+        assert _find_component(english_layout, "month-assets-carry-notice") is not None
         assert "Операции не сохранены за 2026-10" in str(layout)
         assert "Счёт" in str(layout)
     finally:
