@@ -88,6 +88,9 @@ from src.dashboard.i18n import (
 )
 from src.dashboard.main_data import DashboardDataset, build_main_dashboard_data, clear_main_dashboard_cache
 from src.dashboard.month_data import build_month_dashboard_data, get_day_transaction_details
+from src.dashboard.mobile_reports import (
+    mobile_assets, mobile_chart, mobile_fx, mobile_rows, register_mobile_callbacks,
+)
 from src.dashboard.planning_data import build_planning_dashboard_data, save_goal_targets
 from src.dashboard.statistics_data import build_statistics_dashboard_data
 from src.dashboard.report_tables import (
@@ -650,6 +653,7 @@ def create_layout():
 
 
 def register_callbacks(app: Dash) -> None:
+    register_mobile_callbacks(app)
     app.clientside_callback(
         """function(clicks, locale) {
             const unchanged = window.dash_clientside.no_update;
@@ -3544,10 +3548,17 @@ def _fx_dense_table_section(dataset: DashboardDataset, theme: str | None, locale
     if not rows:
         return _empty_section(dataset, locale=locale)
 
+    mobile_rate_rows = rows
+    target = dataset.dataframe.attrs.get("target_currency")
+    if target:
+        from src.data.exchange_rates_info import get_exchange_rates_info
+        with fx_network_mode(False):
+            mobile_rate_rows = get_exchange_rates_info(target, currencies=config.UNIQUE_TICKERS).fillna("").to_dict("records")
     return html.Section(
         [
             _section_header(dataset),
-            html.Div(_fx_dense_table(rows, locale=locale), className="finrep-table-scroll"),
+            html.Div(_fx_dense_table(rows, locale=locale), className="finrep-table-scroll finrep-desktop-only"),
+            mobile_fx(mobile_rate_rows, locale, _fx_change_class),
         ],
         style=_section_style(theme),
     )
@@ -6039,8 +6050,9 @@ def _graph_section(dataset: DashboardDataset, height: str = "520px", theme: str 
                     style={"height": height, "width": "100%"},
                     config=graph_config,
                 ),
-                className="finrep-chart-scroll",
+                className="finrep-chart-scroll finrep-desktop-only",
             ),
+            mobile_chart(dataset, locale),
         ],
         className="finrep-chart-section",
         style=_section_style(theme),
@@ -6235,7 +6247,7 @@ def _report_table_section(dataset: DashboardDataset, data: pd.DataFrame, max_hei
     style_maps = _report_table_style_maps(dataset, data)
     carry_notice = data.attrs.get("carry_notice") if dataset.id == "month_assets" else None
 
-    return html.Section(
+    section = html.Section(
         [
             _section_header(dataset),
             *([dbc.Alert(carry_notice, id="month-assets-carry-notice", color="warning",
@@ -6269,6 +6281,15 @@ def _report_table_section(dataset: DashboardDataset, data: pd.DataFrame, max_hei
         ],
         style=_section_style(theme),
     )
+    # Only the approved wide reports get an alternative mobile layout.
+    if dataset.id in {"yearly_stats", "month_assets"}:
+        desktop = section.children[-1]
+        desktop.className += " finrep-desktop-only"
+        if dataset.id == "month_assets":
+            section.children.append(mobile_assets(rows, columns, style_maps, theme, locale, desktop.children))
+        else:
+            section.children.append(mobile_rows(rows, columns, style_maps, theme, locale))
+    return section
 
 
 def _report_row_props(dataset: DashboardDataset, row: dict, locale: str = DEFAULT_LOCALE) -> dict:
