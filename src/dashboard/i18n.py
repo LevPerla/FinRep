@@ -390,6 +390,8 @@ REPORT_TEXT_EN = {
     "Этот PDF не похож на поддерживаемую выписку Kaspi, BCC или Ozon Банка.": "This PDF does not look like a supported Kaspi, BCC, or Ozon Bank statement.",
     "Некорректное действие импорта: выбери import или skip.": "Invalid import action. Select import or skip.",
     "Есть возможные дубли без решения: для каждой строки review выбери import или skip.": "Some possible duplicates require a decision. Select import or skip for every review row.",
+    "Есть строки без решения: для каждой строки review выбери import или skip.": "Some rows require a decision. Select import or skip for every review row.",
+    "Один банковский счёт сопоставлен разным активам.": "One bank account is mapped to multiple assets.",
     "История операций изменилась после Preview: построй Preview заново и проверь возможные дубли.": "Transaction history changed after Preview. Create a new Preview and review possible duplicates.",
     "Банковское поступление нельзя сохранить как расход: выбери «Сбережения», «Доход» или другую категорию поступления.": "A bank credit cannot be saved as an expense. Select Savings, Income, or another credit category.",
     "Структура Preview изменилась: построй Preview заново.": "The Preview structure changed. Create a new Preview.",

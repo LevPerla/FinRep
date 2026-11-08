@@ -55,6 +55,9 @@ function finrepRestoreImportDecision(data) {
   if (finrepTruthy(data.possible_pending_match)) {
     return ["review", "possible_pending_match"];
   }
+  if (data.history_category && data.history_category !== data.category) {
+    return ["review", "category_history_conflict"];
+  }
   if (String(data.replaces_source_id || "")) {
     return ["import", "replaces_pending"];
   }

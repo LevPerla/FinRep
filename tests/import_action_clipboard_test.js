@@ -41,3 +41,21 @@ click(2, { shiftKey: true });
 listeners.paste({ clipboardData: { getData: () => copied }, preventDefault: () => {} });
 assert.deepEqual(rows.map((row) => row.data.import_action), ["skip", "skip", "skip"]);
 assert.deepEqual(rows.slice(1).map((row) => row.data.skip_reason), ["manual_skip", "manual_skip"]);
+
+const historyNode = {
+  data: {category: "Прочие доходы", history_category: "Проценты"},
+  setDataValue(field, value) { this.data[field] = value; },
+};
+const categoryChanged = () => window.dashAgGridFunctions.finrepCategoryCellChanged({
+  column: {getColId: () => "category"}, node: historyNode, data: historyNode.data,
+  newValue: historyNode.data.category, colDef: {context: {}}, api,
+});
+categoryChanged();
+assert.equal(historyNode.data.import_action, "review");
+assert.equal(historyNode.data.skip_reason, "category_history_conflict");
+historyNode.data.category = "Проценты";
+categoryChanged();
+assert.equal(historyNode.data.import_action, "import");
+historyNode.data.duplicate_in_source = true;
+categoryChanged();
+assert.equal(historyNode.data.import_action, "review");

@@ -2584,10 +2584,41 @@ def upsert_asset_snapshot(path: str | Path, *, account_id: str, period: str,
 def upsert_asset_snapshot_batch(path: str | Path, rows: list[dict], *, reason: str) -> list[dict]:
     """Atomically set selected balances without replacing other accounts."""
     with connect_database(path, writable=True) as connection:
-        return [
-            _upsert_asset_snapshot(connection, reason=reason, **row)
-            for row in rows
-        ]
+        results = []
+        mappings = {}
+        for row in rows:
+            payload = dict(row)
+            statement = payload.pop("statement", None)
+            result = _upsert_asset_snapshot(connection, reason=reason, **payload)
+            results.append(result)
+            if statement and statement.get("source") and statement.get("account_id"):
+                key = (str(statement["source"]), str(statement["account_id"]).strip().upper(),
+                       str(row["currency"]).upper())
+                if key in mappings and mappings[key] != row["account_id"]:
+                    raise ValueError("Один банковский счёт сопоставлен разным активам.")
+                mappings[key] = row["account_id"]
+                mapping = {"source": key[0], "bank_account_id": key[1], "currency": key[2],
+                           "account_id": row["account_id"]}
+                connection.execute("""INSERT INTO audit_events
+                    (entity_type, entity_id, action, after_json, reason, occurred_at)
+                    VALUES ('asset_snapshot', ?, 'statement_balance_applied', ?, ?, ?)""",
+                    (result["snapshot_id"], json.dumps(mapping, ensure_ascii=False), reason, _utc_now()))
+        return results
+
+
+def statement_asset_suggestions(path: str | Path) -> dict[tuple[str, str, str], str]:
+    """Last successful explicit selection; never fall back from an archived target."""
+    with connect_database(path) as connection:
+        events = connection.execute("""SELECT after_json FROM audit_events
+            WHERE entity_type = 'asset_snapshot' AND action = 'statement_balance_applied'
+            ORDER BY id DESC""").fetchall()
+        active = {row["id"] for row in connection.execute("SELECT id FROM asset_accounts WHERE active = 1")}
+    latest = {}
+    for event in events:
+        mapping = json.loads(event["after_json"])
+        key = (mapping["source"], mapping["bank_account_id"], mapping["currency"])
+        latest.setdefault(key, mapping["account_id"])
+    return {key: account for key, account in latest.items() if account in active}
 
 
 def asset_snapshots(path: str | Path) -> list[dict]:

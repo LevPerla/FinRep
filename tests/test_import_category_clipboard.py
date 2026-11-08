@@ -40,6 +40,16 @@ def test_income_category_highlight_uses_current_registry():
     assert "incomeCategories" in category_column["cellClassRules"]["kaspi-category-income"]
 
 
+def test_expense_category_highlight_uses_current_registry(monkeypatch):
+    monkeypatch.setenv("FINREP_STORAGE_BACKEND", "csv")
+    monkeypatch.setattr("src.dashboard.app._transaction_category_options", lambda: [
+        {"value": name} for name in ("На себя", "Быт и товары для дома")
+    ])
+    category = next(column for column in _kaspi_import_column_defs() if column["field"] == "category")
+    assert "expenseCategories.includes(params.value)" in category["cellClassRules"]["kaspi-category-expense"]
+    assert {"На себя", "Быт и товары для дома"} <= set(category["context"]["expenseCategories"])
+
+
 def test_action_column_reuses_multi_cell_clipboard():
     action = next(
         column for column in _kaspi_import_column_defs() if column["field"] == "import_action"

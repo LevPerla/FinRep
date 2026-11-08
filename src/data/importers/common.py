@@ -64,6 +64,12 @@ def import_frame_from_rows(
         ),
         axis=1,
     )
+    data["history_category"] = data.apply(
+        lambda row: history_categories.get((
+            _normalize_text(_clean_comment(row["details"])),
+            "income" if row["signed_amount"] > 0 else "expense",
+        ), ""), axis=1,
+    )
     data["amount"] = data["signed_amount"].abs()
     data["direction"] = data["signed_amount"].map(
         lambda value: "credit" if float(value) > 0 else "debit"
@@ -106,7 +112,7 @@ def save_import_to_staging(import_rows: list[dict], path: str | Path | None = No
         raise ValueError("Некорректное действие импорта: выбери import или skip.")
     if actions.eq("review").any():
         raise ValueError(
-            "Есть возможные дубли без решения: для каждой строки review выбери import или skip."
+            "Есть строки без решения: для каждой строки review выбери import или skip."
         )
     current_source_match = incoming.apply(
         lambda row: _source_key(row) in source_keys, axis=1
@@ -195,7 +201,7 @@ def save_import_to_transactions(import_rows: list[dict]) -> dict:
         raise ValueError("Некорректное действие импорта: выбери import или skip.")
     if actions.eq("review").any():
         raise ValueError(
-            "Есть возможные дубли без решения: для каждой строки review выбери import или skip."
+            "Есть строки без решения: для каждой строки review выбери import или skip."
         )
 
     actionable = incoming[
@@ -694,13 +700,15 @@ def _skip_reason(row: pd.Series) -> str:
         return "possible_duplicate"
     if bool(row.get("possible_pending_match", False)):
         return "possible_pending_match"
+    if row.get("history_category") and row["history_category"] != row["category"]:
+        return "category_history_conflict"
     if str(row.get("replaces_source_id", "")):
         return "replaces_pending"
     return ""
 
 
 def _default_import_action(skip_reason: str) -> str:
-    if skip_reason in {"possible_duplicate", "possible_pending_match"}:
+    if skip_reason in {"possible_duplicate", "possible_pending_match", "category_history_conflict"}:
         return "review"
     if skip_reason == "replaces_pending":
         return "import"
@@ -844,6 +852,7 @@ def _import_columns() -> list[str]:
         "import_action",
         "replaces_source_id",
         "possible_pending_match",
+        "history_category",
         "staging_revision",
         "counterparty",
         "debt_id",

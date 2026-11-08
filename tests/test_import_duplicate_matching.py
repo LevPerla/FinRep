@@ -52,6 +52,29 @@ def test_same_amount_at_different_merchant_is_imported(import_data):
     assert common.save_import_to_staging(preview.to_dict("records"))["accepted_rows"] == 1
 
 
+def test_automatic_category_conflict_is_reviewed_before_manual_edit(import_data):
+    history = _history("Interest payment")
+    history["Категория"] = "Проценты"
+    rows = [{"date": "2026-10-01", "signed_amount": 100, "currency": "RUB", "details": "Interest payment"}]
+    with patch.object(common, "get_transactions", return_value=history), patch.object(common, "categorize", return_value="Прочие доходы"):
+        preview = common.import_frame_from_rows(rows)
+    row = preview.iloc[0]
+    assert row["import_action"] == "review"
+    assert row["skip_reason"] == "category_history_conflict"
+    assert row["history_category"] == "Проценты"
+    assert not row["duplicate_in_source"]
+    with pytest.raises(ValueError, match="выбери import или skip"):
+        common.save_import_to_staging(preview.to_dict("records"))
+
+
+def test_duplicate_is_reviewed_even_when_automatic_category_differs(import_data):
+    with patch.object(common, "get_transactions", return_value=_history("Shop A")), patch.object(common, "categorize", return_value="На себя"):
+        preview = common.import_frame_from_rows(_rows("Shop A"))
+    assert preview.iloc[0]["duplicate_in_source"]
+    assert preview.iloc[0]["import_action"] == "review"
+    assert preview.iloc[0]["skip_reason"] == "possible_duplicate"
+
+
 def test_possible_duplicate_requires_explicit_decision(import_data):
     with patch.object(common, "get_transactions", return_value=_history("Shop A")):
         preview = common.import_frame_from_rows(_rows("Shop A"), statement_id="overlap")
