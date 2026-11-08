@@ -349,6 +349,7 @@ def test_statement_balance_period_mismatch_disables_apply(tmp_path, monkeypatch)
     callback = app.callback_map[key]
     balance = {
         "account_id": "SYNTHETIC-ACCOUNT",
+        "source": "kaspi_pdf",
         "balance": "150",
         "currency": "RUB",
         "as_of_date": "2026-10-31",
@@ -466,6 +467,12 @@ def test_statement_balance_period_mismatch_disables_apply(tmp_path, monkeypatch)
     apply_values["bank-statement-balance-apply"] = 2
     retry = invoke_apply()
     assert "уже совпадал" in retry["bank-statement-balance-message"]["children"]
+    # A fresh upload reuses only successful choices, not stale dropdown state.
+    suggested = invoke("bank-statement-balances.data")
+    table = suggested["bank-statement-balance-table"]["children"]
+    table_rows = table["props"]["children"][1]["props"]["children"]
+    assert table_rows[0]["props"]["children"][4]["props"]["children"]["props"]["value"] == "deposit"
+    assert table_rows[1]["props"]["children"][4]["props"]["children"]["props"]["value"] == "cash"
 
     with client.session_transaction() as context:
         context["data_mode"] = "test"

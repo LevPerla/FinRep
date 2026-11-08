@@ -1626,6 +1626,7 @@ def register_callbacks(app: Dash) -> None:
                 if balance:
                     balances.append({
                         **balance,
+                        "source": str(data.iloc[0]["source"]) if not data.empty else "",
                         "source_file": display_filename,
                         "source_index": index,
                     })
@@ -1725,6 +1726,9 @@ def register_callbacks(app: Dash) -> None:
         if not balances or not config.use_sqlite_storage():
             return {"display": "none"}, "", "", False, True
         options = _active_asset_options()
+        from src.data.sqlite_store import statement_asset_suggestions
+
+        suggestions = statement_asset_suggestions(config.active_database_path())
         selected = {}
         if ctx.triggered_id != "bank-statement-balances":
             selected = {
@@ -1748,6 +1752,9 @@ def register_callbacks(app: Dash) -> None:
         body = []
         for index, balance in enumerate(balances):
             account = str(balance.get("account_id", ""))
+            suggested = suggestions.get((str(balance.get("source", "")), account.strip().upper(),
+                                         str(balance["currency"]).upper()))
+            choice = selected.get(index) if index in selected else suggested
             same_period = str(balance["as_of_date"])[:7] == selected_period
             body.append(html.Tr([
                 html.Td(balance["source_file"], className="finrep-balance-file"),
@@ -1757,7 +1764,7 @@ def register_callbacks(app: Dash) -> None:
                 html.Td(dcc.Dropdown(
                     id={"type": "bank-balance-asset", "index": index},
                     options=options,
-                    value=selected.get(index) if selected.get(index) in valid_accounts else None,
+                    value=choice if choice in valid_accounts else None,
                     placeholder="Choose asset" if english else "Выбери актив",
                     disabled=not same_period or config.is_test_mode(),
                     className="dash-dropdown",
@@ -1940,6 +1947,7 @@ def register_callbacks(app: Dash) -> None:
                     "period": selected_period,
                     "amount": balance["balance"],
                     "currency": balance["currency"],
+                    "statement": balance,
                 }
                 for balance, account_id in selected
             ], reason="statement closing balance")
@@ -5797,6 +5805,11 @@ def _kaspi_import_column_defs(locale: str = DEFAULT_LOCALE) -> list[dict]:
             "!params.colDef.context.debtCategories.includes(params.value)"
         ),
         "kaspi-category-debt": "params.colDef.context.debtCategories.includes(params.value)",
+        "kaspi-category-expense": (
+            "params.colDef.context.expenseCategories.includes(params.value) && "
+            "!params.colDef.context.debtCategories.includes(params.value) && "
+            "!['Пища', 'Транспорт', 'Связь', 'Прочее', 'Сбережения', 'Инвестиции', 'Внутренний перевод'].includes(params.value)"
+        ),
         "kaspi-category-saving": "params.value == 'Сбережения' || params.value == 'Инвестиции'",
         "kaspi-category-internal": "params.value == 'Внутренний перевод'",
         "kaspi-category-food": "params.value == 'Пища'",
@@ -5895,7 +5908,12 @@ def _kaspi_import_column_defs(locale: str = DEFAULT_LOCALE) -> list[dict]:
             "minWidth": 240,
             "cellClassRules": {"text-danger": "Boolean(params.value)"},
         },
-        {"field": "skip_reason", "headerName": "Причина skip", "width": 170},
+        {"field": "skip_reason", "headerName": "Reason" if normalize_locale(locale) == "en" else "Причина",
+         "width": 230, "valueFormatter": {"function": (
+             "params.value == 'category_history_conflict' ? "
+             + json.dumps("History category: " if normalize_locale(locale) == "en" else "Категория в истории: ", ensure_ascii=False)
+             + " + params.data.history_category : params.value"
+         )}},
         {"field": "duplicate_in_source", "headerName": "Дубль в CSV", "width": 130},
         {"field": "duplicate_in_staging", "headerName": "Дубль в staging", "width": 150},
         {"field": "details", "headerName": "Детали PDF", "flex": 1, "minWidth": 240},

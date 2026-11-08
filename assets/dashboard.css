@@ -622,6 +622,7 @@ body {
   color: #0d6687 !important;
   font-weight: 600;
 }
+.kaspi-category-expense,
 .kaspi-category-other {
   background-color: rgba(239, 120, 120, 0.18) !important;
   color: #8a3030 !important;
@@ -634,6 +635,7 @@ body {
 .finrep-theme-dark .kaspi-category-food { color: #ffdca3 !important; }
 .finrep-theme-dark .kaspi-category-transport { color: #d1c8ff !important; }
 .finrep-theme-dark .kaspi-category-communication { color: #b9ecff !important; }
+.finrep-theme-dark .kaspi-category-expense,
 .finrep-theme-dark .kaspi-category-other { color: #ffc4c4 !important; }
 
 .finrep-ag-grid .ag-cell[class*="finrep-asset-kind-"] {
