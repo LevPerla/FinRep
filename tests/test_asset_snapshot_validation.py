@@ -511,7 +511,8 @@ def test_load_callback_displays_error_and_does_not_invent_zero(assets_root, monk
     with client.session_transaction() as context:
         context["authenticated"] = True
         context["data_mode"] = "live"
-    key = next(key for key in app.callback_map if "assets-input-message.children" in key)
+    key = next(key for key, callback in app.callback_map.items()
+               if any(item["id"] == "assets-reset-confirm" for item in callback["inputs"]))
     callback = app.callback_map[key]
     values = {"assets-reset-confirm":1,"assets-add-row-button":0,"assets-delete-row-button":0,"assets-apply-button":0,
               "dashboard-year":"2026","dashboard-month":"01","assets-input-grid":[],"dashboard-locale":"ru"}

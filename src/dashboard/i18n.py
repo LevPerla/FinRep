@@ -14,6 +14,10 @@ LOCALE_TIMESTAMP_STORAGE_KEY = "dashboard-locale-timestamp"
 DYNAMIC_TRANSLATION_KEYS = frozenset({"dashboard.theme_toggle"})
 
 REPORT_TEXT_EN = {
+    "Оценка актива изменилась. Обнови таблицу и выбери её заново.": "Asset valuation changed. Reload the table and select it again.",
+    "Подтверждение отдельной оценки доступно в SQLite.": "Confirming an individual valuation requires SQLite.",
+    "Нельзя удалить остаток месяца закрытия. Сначала верни счёт из архива.": "Cannot delete a closing balance. Restore the account first.",
+    "Сначала выбери сохранённую оценку за текущий месяц и подтверди удаление.": "Select a saved valuation in the current month and confirm deletion first.",
     "В норме": "On track",
     "Требует внимания": "Needs attention",
     "Положительно": "Positive",
