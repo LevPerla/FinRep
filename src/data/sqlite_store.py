@@ -2759,6 +2759,59 @@ def replace_asset_snapshot_month(path: str | Path, *, period: str,
             "rows": len(normalized)}
 
 
+def confirm_asset_valuation(path: str | Path, *, snapshot_id: str, period: str,
+                            expected_row_version: int, amount) -> dict:
+    """Confirm one carried balance without overwriting a newer saved valuation."""
+    period = _period(period)
+    with connect_database(path, writable=True) as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        source = connection.execute("SELECT * FROM asset_snapshots WHERE id = ?", (snapshot_id,)).fetchone()
+        if source is None or source["row_version"] != expected_row_version or source["period"] >= period:
+            raise ValueError("Оценка актива изменилась. Обнови таблицу и выбери её заново.")
+        newer = connection.execute("""SELECT 1 FROM asset_snapshots
+            WHERE account_id = ? AND currency_code = ? AND period > ? AND period <= ?""",
+            (source["account_id"], source["currency_code"], source["period"], period)).fetchone()
+        if newer:
+            raise ValueError("Оценка актива изменилась. Обнови таблицу и выбери её заново.")
+        return _upsert_asset_snapshot(connection, account_id=source["account_id"], period=period,
+                                      currency=source["currency_code"], amount=amount,
+                                      reason="user confirmed carried valuation")
+
+
+def delete_asset_valuation(path: str | Path, *, snapshot_id: str, period: str,
+                           expected_row_version: int, reason: str) -> dict:
+    """Explicitly correct one mistaken valuation, never archive its account."""
+    period = _period(period)
+    if not reason.strip():
+        raise ValueError("change reason is required")
+    with connect_database(path, writable=True) as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        current = connection.execute(
+            "SELECT * FROM asset_snapshots WHERE id = ? AND period = ?",
+            (snapshot_id, period),
+        ).fetchone()
+        if current is None or current["row_version"] != expected_row_version:
+            raise ValueError("Оценка актива изменилась. Обнови таблицу и выбери её заново.")
+        account = connection.execute(
+            "SELECT closed_period FROM asset_accounts WHERE id = ?", (current["account_id"],)
+        ).fetchone()
+        if account["closed_period"] == period:
+            raise ValueError("Нельзя удалить остаток месяца закрытия. Сначала верни счёт из архива.")
+        before = dict(current)
+        before["source_links"] = [dict(row) for row in connection.execute(
+            "SELECT * FROM entity_source_links WHERE entity_type = 'asset_snapshot' AND entity_id = ?",
+            (snapshot_id,),
+        )]
+        connection.execute("""INSERT INTO audit_events
+            (entity_type, entity_id, action, before_json, after_json, reason, occurred_at)
+            VALUES ('asset_snapshot', ?, 'removed', ?, NULL, ?, ?)""",
+            (snapshot_id, json.dumps(before, ensure_ascii=False, sort_keys=True), reason.strip(), _utc_now()))
+        connection.execute("DELETE FROM entity_source_links WHERE entity_type = 'asset_snapshot' AND entity_id = ?",
+                           (snapshot_id,))
+        connection.execute("DELETE FROM asset_snapshots WHERE id = ?", (snapshot_id,))
+    return dict(current)
+
+
 def asset_snapshot_month(path: str | Path, period: str) -> list[dict]:
     period = _period(period)
     with connect_database(path) as connection:

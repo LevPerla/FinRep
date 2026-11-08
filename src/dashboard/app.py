@@ -2650,6 +2650,54 @@ def register_callbacks(app: Dash) -> None:
             return no_update, no_update, str(exc), "danger"
 
     @app.callback(
+        Output("assets-remove-valuation-confirm", "displayed"),
+        Output("assets-remove-valuation-confirm", "message"),
+        Output("assets-remove-valuation-target", "data"),
+        Output("assets-input-message", "children", allow_duplicate=True),
+        Output("assets-input-message", "color", allow_duplicate=True),
+        Input("assets-remove-valuation-button", "n_clicks", allow_optional=True),
+        State("assets-input-grid", "selectedRows", allow_optional=True),
+        State("dashboard-year", "value"),
+        State("dashboard-month", "value"),
+        State("dashboard-locale", "data"),
+        prevent_initial_call=True,
+    )
+    def confirm_asset_valuation_delete(clicks, selected_rows, year, month, locale):
+        if not clicks:
+            raise PreventUpdate
+        english = normalize_locale(locale) == "en"
+        try:
+            config.require_writable_mode()
+            if not config.use_sqlite_storage():
+                raise ValueError("Valuation deletion requires SQLite." if english else "Удаление оценки доступно в SQLite.")
+            if len(selected_rows or []) != 1:
+                raise ValueError("Select one saved valuation." if english else "Выбери одну сохранённую оценку в таблице.")
+            selected = selected_rows[0]
+            period = f"{int(year):04d}-{int(month):02d}"
+            from src.data.sqlite_store import asset_snapshot_month
+
+            saved = next((row for row in asset_snapshot_month(config.active_database_path(), period)
+                          if row["id"] == selected.get("snapshot_id")), None)
+            if saved is None:
+                raise ValueError("Select a valuation saved in this month, not a carried balance or draft." if english else
+                                 "Выбери оценку, сохранённую за этот месяц, а не перенос или черновик.")
+            if saved["row_version"] != selected.get("snapshot_row_version"):
+                raise ValueError("Оценка актива изменилась. Обнови таблицу и выбери её заново.")
+            if saved["closed_period"] == period:
+                raise ValueError("Нельзя удалить остаток месяца закрытия. Сначала верни счёт из архива.")
+            message = (
+                f"Delete the saved valuation for {period}?\n{saved['account_name']} · {_format_input_amount(saved['amount'])} {saved['currency_code']}\n\n"
+                "Only this valuation is removed, not the account. An earlier balance will carry forward; if none exists, this balance leaves the capital total. Later saved valuations stay unchanged; carried reports may change. Other unsaved edits are kept."
+                if english else
+                f"Удалить сохранённую оценку за {period}?\n{saved['account_name']} · {_format_input_amount(saved['amount'])} {saved['currency_code']}\n\n"
+                "Удалится только эта оценка, не счёт. Если есть более ранний остаток, вернётся его перенос; иначе этот остаток перестанет учитываться в капитале. Будущие сохранённые оценки останутся; отчёты с переносами могут измениться. Остальные несохранённые правки сохранятся."
+            )
+            target = {"snapshot_id": saved["id"], "period": period, "row_version": saved["row_version"]}
+            return True, message, target, no_update, no_update
+        except Exception as exc:
+            return False, "", None, report_text(str(exc), locale), "danger"
+
+    @app.callback(
         Output("assets-input-grid", "rowData"),
         Output("assets-input-message", "children"),
         Output("assets-input-message", "color"),
@@ -2660,6 +2708,8 @@ def register_callbacks(app: Dash) -> None:
         Input("assets-add-from-registry-button", "n_clicks", allow_optional=True),
         Input("assets-delete-row-button", "n_clicks", allow_optional=True),
         Input("assets-apply-button", "n_clicks", allow_optional=True),
+        Input("assets-remove-valuation-confirm", "submit_n_clicks", allow_optional=True),
+        Input("assets-confirm-valuation-button", "n_clicks", allow_optional=True),
         State("dashboard-year", "value"),
         State("dashboard-month", "value"),
         State("assets-input-grid", "rowData", allow_optional=True),
@@ -2669,6 +2719,7 @@ def register_callbacks(app: Dash) -> None:
         State("dashboard-locale", "data"),
         State("bank-statement-balances", "data"),
         State({"type": "bank-balance-asset", "index": ALL}, "value"),
+        State("assets-remove-valuation-target", "data", allow_optional=True),
         prevent_initial_call=True,
     )
     def sync_assets_snapshot(
@@ -2678,6 +2729,8 @@ def register_callbacks(app: Dash) -> None:
         add_from_registry_clicks,
         delete_clicks,
         apply_clicks,
+        remove_valuation_clicks,
+        confirm_valuation_clicks,
         year,
         month,
         row_data,
@@ -2687,6 +2740,7 @@ def register_callbacks(app: Dash) -> None:
         locale,
         statement_balances,
         statement_account_ids,
+        remove_target,
     ):
         trigger = ctx.triggered_id
         period = f"{int(year):04d}-{int(month):02d}"
@@ -2701,6 +2755,57 @@ def register_callbacks(app: Dash) -> None:
             )[0]
 
         try:
+            if trigger == "assets-confirm-valuation-button":
+                config.require_writable_mode()
+                if not config.use_sqlite_storage():
+                    raise ValueError("Подтверждение отдельной оценки доступно в SQLite.")
+                if len(selected_rows or []) != 1:
+                    raise ValueError("Select one carried valuation." if normalize_locale(locale) == "en" else
+                                     "Выбери одну перенесённую оценку в таблице.")
+                snapshot_id = selected_rows[0].get("snapshot_id")
+                selected = next((row for row in (row_data or []) if row.get("snapshot_id") == snapshot_id), None)
+                current = next((row for row in _asset_input_records(year, month, locale)
+                                if row.get("snapshot_id") == snapshot_id), None)
+                if not selected or not current or not current.get("carried") or any(
+                    selected.get(key) != current.get(key) for key in ("account", "currency", "snapshot_row_version")
+                ):
+                    raise ValueError("Оценка актива изменилась. Обнови таблицу и выбери её заново.")
+                from src.data.sqlite_store import confirm_asset_valuation
+
+                confirm_asset_valuation(config.active_database_path(), snapshot_id=selected["snapshot_id"],
+                                        period=period, expected_row_version=selected["snapshot_row_version"],
+                                        amount=selected["amount"])
+                clear_data_cache()
+                clear_table_cache()
+                clear_main_dashboard_cache()
+                saved = next(row for row in _asset_input_records(year, month, locale)
+                             if row["account_id"] == current["account_id"] and row["currency"] == current["currency"])
+                rows = [saved if row.get("snapshot_id") == current["snapshot_id"] else row for row in (row_data or [])]
+                message = (f"Valuation confirmed for {period}: {saved['account']} · {saved['amount']} {saved['currency']}"
+                           if normalize_locale(locale) == "en" else
+                           f"Оценка подтверждена за {period}: {saved['account']} · {saved['amount']} {saved['currency']}")
+                return with_statement_preview(rows), message, "success", no_update
+            if trigger == "assets-remove-valuation-confirm":
+                config.require_writable_mode()
+                if not config.use_sqlite_storage() or not remove_target or remove_target.get("period") != period:
+                    raise ValueError("Сначала выбери сохранённую оценку за текущий месяц и подтверди удаление.")
+                from src.data.sqlite_store import delete_asset_valuation
+
+                removed = delete_asset_valuation(
+                    config.active_database_path(), snapshot_id=remove_target["snapshot_id"], period=period,
+                    expected_row_version=remove_target["row_version"], reason="user confirmed mistaken valuation",
+                )
+                clear_data_cache()
+                clear_table_cache()
+                clear_main_dashboard_cache()
+                # Keep unrelated drafts and edits; refresh only the deleted valuation's pair.
+                rows = [row for row in (row_data or []) if row.get("snapshot_id") != removed["id"]]
+                rows.extend(row for row in _asset_input_records(year, month, locale)
+                            if row.get("account_id") == removed["account_id"] and row["currency"] == removed["currency_code"])
+                message = ("Valuation deleted. Earlier balances, if any, are carried forward; the account is not archived."
+                           if normalize_locale(locale) == "en" else
+                           "Оценка удалена. Если был более ранний остаток, вернулся его перенос; счёт не архивирован.")
+                return with_statement_preview(rows), message, "success", _asset_classification_rows(locale)
             if trigger in {"assets-add-row-button", "assets-copy-previous-button", "assets-add-from-registry-button", "assets-delete-row-button", "assets-apply-button"}:
                 config.require_writable_mode()
             if trigger == "assets-add-row-button":
@@ -2834,6 +2939,8 @@ def register_callbacks(app: Dash) -> None:
 
             message, color = _asset_input_status(year, month, locale)
             return with_statement_preview(_asset_input_records(year, month, locale)), message, color, no_update
+        except PreventUpdate:
+            raise
         except Exception as exc:
             return row_data or [], report_text(str(exc), locale), "danger", no_update
 
@@ -4008,6 +4115,12 @@ def _transaction_input_layout(
                                 ],
                                 className="d-flex flex-wrap align-items-center gap-3 mt-2",
                             ),
+                            html.P(
+                                "Changing the selected account does not undo previously applied balances. To correct a wrong target, select the mistaken row in Assets and use Undo valuation."
+                                if normalize_locale(locale) == "en" else
+                                "Смена выбранного счёта не отменяет ранее применённые остатки. Если выбрал не тот счёт, выдели ошибочную строку в активах и нажми «Отменить оценку».",
+                                className="small mt-2 mb-0",
+                            ),
                             html.Div(
                                 id="bank-statement-balance-comparison",
                                 className="small mt-2",
@@ -4560,6 +4673,12 @@ def _asset_snapshot_input_layout(
                                 disabled=read_only,
                             ) if not config.use_sqlite_storage() else None,
                             dbc.Button(report_text("Отправить в архив", locale), id="assets-delete-row-button", color="warning", outline=True, size="sm", disabled=read_only),
+                            dbc.Button("Confirm valuation" if normalize_locale(locale) == "en" else "Подтвердить оценку",
+                                       id="assets-confirm-valuation-button", color="success", outline=True, size="sm",
+                                       disabled=read_only or not config.use_sqlite_storage()),
+                            dbc.Button("Undo valuation" if normalize_locale(locale) == "en" else "Отменить оценку",
+                                       id="assets-remove-valuation-button", color="danger", outline=True, size="sm",
+                                       disabled=read_only or not config.use_sqlite_storage()),
                             dbc.Button(report_text("Применить", locale), id="assets-apply-button", color="primary", outline=True, size="sm", disabled=read_only),
                         ],
                         className="d-flex flex-wrap gap-2 finrep-assets-actions",
@@ -4567,6 +4686,8 @@ def _asset_snapshot_input_layout(
                 ],
                 className="d-flex justify-content-between align-items-center mb-3 finrep-assets-header",
             ),
+            dcc.ConfirmDialog(id="assets-remove-valuation-confirm"),
+            dcc.Store(id="assets-remove-valuation-target"),
             html.Div(
                 [
                     html.Div(
@@ -5298,6 +5419,14 @@ def _asset_input_records(
             lambda account: account_details.get(account, {}).get("account_id", "")),
     )
     if config.use_sqlite_storage():
+        data["snapshot_id"] = [
+            balance_details.get((account_id, currency), {}).get("id", "")
+            for account_id, currency in zip(data["account_id"], data["currency"])
+        ]
+        data["snapshot_row_version"] = [
+            balance_details.get((account_id, currency), {}).get("row_version", 0)
+            for account_id, currency in zip(data["account_id"], data["currency"])
+        ]
         data["source_period"] = [
             balance_details.get((account_id, currency), {}).get("source_period", "")
             for account_id, currency in zip(data["account_id"], data["currency"])
@@ -5598,6 +5727,8 @@ def _asset_input_column_defs(locale: str = DEFAULT_LOCALE) -> list[dict]:
          "cellClassRules": {"finrep-asset-carried": "params.data && params.data.carried"}},
         {"field": "account_id", "hide": True},
         {"field": "source_period", "hide": True},
+        {"field": "snapshot_id", "hide": True},
+        {"field": "snapshot_row_version", "hide": True},
         {"field": "age_months", "hide": True},
         {"field": "carried", "hide": True},
         {"field": "amount_sort", "hide": True, "sort": "desc", "sortIndex": 0},
